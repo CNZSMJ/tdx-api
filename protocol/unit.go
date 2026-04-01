@@ -291,6 +291,21 @@ func IsETF(code string) bool {
 	return false
 }
 
+// IsIndex 是否是常见指数代码,示例 sh000001 / sz399001
+func IsIndex(code string) bool {
+	if len(code) != 8 {
+		return false
+	}
+	code = strings.ToLower(code)
+	switch {
+	case code[0:2] == ExchangeSH.String() && code[2:5] == "000":
+		return true
+	case code[0:2] == ExchangeSZ.String() && code[2:5] == "399":
+		return true
+	}
+	return false
+}
+
 // AddPrefix 添加股票/基金代码前缀,针对股票/基金生效,例如000001,会增加前缀sz000001(平安银行),而不是sh000001(上证指数)
 func AddPrefix(code string) string {
 	if len(code) == 6 {

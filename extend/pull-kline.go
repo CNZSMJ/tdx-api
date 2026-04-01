@@ -37,30 +37,82 @@ const (
 	tableMonth    = "MonthKline"
 	tableQuarter  = "QuarterKline"
 	tableYear     = "YearKline"
+
+	AssetStock = "stock"
+	AssetETF   = "etf"
+	AssetIndex = "index"
 )
 
 var (
 	AllKlineType  = []string{Minute, Minute5, Minute15, Minute30, Hour, Day, Week, Month, Quarter, Year}
 	KlineTableMap = map[string]*KlineTable{
-		Minute:   NewKlineTable(tableMinute, func(c *tdx.Client) KlineHandler { return c.GetKlineMinuteUntil }),
-		Minute5:  NewKlineTable(table5Minute, func(c *tdx.Client) KlineHandler { return c.GetKline5MinuteUntil }),
-		Minute15: NewKlineTable(table15Minute, func(c *tdx.Client) KlineHandler { return c.GetKline15MinuteUntil }),
-		Minute30: NewKlineTable(table30Minute, func(c *tdx.Client) KlineHandler { return c.GetKline30MinuteUntil }),
-		Hour:     NewKlineTable(tableHour, func(c *tdx.Client) KlineHandler { return c.GetKlineHourUntil }),
-		Day:      NewKlineTable(tableDay, func(c *tdx.Client) KlineHandler { return c.GetKlineDayUntil }),
-		Week:     NewKlineTable(tableWeek, func(c *tdx.Client) KlineHandler { return c.GetKlineWeekUntil }),
-		Month:    NewKlineTable(tableMonth, func(c *tdx.Client) KlineHandler { return c.GetKlineMonthUntil }),
-		Quarter:  NewKlineTable(tableQuarter, func(c *tdx.Client) KlineHandler { return c.GetKlineQuarterUntil }),
-		Year:     NewKlineTable(tableYear, func(c *tdx.Client) KlineHandler { return c.GetKlineYearUntil }),
+		Minute: NewKlineTable(
+			tableMinute,
+			func(c *tdx.Client) KlineHandler { return c.GetKlineMinuteUntil },
+			func(c *tdx.Client) KlineHandler { return indexKlineHandler(c, protocol.TypeKlineMinute) },
+		),
+		Minute5: NewKlineTable(
+			table5Minute,
+			func(c *tdx.Client) KlineHandler { return c.GetKline5MinuteUntil },
+			func(c *tdx.Client) KlineHandler { return indexKlineHandler(c, protocol.TypeKline5Minute) },
+		),
+		Minute15: NewKlineTable(
+			table15Minute,
+			func(c *tdx.Client) KlineHandler { return c.GetKline15MinuteUntil },
+			func(c *tdx.Client) KlineHandler { return indexKlineHandler(c, protocol.TypeKline15Minute) },
+		),
+		Minute30: NewKlineTable(
+			table30Minute,
+			func(c *tdx.Client) KlineHandler { return c.GetKline30MinuteUntil },
+			func(c *tdx.Client) KlineHandler { return indexKlineHandler(c, protocol.TypeKline30Minute) },
+		),
+		Hour: NewKlineTable(
+			tableHour,
+			func(c *tdx.Client) KlineHandler { return c.GetKlineHourUntil },
+			func(c *tdx.Client) KlineHandler { return indexKlineHandler(c, protocol.TypeKline60Minute) },
+		),
+		Day: NewKlineTable(
+			tableDay,
+			func(c *tdx.Client) KlineHandler { return c.GetKlineDayUntil },
+			func(c *tdx.Client) KlineHandler { return indexKlineHandler(c, protocol.TypeKlineDay) },
+		),
+		Week: NewKlineTable(
+			tableWeek,
+			func(c *tdx.Client) KlineHandler { return c.GetKlineWeekUntil },
+			func(c *tdx.Client) KlineHandler { return indexKlineHandler(c, protocol.TypeKlineWeek) },
+		),
+		Month: NewKlineTable(
+			tableMonth,
+			func(c *tdx.Client) KlineHandler { return c.GetKlineMonthUntil },
+			func(c *tdx.Client) KlineHandler { return indexKlineHandler(c, protocol.TypeKlineMonth) },
+		),
+		Quarter: NewKlineTable(
+			tableQuarter,
+			func(c *tdx.Client) KlineHandler { return c.GetKlineQuarterUntil },
+			func(c *tdx.Client) KlineHandler { return indexKlineHandler(c, protocol.TypeKlineQuarter) },
+		),
+		Year: NewKlineTable(
+			tableYear,
+			func(c *tdx.Client) KlineHandler { return c.GetKlineYearUntil },
+			func(c *tdx.Client) KlineHandler { return indexKlineHandler(c, protocol.TypeKlineYear) },
+		),
 	}
 )
 
+func indexKlineHandler(c *tdx.Client, kind uint8) KlineHandler {
+	return func(code string, f func(k *protocol.Kline) bool) (*protocol.KlineResp, error) {
+		return c.GetIndexUntil(kind, code, f)
+	}
+}
+
 type PullKlineConfig struct {
-	Codes   []string  //操作代码
-	Tables  []string  //数据类型
-	Dir     string    //数据位置
-	Limit   int       //协程数量
-	StartAt time.Time //数据开始时间
+	Codes      []string  //操作代码
+	IndexCodes []string  //临时覆盖的指数代码
+	AssetTypes []string  //采集对象类型
+	Tables     []string  //数据类型
+	Dir        string    //数据位置
+	Limit      int       //协程数量
+	StartAt    time.Time //数据开始时间
 }
 
 func NewPullKline(cfg PullKlineConfig) *PullKline {
@@ -107,10 +159,10 @@ func (this *PullKline) DayKlines(code string) (Klines, error) {
 func (this *PullKline) Run(ctx context.Context, m *tdx.Manage) error {
 	limit := chans.NewWaitLimit(this.Config.Limit)
 
-	//1. 获取所有股票代码
-	codes := this.Config.Codes
+	//1. 获取采集代码池
+	codes := this.resolveCodes(m)
 	if len(codes) == 0 {
-		codes = m.Codes.GetStocks()
+		return nil
 	}
 
 	for _, v := range codes {
@@ -159,7 +211,7 @@ func (this *PullKline) Run(ctx context.Context, m *tdx.Manage) error {
 				//3. 从服务器获取数据
 				insert := Klines{}
 				err = m.Do(func(c *tdx.Client) error {
-					insert, err = this.pull(code, last.Date, table.Handler(c))
+					insert, err = this.pull(code, last.Date, this.handlerForCode(table, c, code))
 					return err
 				})
 				if err != nil {
@@ -189,6 +241,57 @@ func (this *PullKline) Run(ctx context.Context, m *tdx.Manage) error {
 	}
 	limit.Wait()
 	return nil
+}
+
+func (this *PullKline) resolveCodes(m *tdx.Manage) []string {
+	if len(this.Config.Codes) > 0 {
+		return uniqueCodes(this.Config.Codes)
+	}
+
+	assetTypes := this.Config.AssetTypes
+	if len(assetTypes) == 0 {
+		assetTypes = []string{AssetStock}
+	}
+
+	merged := make([]string, 0)
+	for _, assetType := range assetTypes {
+		switch assetType {
+		case AssetStock:
+			merged = append(merged, m.Codes.GetStocks()...)
+		case AssetETF:
+			merged = append(merged, m.Codes.GetETFs()...)
+		case AssetIndex:
+			if len(this.Config.IndexCodes) > 0 {
+				merged = append(merged, this.Config.IndexCodes...)
+			} else {
+				merged = append(merged, m.Codes.GetIndexes()...)
+			}
+		}
+	}
+	return uniqueCodes(merged)
+}
+
+func (this *PullKline) handlerForCode(table *KlineTable, c *tdx.Client, code string) KlineHandler {
+	if protocol.IsIndex(code) && table.IndexHandler != nil {
+		return table.IndexHandler(c)
+	}
+	return table.Handler(c)
+}
+
+func uniqueCodes(codes []string) []string {
+	result := make([]string, 0, len(codes))
+	seen := make(map[string]struct{}, len(codes))
+	for _, code := range codes {
+		if code == "" {
+			continue
+		}
+		if _, ok := seen[code]; ok {
+			continue
+		}
+		seen[code] = struct{}{}
+		result = append(result, code)
+	}
+	return result
 }
 
 func (this *PullKline) pull(code string, lastDate int64, f func(code string, f func(k *protocol.Kline) bool) (*protocol.KlineResp, error)) (Klines, error) {
@@ -291,17 +394,19 @@ func (this Klines) Merge(n int) Klines {
 
 type KlineHandler func(code string, f func(k *protocol.Kline) bool) (*protocol.KlineResp, error)
 
-func NewKlineTable(tableName string, handler func(c *tdx.Client) KlineHandler) *KlineTable {
+func NewKlineTable(tableName string, handler, indexHandler func(c *tdx.Client) KlineHandler) *KlineTable {
 	return &KlineTable{
-		tableName: tableName,
-		Handler:   handler,
+		tableName:    tableName,
+		Handler:      handler,
+		IndexHandler: indexHandler,
 	}
 }
 
 type KlineTable struct {
-	Kline     `xorm:"extends"`
-	tableName string
-	Handler   func(c *tdx.Client) KlineHandler `xorm:"-"`
+	Kline        `xorm:"extends"`
+	tableName    string
+	Handler      func(c *tdx.Client) KlineHandler `xorm:"-"`
+	IndexHandler func(c *tdx.Client) KlineHandler `xorm:"-"`
 }
 
 func (this *KlineTable) TableName() string {

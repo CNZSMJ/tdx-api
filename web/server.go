@@ -629,11 +629,13 @@ func handleCreatePullKlineTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Codes     []string `json:"codes"`
-		Tables    []string `json:"tables"`
-		Dir       string   `json:"dir"`
-		Limit     int      `json:"limit"`
-		StartDate string   `json:"start_date"`
+		Codes      []string `json:"codes"`
+		IndexCodes []string `json:"index_codes"`
+		AssetTypes []string `json:"asset_types"`
+		Tables     []string `json:"tables"`
+		Dir        string   `json:"dir"`
+		Limit      int      `json:"limit"`
+		StartDate  string   `json:"start_date"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -658,6 +660,35 @@ func handleCreatePullKlineTask(w http.ResponseWriter, r *http.Request) {
 		tables = valid
 	}
 
+	assetTypes := req.AssetTypes
+	if len(assetTypes) > 0 {
+		valid := make([]string, 0, len(assetTypes))
+		for _, v := range assetTypes {
+			switch strings.ToLower(strings.TrimSpace(v)) {
+			case extend.AssetStock, extend.AssetETF, extend.AssetIndex:
+				valid = append(valid, strings.ToLower(strings.TrimSpace(v)))
+			}
+		}
+		if len(valid) == 0 {
+			errorResponse(w, "asset_types参数无效")
+			return
+		}
+		assetTypes = valid
+	}
+
+	indexCodes := make([]string, 0, len(req.IndexCodes))
+	for _, code := range req.IndexCodes {
+		code = strings.ToLower(strings.TrimSpace(code))
+		if code == "" {
+			continue
+		}
+		if !protocol.IsIndex(code) {
+			errorResponse(w, "index_codes 参数无效，必须使用带交易所前缀的指数代码，如 sh000001 或 sz399001")
+			return
+		}
+		indexCodes = append(indexCodes, code)
+	}
+
 	dir := req.Dir
 	if dir == "" {
 		dir = filepath.Join(tdx.DefaultDatabaseDir, "kline")
@@ -680,11 +711,13 @@ func handleCreatePullKlineTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := extend.PullKlineConfig{
-		Codes:   req.Codes,
-		Tables:  tables,
-		Dir:     dir,
-		Limit:   req.Limit,
-		StartAt: startAt,
+		Codes:      req.Codes,
+		IndexCodes: indexCodes,
+		AssetTypes: assetTypes,
+		Tables:     tables,
+		Dir:        dir,
+		Limit:      req.Limit,
+		StartAt:    startAt,
 	}
 
 	puller := extend.NewPullKline(cfg)
@@ -875,6 +908,7 @@ func main() {
 	http.HandleFunc("/api/market-count", handleGetMarketCount)
 	http.HandleFunc("/api/stock-codes", handleGetStockCodes)
 	http.HandleFunc("/api/etf-codes", handleGetETFCodes)
+	http.HandleFunc("/api/index-codes", handleGetIndexCodes)
 	http.HandleFunc("/api/server-status", handleGetServerStatus)
 	http.HandleFunc("/api/health", handleHealthCheck)
 	http.HandleFunc("/api/etf", handleGetETFList)

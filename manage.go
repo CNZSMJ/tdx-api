@@ -135,6 +135,13 @@ func (this *Manage) RangeETFs(f func(code string)) {
 	}
 }
 
+// RangeIndexes 遍历所有指数
+func (this *Manage) RangeIndexes(f func(code string)) {
+	for _, v := range this.Codes.GetIndexes() {
+		f(v)
+	}
+}
+
 // AddWorkdayTask 添加工作日任务
 func (this *Manage) AddWorkdayTask(spec string, f func(m *Manage)) {
 	this.Cron.AddFunc(spec, func() {

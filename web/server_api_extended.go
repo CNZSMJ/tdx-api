@@ -432,6 +432,47 @@ func handleGetETFCodes(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// 获取全部核心指数代码列表
+func handleGetIndexCodes(w http.ResponseWriter, r *http.Request) {
+	if tdx.DefaultCodes == nil {
+		errorResponse(w, "代码缓存未初始化")
+		return
+	}
+
+	limit := parsePositiveInt(r.URL.Query().Get("limit"))
+	prefixParam := strings.TrimSpace(r.URL.Query().Get("prefix"))
+	includePrefix := true
+	if prefixParam != "" {
+		includePrefix = strings.ToLower(prefixParam) != "false"
+	}
+
+	items := tdx.DefaultCodes.GetIndexModels()
+	if limit > 0 && len(items) > limit {
+		items = items[:limit]
+	}
+
+	codes := make([]string, 0, len(items))
+	if !includePrefix {
+		for _, item := range items {
+			code := item.FullCode()
+			if len(code) > 2 {
+				codes = append(codes, code[2:])
+			}
+		}
+	} else {
+		for _, item := range items {
+			codes = append(codes, item.FullCode())
+		}
+	}
+
+	successResponse(w, map[string]interface{}{
+		"count":  len(codes),
+		"list":   codes,
+		"items":  items,
+		"source": tdx.DefaultCodes.GetIndexSource(),
+	})
+}
+
 // 获取ETF列表
 func handleGetETFList(w http.ResponseWriter, r *http.Request) {
 	exchangeFilter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("exchange")))
