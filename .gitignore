@@ -3,3 +3,4 @@ web/data/
 *.db
 *.db-journal
 scripts/__pycache__/
+docs/ROADMAP.md
