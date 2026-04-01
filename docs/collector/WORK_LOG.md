@@ -259,3 +259,32 @@ Do not summarize test results vaguely. Record exact commands and exact outcomes.
 - Commit sha: `pending current commit`
 - Blockers: none
 - Next step: add trading-session live capture with safe replay and close reconciliation
+
+## 2026-04-02 03:20 CST
+
+- Phase: `5 - Live Capture`
+- Goal: add trading-session live capture for quote/minute/trade with replay-safe session refresh and end-of-day reconciliation
+- Files changed:
+  - `collector/live.go`
+  - `collector/live_test.go`
+  - `docs/collector/PROGRESS.md`
+  - `docs/collector/STATE.yaml`
+  - `docs/collector/DATA_CONTRACT.md`
+  - `docs/collector/WORK_LOG.md`
+- Commands run:
+  - `gofmt -w collector/*.go`
+  - `go test ./collector -run 'TestLiveCaptureStoresQuotesAndSessionData|TestLiveCaptureReplayAndReconcileAreSafe|TestOrderHistoryRefreshPublishesDBFirstAndPersistsCursor|TestOrderHistoryReplayPreservesRawDeltaValues|TestTradeRefreshPublishesDBFirstAndPersistsCursor|TestTradeRefreshIsReplaySafeAndDerivedBarsAreReproducible|TestKlineRefreshPublishesAndPersistsCursor|TestKlineRefreshIsOverlapSafeAcrossRestart|TestKlineRefreshRecordsGap|TestMetadataRefreshPublishesCodesAndWorkdays|TestMetadataRefreshIsReplaySafeAcrossRestart|TestCollectorCoreAvoidsDirectTDXCoupling|TestDocsConsistency' -v`
+  - `go test ./...`
+  - `cd web && go test ./...`
+- Results:
+  - Added live quote snapshot storage
+  - Added live minute and live trade replay-safe day replacement
+  - Added end-of-day reconciliation that reuses the same publish path
+  - Added live capture cursor persistence in `collector.db`
+  - Added tests that verify quote/session capture and reconciliation overwrite safety
+  - Verified collector targeted tests, root Go tests, and web Go tests pass
+  - Completed phase `5 - Live Capture`
+  - Advanced project state to `6 - Fundamentals`
+- Commit sha: `pending current commit`
+- Blockers: none
+- Next step: add finance and F10 periodic sync with idempotent refresh and content consistency checks

@@ -121,3 +121,11 @@ No agent may convert these unresolved semantics into hard business claims withou
 - raw `BuySellDelta` values are stored as-is; collector tests verify preservation rather than asserting a business meaning.
 - order-history replay state is persisted through `collector_cursor` records with:
   - `domain = order_history, asset_type = <asset>, instrument = <code>`
+
+## Implemented Live-Capture Publish Rules
+
+- live quote snapshots are append-only by capture timestamp.
+- live minute and live trade rows are replay-safe by replacing one whole live trading day at a time inside a transaction.
+- end-of-day reconciliation reuses the same replay-safe publish path instead of mutating rows in place.
+- live replay state is persisted through `collector_cursor` records with:
+  - `domain = live_capture, asset_type = <asset>, instrument = <code>`

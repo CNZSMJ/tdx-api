@@ -2,10 +2,10 @@
 
 ## Current Snapshot
 
-- Current phase: `5 - Live Capture`
+- Current phase: `6 - Fundamentals`
 - Phase status: `in_progress`
-- Current task: `Add trading-session live capture for quote/minute/trade with session-safe replay and end-of-day reconciliation.`
-- Next phase after current completion: `6 - Fundamentals`
+- Current task: `Add finance and F10 periodic sync with idempotent refresh, content persistence, and unresolved-field-safe contracts.`
+- Next phase after current completion: `7 - Final Acceptance`
 
 ## Phase Status Board
 
@@ -17,8 +17,8 @@
 | 2 | Historical Kline | done |
 | 3 | Historical Trade | done |
 | 4 | Order History | done |
-| 5 | Live Capture | in_progress |
-| 6 | Fundamentals | pending |
+| 5 | Live Capture | done |
+| 6 | Fundamentals | in_progress |
 | 7 | Final Acceptance | pending |
 
 ## Recently Completed
@@ -80,21 +80,31 @@
   - first DB publish correctness
   - replay-safe day replacement
   - unresolved field preservation for `BuySellDelta`
+- Added collector-owned live capture flow with:
+  - quote snapshot append
+  - minute live day replacement
+  - trade live day replacement
+  - end-of-day reconciliation entrypoint
+  - live cursor persistence in `collector.db`
+- Added live capture tests covering:
+  - quote/session publish correctness
+  - replay-safe day replacement
+  - reconciliation overwrite safety
 
 ## Current Phase Checklist
 
-- [ ] Define live quote/minute/trade storage contract
-- [ ] Add trading-session staging/publish flow for live capture
-- [ ] Add session restart recovery and end-of-day reconciliation rules
-- [ ] Add live capture tests for replay and reconciliation
-- [ ] Update contracts and logs for phase 5 outputs
+- [ ] Define finance/F10 storage contract
+- [ ] Add idempotent finance refresh by update marker
+- [ ] Add F10 directory/content persistence and replay-safe sync
+- [ ] Add fundamentals tests for duplicate prevention and content consistency
+- [ ] Update contracts and logs for phase 6 outputs
 
 ## Current Phase Rules
 
 - Keep provider access behind collector interfaces introduced in phase `0b`.
-- Live capture must not overwrite published historical data.
-- Restart during a session must not create duplicate live rows.
-- End-of-day reconciliation must be validation-led before publish.
+- Finance refresh must remain idempotent by update marker or equivalent replay-safe key.
+- F10 content sync must preserve raw text and prevent duplicate content rows.
+- Unresolved semantics must remain explicitly unresolved in fundamentals contracts too.
 
 ## Current Blockers
 
@@ -102,7 +112,7 @@
 
 ## Next Single Task
 
-Implement trading-session live capture for quote/minute/trade with safe replay and close reconciliation, without violating the existing historical publish contracts.
+Implement finance and F10 periodic sync with idempotent refresh and content consistency checks, without weakening the anti-fabrication rules around unresolved semantics.
 
 ## Completed Phase 0a Exit Evidence
 
@@ -152,9 +162,17 @@ Implement trading-session live capture for quote/minute/trade with safe replay a
 - order-history validation and replay tests pass
 - `go test ./collector -run 'TestOrderHistoryRefreshPublishesDBFirstAndPersistsCursor|TestOrderHistoryReplayPreservesRawDeltaValues|TestTradeRefreshPublishesDBFirstAndPersistsCursor|TestTradeRefreshIsReplaySafeAndDerivedBarsAreReproducible|TestKlineRefreshPublishesAndPersistsCursor|TestKlineRefreshIsOverlapSafeAcrossRestart|TestKlineRefreshRecordsGap|TestMetadataRefreshPublishesCodesAndWorkdays|TestMetadataRefreshIsReplaySafeAcrossRestart|TestCollectorCoreAvoidsDirectTDXCoupling|TestDocsConsistency' -v` passes
 
-## Exit Criteria For Phase 5
+## Completed Phase 5 Exit Evidence
 
 - live quote/minute/trade data lands in DB-first storage
 - session restart is replay-safe
 - end-of-day reconciliation does not corrupt historical data
 - live capture validation and replay tests pass
+- `go test ./collector -run 'TestLiveCaptureStoresQuotesAndSessionData|TestLiveCaptureReplayAndReconcileAreSafe|TestOrderHistoryRefreshPublishesDBFirstAndPersistsCursor|TestOrderHistoryReplayPreservesRawDeltaValues|TestTradeRefreshPublishesDBFirstAndPersistsCursor|TestTradeRefreshIsReplaySafeAndDerivedBarsAreReproducible|TestKlineRefreshPublishesAndPersistsCursor|TestKlineRefreshIsOverlapSafeAcrossRestart|TestKlineRefreshRecordsGap|TestMetadataRefreshPublishesCodesAndWorkdays|TestMetadataRefreshIsReplaySafeAcrossRestart|TestCollectorCoreAvoidsDirectTDXCoupling|TestDocsConsistency' -v` passes
+
+## Exit Criteria For Phase 6
+
+- finance data lands in DB-first storage with idempotent refresh
+- F10 directory/content lands in DB-first storage with replay-safe sync
+- duplicate finance/F10 refresh is safe
+- fundamentals validation and replay tests pass

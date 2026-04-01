@@ -2,17 +2,17 @@ project: tdx-api-collector
 goal: full automated safe collector
 
 current_phase:
-  id: phase_5
-  name: Live Capture
+  id: phase_6
+  name: Fundamentals
   status: in_progress
 
 next_phase:
-  id: phase_6
-  name: Fundamentals
+  id: phase_7
+  name: Final Acceptance
 
 current_task:
-  id: phase_5_task_1
-  summary: Add trading-session live capture for quote/minute/trade with session-safe replay and end-of-day reconciliation.
+  id: phase_6_task_1
+  summary: Add finance and F10 periodic sync with idempotent refresh, content persistence, and unresolved-field-safe contracts.
 
 required_read_order:
   - docs/collector/START_HERE.md
@@ -27,17 +27,17 @@ allowed_to_commit: true
 allowed_to_advance: false
 
 phase_exit_criteria:
-  - live_storage_ready
-  - live_session_replay_ready
-  - end_of_day_reconciliation_ready
-  - live_validation_checks_green
+  - finance_storage_ready
+  - f10_storage_ready
+  - fundamentals_replay_safe
+  - fundamentals_validation_checks_green
 
 last_verified_commit: null
-last_verified_at: "2026-04-02 03:16:57 CST"
+last_verified_at: "2026-04-02 03:20:18 CST"
 last_test_suite:
   - go test ./...
   - cd web && go test ./...
-  - go test ./collector -run 'TestOrderHistoryRefreshPublishesDBFirstAndPersistsCursor|TestOrderHistoryReplayPreservesRawDeltaValues|TestTradeRefreshPublishesDBFirstAndPersistsCursor|TestTradeRefreshIsReplaySafeAndDerivedBarsAreReproducible|TestKlineRefreshPublishesAndPersistsCursor|TestKlineRefreshIsOverlapSafeAcrossRestart|TestKlineRefreshRecordsGap|TestMetadataRefreshPublishesCodesAndWorkdays|TestMetadataRefreshIsReplaySafeAcrossRestart|TestCollectorCoreAvoidsDirectTDXCoupling|TestDocsConsistency' -v
+  - go test ./collector -run 'TestLiveCaptureStoresQuotesAndSessionData|TestLiveCaptureReplayAndReconcileAreSafe|TestOrderHistoryRefreshPublishesDBFirstAndPersistsCursor|TestOrderHistoryReplayPreservesRawDeltaValues|TestTradeRefreshPublishesDBFirstAndPersistsCursor|TestTradeRefreshIsReplaySafeAndDerivedBarsAreReproducible|TestKlineRefreshPublishesAndPersistsCursor|TestKlineRefreshIsOverlapSafeAcrossRestart|TestKlineRefreshRecordsGap|TestMetadataRefreshPublishesCodesAndWorkdays|TestMetadataRefreshIsReplaySafeAcrossRestart|TestCollectorCoreAvoidsDirectTDXCoupling|TestDocsConsistency' -v
 
 blocking_issues: []
 
