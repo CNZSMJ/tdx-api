@@ -879,6 +879,7 @@ func main() {
 	http.HandleFunc("/api/health", handleHealthCheck)
 	http.HandleFunc("/api/etf", handleGetETFList)
 	http.HandleFunc("/api/trade-history", handleGetTradeHistory)
+	http.HandleFunc("/api/order-history", handleGetOrderHistory)
 	http.HandleFunc("/api/trade-history/full", handleGetTradeHistoryFull)
 	http.HandleFunc("/api/minute-trade-all", handleGetMinuteTradeAll)
 	http.HandleFunc("/api/kline-all", handleGetKlineAllTDX)

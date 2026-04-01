@@ -528,6 +528,41 @@ func handleGetTradeHistory(w http.ResponseWriter, r *http.Request) {
 	successResponse(w, resp)
 }
 
+// 获取历史委托分布
+func handleGetOrderHistory(w http.ResponseWriter, r *http.Request) {
+	code := strings.TrimSpace(r.URL.Query().Get("code"))
+	dateValue := strings.TrimSpace(r.URL.Query().Get("date"))
+
+	if code == "" || dateValue == "" {
+		errorResponse(w, "code 与 date 均为必填参数")
+		return
+	}
+
+	date, err := parseWorkdayDate(dateValue)
+	if err != nil {
+		errorResponse(w, "date 参数格式错误，应为 YYYYMMDD 或 YYYY-MM-DD")
+		return
+	}
+
+	resp, err := client.GetHistoryOrders(date.Format("20060102"), code)
+	if err != nil {
+		errorResponse(w, fmt.Sprintf("获取历史委托失败: %v", err))
+		return
+	}
+
+	successResponse(w, struct {
+		Date     string                   `json:"date"`
+		Count    uint16                   `json:"Count"`
+		PreClose protocol.Price           `json:"PreClose"`
+		List     []*protocol.HistoryOrder `json:"List"`
+	}{
+		Date:     date.Format("20060102"),
+		Count:    resp.Count,
+		PreClose: resp.PreClose,
+		List:     resp.List,
+	})
+}
+
 // 获取全天分时成交
 func handleGetMinuteTradeAll(w http.ResponseWriter, r *http.Request) {
 	code := strings.TrimSpace(r.URL.Query().Get("code"))

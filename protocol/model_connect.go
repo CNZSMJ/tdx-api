@@ -15,6 +15,7 @@ var (
 	MCompanyInfoContent  = companyInfoContent{}
 	MMinute              = minute{}
 	MHistoryMinute       = historyMinute{}
+	MHistoryOrders       = historyOrders{}
 	MTrade               = trade{}
 	MHistoryTrade        = historyTrade{}
 	MKline               = kline{}

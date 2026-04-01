@@ -165,7 +165,12 @@ func (this *Client) handlerDealMessage(c *client.Client, msg ios.Acker) {
 		resp, err = protocol.MMinute.Decode(f.Data)
 
 	case protocol.TypeHistoryMinute:
-		resp, err = protocol.MHistoryMinute.Decode(f.Data)
+		switch val.(type) {
+		case protocol.HistoryOrdersCache:
+			resp, err = protocol.MHistoryOrders.Decode(f.Data)
+		default:
+			resp, err = protocol.MHistoryMinute.Decode(f.Data)
+		}
 
 	case protocol.TypeMinuteTrade:
 		resp, err = protocol.MTrade.Decode(f.Data, val.(protocol.TradeCache))
@@ -426,6 +431,20 @@ func (this *Client) GetHistoryMinute(date, code string) (*protocol.MinuteResp, e
 		return nil, err
 	}
 	return result.(*protocol.MinuteResp), nil
+}
+
+// GetHistoryOrders 获取历史委托分布
+func (this *Client) GetHistoryOrders(date, code string) (*protocol.HistoryOrdersResp, error) {
+	code = protocol.AddPrefix(code)
+	f, err := protocol.MHistoryOrders.Frame(date, code)
+	if err != nil {
+		return nil, err
+	}
+	result, err := this.SendFrame(f, protocol.HistoryOrdersCache{})
+	if err != nil {
+		return nil, err
+	}
+	return result.(*protocol.HistoryOrdersResp), nil
 }
 
 func (this *Client) GetTrade(code string, start, count uint16) (*protocol.TradeResp, error) {
