@@ -2,10 +2,10 @@
 
 ## Current Snapshot
 
-- Current phase: `6 - Fundamentals`
+- Current phase: `7 - Final Acceptance`
 - Phase status: `in_progress`
-- Current task: `Add finance and F10 periodic sync with idempotent refresh, content persistence, and unresolved-field-safe contracts.`
-- Next phase after current completion: `7 - Final Acceptance`
+- Current task: `Run end-to-end acceptance, verify restart catch-up coverage, and publish the final acceptance report.`
+- Next phase after current completion: `Completed`
 
 ## Phase Status Board
 
@@ -18,8 +18,8 @@
 | 3 | Historical Trade | done |
 | 4 | Order History | done |
 | 5 | Live Capture | done |
-| 6 | Fundamentals | in_progress |
-| 7 | Final Acceptance | pending |
+| 6 | Fundamentals | done |
+| 7 | Final Acceptance | in_progress |
 
 ## Recently Completed
 
@@ -90,21 +90,29 @@
   - quote/session publish correctness
   - replay-safe day replacement
   - reconciliation overwrite safety
+- Added collector-owned fundamentals sync with:
+  - finance DB-first persistence by `updated_date`
+  - F10 directory/content DB-first persistence
+  - content-hash storage for F10正文
+  - finance/F10 cursor persistence in `collector.db`
+- Added fundamentals tests covering:
+  - finance replay-safe refresh
+  - F10 replay-safe directory/content sync
+  - hashed F10 content persistence
 
 ## Current Phase Checklist
 
-- [ ] Define finance/F10 storage contract
-- [ ] Add idempotent finance refresh by update marker
-- [ ] Add F10 directory/content persistence and replay-safe sync
-- [ ] Add fundamentals tests for duplicate prevention and content consistency
-- [ ] Update contracts and logs for phase 6 outputs
+- [ ] Add end-to-end acceptance test coverage
+- [ ] Verify long-downtime/restart catch-up behavior across collector domains
+- [ ] Publish final acceptance report
+- [ ] Update final progress, state, and work log
 
 ## Current Phase Rules
 
 - Keep provider access behind collector interfaces introduced in phase `0b`.
-- Finance refresh must remain idempotent by update marker or equivalent replay-safe key.
-- F10 content sync must preserve raw text and prevent duplicate content rows.
-- Unresolved semantics must remain explicitly unresolved in fundamentals contracts too.
+- Final acceptance must not overstate unresolved semantics as solved.
+- Final acceptance must rely on exact test evidence, not narrative-only confidence.
+- Collector completion cannot be claimed until the acceptance report is written and the full blocking suite passes.
 
 ## Current Blockers
 
@@ -112,7 +120,7 @@
 
 ## Next Single Task
 
-Implement finance and F10 periodic sync with idempotent refresh and content consistency checks, without weakening the anti-fabrication rules around unresolved semantics.
+Run end-to-end acceptance, verify restart/catch-up behavior across all implemented collector domains, and write the final acceptance report.
 
 ## Completed Phase 0a Exit Evidence
 
@@ -170,9 +178,17 @@ Implement finance and F10 periodic sync with idempotent refresh and content cons
 - live capture validation and replay tests pass
 - `go test ./collector -run 'TestLiveCaptureStoresQuotesAndSessionData|TestLiveCaptureReplayAndReconcileAreSafe|TestOrderHistoryRefreshPublishesDBFirstAndPersistsCursor|TestOrderHistoryReplayPreservesRawDeltaValues|TestTradeRefreshPublishesDBFirstAndPersistsCursor|TestTradeRefreshIsReplaySafeAndDerivedBarsAreReproducible|TestKlineRefreshPublishesAndPersistsCursor|TestKlineRefreshIsOverlapSafeAcrossRestart|TestKlineRefreshRecordsGap|TestMetadataRefreshPublishesCodesAndWorkdays|TestMetadataRefreshIsReplaySafeAcrossRestart|TestCollectorCoreAvoidsDirectTDXCoupling|TestDocsConsistency' -v` passes
 
-## Exit Criteria For Phase 6
+## Completed Phase 6 Exit Evidence
 
 - finance data lands in DB-first storage with idempotent refresh
 - F10 directory/content lands in DB-first storage with replay-safe sync
 - duplicate finance/F10 refresh is safe
 - fundamentals validation and replay tests pass
+- `go test ./collector -run 'TestFundamentalsRefreshFinanceAndF10AreReplaySafe|TestLiveCaptureStoresQuotesAndSessionData|TestLiveCaptureReplayAndReconcileAreSafe|TestOrderHistoryRefreshPublishesDBFirstAndPersistsCursor|TestOrderHistoryReplayPreservesRawDeltaValues|TestTradeRefreshPublishesDBFirstAndPersistsCursor|TestTradeRefreshIsReplaySafeAndDerivedBarsAreReproducible|TestKlineRefreshPublishesAndPersistsCursor|TestKlineRefreshIsOverlapSafeAcrossRestart|TestKlineRefreshRecordsGap|TestMetadataRefreshPublishesCodesAndWorkdays|TestMetadataRefreshIsReplaySafeAcrossRestart|TestCollectorCoreAvoidsDirectTDXCoupling|TestDocsConsistency' -v` passes
+
+## Exit Criteria For Phase 7
+
+- end-to-end acceptance coverage is present
+- restart/catch-up behavior is verified across implemented domains
+- final acceptance report exists and matches the executed evidence
+- final blocking suite passes

@@ -288,3 +288,31 @@ Do not summarize test results vaguely. Record exact commands and exact outcomes.
 - Commit sha: `pending current commit`
 - Blockers: none
 - Next step: add finance and F10 periodic sync with idempotent refresh and content consistency checks
+
+## 2026-04-02 03:24 CST
+
+- Phase: `6 - Fundamentals`
+- Goal: add finance and F10 periodic sync with idempotent refresh and content consistency checks
+- Files changed:
+  - `collector/fundamentals.go`
+  - `collector/fundamentals_test.go`
+  - `docs/collector/PROGRESS.md`
+  - `docs/collector/STATE.yaml`
+  - `docs/collector/DATA_CONTRACT.md`
+  - `docs/collector/WORK_LOG.md`
+- Commands run:
+  - `gofmt -w collector/*.go`
+  - `go test ./collector -run 'TestFundamentalsRefreshFinanceAndF10AreReplaySafe|TestLiveCaptureStoresQuotesAndSessionData|TestLiveCaptureReplayAndReconcileAreSafe|TestOrderHistoryRefreshPublishesDBFirstAndPersistsCursor|TestOrderHistoryReplayPreservesRawDeltaValues|TestTradeRefreshPublishesDBFirstAndPersistsCursor|TestTradeRefreshIsReplaySafeAndDerivedBarsAreReproducible|TestKlineRefreshPublishesAndPersistsCursor|TestKlineRefreshIsOverlapSafeAcrossRestart|TestKlineRefreshRecordsGap|TestMetadataRefreshPublishesCodesAndWorkdays|TestMetadataRefreshIsReplaySafeAcrossRestart|TestCollectorCoreAvoidsDirectTDXCoupling|TestDocsConsistency' -v`
+  - `go test ./...`
+  - `cd web && go test ./...`
+- Results:
+  - Added DB-first finance refresh keyed by `updated_date`
+  - Added DB-first F10 directory/content sync with content hashes
+  - Added finance/F10 cursor persistence in `collector.db`
+  - Added tests that verify replay-safe finance refresh and replay-safe F10 sync
+  - Verified collector targeted tests, root Go tests, and web Go tests pass
+  - Completed phase `6 - Fundamentals`
+  - Advanced project state to `7 - Final Acceptance`
+- Commit sha: `pending current commit`
+- Blockers: none
+- Next step: run end-to-end acceptance and publish the final acceptance report

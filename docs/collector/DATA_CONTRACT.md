@@ -129,3 +129,12 @@ No agent may convert these unresolved semantics into hard business claims withou
 - end-of-day reconciliation reuses the same replay-safe publish path instead of mutating rows in place.
 - live replay state is persisted through `collector_cursor` records with:
   - `domain = live_capture, asset_type = <asset>, instrument = <code>`
+
+## Implemented Fundamentals Publish Rules
+
+- finance now publishes into DB-first storage keyed by code and `updated_date`.
+- F10 category/content sync now publishes into DB-first storage keyed by code plus directory/content coordinates.
+- F10 content is stored together with a content hash for duplicate-safe replay validation.
+- fundamentals replay state is persisted through `collector_cursor` records with:
+  - `domain = finance, asset_type = metadata, instrument = <code>`
+  - `domain = f10, asset_type = metadata, instrument = <code>`
