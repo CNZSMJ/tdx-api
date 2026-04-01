@@ -184,11 +184,13 @@ type F10Content struct {
 type InstrumentQuery struct {
 	AssetTypes []AssetType
 	Limit      int
+	Refresh    bool
 }
 
 type TradingDayQuery struct {
-	Start time.Time
-	End   time.Time
+	Start   time.Time
+	End     time.Time
+	Refresh bool
 }
 
 type KlineQuery struct {

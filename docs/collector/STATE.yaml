@@ -2,17 +2,17 @@ project: tdx-api-collector
 goal: full automated safe collector
 
 current_phase:
-  id: phase_1
-  name: Metadata
+  id: phase_2
+  name: Historical Kline
   status: in_progress
 
 next_phase:
-  id: phase_2
-  name: Historical Kline
+  id: phase_3
+  name: Historical Trade
 
 current_task:
-  id: phase_1_task_1
-  summary: Make codes/workday refresh fully stateful, restart-safe, and safe to rerun without publishing duplicates.
+  id: phase_2_task_1
+  summary: Build the kline staging/publish flow with cursor persistence, gap-safe replay, and overlap-safe validation.
 
 required_read_order:
   - docs/collector/START_HERE.md
@@ -27,17 +27,17 @@ allowed_to_commit: true
 allowed_to_advance: false
 
 phase_exit_criteria:
-  - metadata_publish_flow_ready
-  - metadata_state_persistence_ready
-  - metadata_restart_replay_safe
-  - metadata_validation_checks_green
+  - kline_publish_flow_ready
+  - kline_cursor_persistence_ready
+  - kline_overlap_replay_safe
+  - kline_validation_checks_green
 
 last_verified_commit: null
-last_verified_at: "2026-04-02 02:57:18 CST"
+last_verified_at: "2026-04-02 03:03:23 CST"
 last_test_suite:
   - go test ./...
   - cd web && go test ./...
-  - go test ./collector -run 'TestCollectorCoreAvoidsDirectTDXCoupling|TestTDXProviderCompileContract|TestDocsConsistency' -v
+  - go test ./collector -run 'TestMetadataRefreshPublishesCodesAndWorkdays|TestMetadataRefreshIsReplaySafeAcrossRestart|TestCollectorCoreAvoidsDirectTDXCoupling|TestDocsConsistency' -v
 
 blocking_issues: []
 

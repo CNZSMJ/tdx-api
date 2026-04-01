@@ -136,3 +136,36 @@ Do not summarize test results vaguely. Record exact commands and exact outcomes.
 - Commit sha: `pending current commit`
 - Blockers: none
 - Next step: implement safe metadata refresh scaffolding for `codes` and `workday` with replay-safe publish rules
+
+## 2026-04-02 03:03 CST
+
+- Phase: `1 - Metadata`
+- Goal: make `codes` and `workday` refresh stateful, restart-safe, and safe to replay without duplicate published rows
+- Files changed:
+  - `collector/domain.go`
+  - `collector/provider_tdx.go`
+  - `collector/store.go`
+  - `collector/metadata_models.go`
+  - `collector/metadata.go`
+  - `collector/metadata_test.go`
+  - `docs/collector/PROGRESS.md`
+  - `docs/collector/STATE.yaml`
+  - `docs/collector/DATA_CONTRACT.md`
+  - `docs/collector/WORK_LOG.md`
+- Commands run:
+  - `gofmt -w collector/*.go`
+  - `go test ./collector -run 'TestMetadataRefreshPublishesCodesAndWorkdays|TestMetadataRefreshIsReplaySafeAcrossRestart|TestCollectorCoreAvoidsDirectTDXCoupling|TestDocsConsistency' -v`
+  - `go test ./...`
+  - `cd web && go test ./...`
+- Results:
+  - Added collector-owned metadata staging/publish flow for `codes.db` and `workday.db`
+  - Added metadata cursor persistence through `collector.db`
+  - Added replay-safe validation logging for metadata publishes
+  - Added tests that verify first publish correctness and replay after restart without duplicate published rows
+  - Kept provider access behind the collector adapter boundary introduced in phase `0b`
+  - Verified collector targeted tests, root Go tests, and web Go tests pass
+  - Completed phase `1 - Metadata`
+  - Advanced project state to `2 - Historical Kline`
+- Commit sha: `pending current commit`
+- Blockers: none
+- Next step: build kline staging/publish flow with cursor persistence and overlap-safe replay checks

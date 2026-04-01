@@ -2,10 +2,10 @@
 
 ## Current Snapshot
 
-- Current phase: `1 - Metadata`
+- Current phase: `2 - Historical Kline`
 - Phase status: `in_progress`
-- Current task: `Make codes/workday refresh fully stateful, restart-safe, and safe to rerun without publishing duplicates.`
-- Next phase after current completion: `2 - Historical Kline`
+- Current task: `Build the kline staging/publish flow with cursor persistence, gap-safe replay, and overlap-safe validation.`
+- Next phase after current completion: `3 - Historical Trade`
 
 ## Phase Status Board
 
@@ -13,8 +13,8 @@
 |---|---|---|
 | 0a | Control Plane | done |
 | 0b | Provider Decoupling | done |
-| 1 | Metadata | in_progress |
-| 2 | Historical Kline | pending |
+| 1 | Metadata | done |
+| 2 | Historical Kline | in_progress |
 | 3 | Historical Trade | pending |
 | 4 | Order History | pending |
 | 5 | Live Capture | pending |
@@ -48,20 +48,24 @@
 - Added collector provider interfaces for all planned domains
 - Added the first `tdx-api` provider adapter at `collector/provider_tdx.go`
 - Added an anti-coupling test to block new non-adapter imports of `github.com/injoyai/tdx` and `protocol.*`
+- Added collector-owned metadata staging/publish flow for `codes.db` and `workday.db`
+- Added metadata cursor persistence in `collector.db`
+- Added replay-safe metadata validation logs
+- Added metadata tests that prove publish correctness and restart-safe replay
 
 ## Current Phase Checklist
 
-- [ ] Design metadata publish flow for `codes` and `workday`
-- [ ] Add metadata state persistence to `collector.db`
-- [ ] Add safe rerun protection and duplicate-prevention checks
-- [ ] Add startup recovery path for metadata refresh
-- [ ] Update contracts and logs for phase 1 outputs
+- [ ] Define kline staging schema and publish contract
+- [ ] Add kline cursor persistence and overlap-safe replay rules
+- [ ] Add gap detection for kline periods
+- [ ] Add restart-safe kline publish tests
+- [ ] Update contracts and logs for phase 2 outputs
 
 ## Current Phase Rules
 
 - Keep provider access behind collector interfaces introduced in phase `0b`.
-- Do not publish metadata updates directly over existing state without validation.
-- Any metadata refresh must be safe to replay after restart without creating duplicate published rows.
+- Do not write kline rows directly into published tables without staging validation.
+- Any overlap replay must prove that rerunning an already-published window does not corrupt published bars.
 
 ## Current Blockers
 
@@ -69,7 +73,7 @@
 
 ## Next Single Task
 
-Implement safe metadata refresh scaffolding for `codes` and `workday`, backed by `collector.db` state and replay-safe publish rules, without breaking current query behavior.
+Implement the first safe kline staging/publish pipeline with cursor persistence and overlap-safe replay tests, without changing existing query routes yet.
 
 ## Completed Phase 0a Exit Evidence
 
@@ -93,3 +97,11 @@ Implement safe metadata refresh scaffolding for `codes` and `workday`, backed by
 - workday refresh has stateful publish protection
 - metadata replay after restart does not duplicate published rows
 - metadata validation and persistence tests pass
+- `go test ./collector -run 'TestMetadataRefreshPublishesCodesAndWorkdays|TestMetadataRefreshIsReplaySafeAcrossRestart|TestCollectorCoreAvoidsDirectTDXCoupling|TestDocsConsistency' -v` passes
+
+## Exit Criteria For Phase 2
+
+- kline write path uses staging and publish flow
+- kline cursor persistence survives restart
+- overlap replay does not duplicate or corrupt bars
+- kline validation and replay tests pass

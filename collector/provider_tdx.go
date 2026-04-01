@@ -27,8 +27,11 @@ func NewTDXProvider(manage *tdx.Manage, client *tdx.Client) *TDXProvider {
 
 func (p *TDXProvider) Instruments(ctx context.Context, query InstrumentQuery) ([]Instrument, error) {
 	_ = ctx
+	if query.Refresh {
+		return p.refreshInstruments()
+	}
 	if p.manage == nil || p.manage.Codes == nil {
-		return nil, errors.New("tdx provider requires manage.Codes for instruments")
+		return nil, errors.New("tdx provider requires manage.Codes for cached instruments")
 	}
 
 	filters := make(map[AssetType]bool)
@@ -82,8 +85,12 @@ func (p *TDXProvider) Instruments(ctx context.Context, query InstrumentQuery) ([
 
 func (p *TDXProvider) TradingDays(ctx context.Context, query TradingDayQuery) ([]TradingDay, error) {
 	_ = ctx
+	if query.Refresh {
+		return p.refreshTradingDays(ctx, query)
+	}
+
 	if p.manage == nil || p.manage.Workday == nil {
-		return nil, errors.New("tdx provider requires manage.Workday for trading days")
+		return nil, errors.New("tdx provider requires manage.Workday for cached trading days")
 	}
 	if query.Start.IsZero() || query.End.IsZero() {
 		return nil, errors.New("trading day query requires start and end")
@@ -91,7 +98,6 @@ func (p *TDXProvider) TradingDays(ctx context.Context, query TradingDayQuery) ([
 	if !query.Start.Before(query.End) {
 		return nil, errors.New("trading day query requires start before end")
 	}
-
 	items := make([]TradingDay, 0, 256)
 	p.manage.Workday.Range(query.Start, query.End, func(t time.Time) bool {
 		items = append(items, TradingDay{
@@ -480,4 +486,86 @@ func fetchKlineWithLimit(limit int, allFn func(code string) (*protocol.KlineResp
 		return resp.List[i].Time.Before(resp.List[j].Time)
 	})
 	return resp, nil
+}
+
+func (p *TDXProvider) refreshInstruments() ([]Instrument, error) {
+	items := make([]Instrument, 0, 8192)
+	seen := make(map[string]struct{}, 8192)
+	for _, exchange := range []protocol.Exchange{protocol.ExchangeSH, protocol.ExchangeSZ, protocol.ExchangeBJ} {
+		var resp *protocol.CodeResp
+		if err := p.withClient(context.Background(), func(client *tdx.Client) error {
+			var err error
+			resp, err = client.GetCodeAll(exchange)
+			return err
+		}); err != nil {
+			return nil, err
+		}
+		for _, model := range resp.List {
+			code := exchange.String() + model.Code
+			if _, ok := seen[code]; ok {
+				continue
+			}
+			seen[code] = struct{}{}
+			items = append(items, Instrument{
+				Code:      code,
+				Name:      model.Name,
+				Exchange:  exchange.String(),
+				AssetType: detectAssetType(code),
+				Multiple:  model.Multiple,
+				Decimal:   model.Decimal,
+				LastPrice: PriceMilli(model.LastPrice * 1000),
+				Source:    "tdx",
+			})
+		}
+	}
+
+	if p.manage != nil && p.manage.Codes != nil {
+		for _, model := range p.manage.Codes.GetIndexModels() {
+			code := model.FullCode()
+			if _, ok := seen[code]; ok {
+				continue
+			}
+			seen[code] = struct{}{}
+			items = append(items, Instrument{
+				Code:      code,
+				Name:      model.Name,
+				Exchange:  model.Exchange,
+				AssetType: AssetTypeIndex,
+				Multiple:  model.Multiple,
+				Decimal:   model.Decimal,
+				LastPrice: PriceMilli(model.LastPrice * 1000),
+				Source:    p.manage.Codes.GetIndexSource(),
+			})
+		}
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].Code < items[j].Code
+	})
+	return items, nil
+}
+
+func (p *TDXProvider) refreshTradingDays(ctx context.Context, query TradingDayQuery) ([]TradingDay, error) {
+	var resp *protocol.KlineResp
+	if err := p.withClient(ctx, func(client *tdx.Client) error {
+		var err error
+		resp, err = client.GetIndexDayAll("sh000001")
+		return err
+	}); err != nil {
+		return nil, err
+	}
+
+	items := make([]TradingDay, 0, len(resp.List))
+	for _, bar := range resp.List {
+		if !query.Start.IsZero() && bar.Time.Before(query.Start) {
+			continue
+		}
+		if !query.End.IsZero() && !bar.Time.Before(query.End) {
+			continue
+		}
+		items = append(items, TradingDay{
+			Date: bar.Time.Format("20060102"),
+			Time: bar.Time,
+		})
+	}
+	return items, nil
 }

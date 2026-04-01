@@ -89,3 +89,11 @@ No agent may convert these unresolved semantics into hard business claims withou
 | finance | yes | no |
 | f10_category | yes | no |
 | f10_content | yes | yes |
+
+## Implemented Metadata Publish Rules
+
+- `codes` and `workday` now publish through collector-owned staging tables before replacing published rows.
+- replay safety is proven by collector tests that rerun metadata refresh after reopening the same `collector.db`, `codes.db`, and `workday.db`.
+- metadata publish state is persisted through `collector_cursor` records with:
+  - `domain = codes, asset_type = metadata, instrument = all`
+  - `domain = workday, asset_type = metadata, instrument = all`

@@ -115,3 +115,29 @@ func (s *Store) AddOperationLog(record *OperationLogRecord) error {
 	_, err := s.engine.Insert(record)
 	return err
 }
+
+func (s *Store) GetCollectCursor(domain, assetType, instrument, period string) (*CollectCursorRecord, error) {
+	record := new(CollectCursorRecord)
+	has, err := s.engine.Where("Domain = ? AND AssetType = ? AND Instrument = ? AND Period = ?", domain, assetType, instrument, period).Get(record)
+	if err != nil {
+		return nil, err
+	}
+	if !has {
+		return nil, nil
+	}
+	return record, nil
+}
+
+func (s *Store) UpsertCollectCursor(record *CollectCursorRecord) error {
+	record.UpdatedAt = time.Now()
+	has, err := s.engine.Where("Domain = ? AND AssetType = ? AND Instrument = ? AND Period = ?", record.Domain, record.AssetType, record.Instrument, record.Period).Exist(new(CollectCursorRecord))
+	if err != nil {
+		return err
+	}
+	if has {
+		_, err = s.engine.Where("Domain = ? AND AssetType = ? AND Instrument = ? AND Period = ?", record.Domain, record.AssetType, record.Instrument, record.Period).AllCols().Update(record)
+		return err
+	}
+	_, err = s.engine.Insert(record)
+	return err
+}
