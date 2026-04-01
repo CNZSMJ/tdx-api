@@ -2,17 +2,17 @@
 
 ## Current Snapshot
 
-- Current phase: `0a - Control Plane`
+- Current phase: `0b - Provider Decoupling`
 - Phase status: `in_progress`
-- Current task: `Implement the collector control plane foundation without changing existing business ingestion behavior.`
-- Next phase after current completion: `0b - Provider Decoupling`
+- Current task: `Define collector provider interfaces, collector-owned domain models, and the first tdx provider adapter boundary.`
+- Next phase after current completion: `1 - Metadata`
 
 ## Phase Status Board
 
 | Phase | Name | Status |
 |---|---|---|
-| 0a | Control Plane | in_progress |
-| 0b | Provider Decoupling | pending |
+| 0a | Control Plane | done |
+| 0b | Provider Decoupling | in_progress |
 | 1 | Metadata | pending |
 | 2 | Historical Kline | pending |
 | 3 | Historical Trade | pending |
@@ -23,25 +23,31 @@
 
 ## Completed In Current Phase
 
+- Phase `0a` is complete
 - Created the collector control documents under `docs/collector/`
 - Defined the phase model, anti-drift rules, and documentation entrypoint
 - Defined the final collector domains and storage targets
 - Defined provider decoupling as a prerequisite before collector implementation phases
+- Added the `collector` control package with:
+  - `collector.db` schema scaffolding
+  - machine-readable state file loading and saving
+  - validation gate scaffolding
+  - operation-log persistence helpers
+  - control-document consistency tests
 
 ## Current Phase Checklist
 
-- [x] Create the collector document set
-- [ ] Design the `collector.db` schema and migration strategy
-- [ ] Implement machine-readable phase state handling
-- [ ] Implement validation gate scaffolding
-- [ ] Implement operation-log writing rules or helpers
-- [ ] Add blocking tests for control-plane consistency
+- [ ] Define provider interfaces for planned collector domains
+- [ ] Define collector-owned domain models for provider-facing flows
+- [ ] Add the first `tdx-api` provider adapter skeleton
+- [ ] Add anti-coupling tests or static checks
+- [ ] Update contracts and logs for phase 0b outputs
 
 ## Current Phase Rules
 
-- Do not change ingestion business logic beyond what is required to support the control plane.
-- Do not start metadata automation until phase 0 exit criteria are satisfied.
-- Any schema proposal must preserve existing published data.
+- Do not start metadata automation until phase 0b exit criteria are satisfied.
+- Do not let collector core depend directly on `tdx.Client`, `tdx.Manage`, or `protocol.*`.
+- Any new provider-facing model must belong to collector-owned contracts, not upstream protocol structs.
 
 ## Current Blockers
 
@@ -49,9 +55,9 @@
 
 ## Next Single Task
 
-Design and implement the initial `collector.db` schema plus the first phase-gate plumbing, while keeping all existing collector behavior unchanged.
+Define collector provider interfaces and collector-owned domain models for `codes`, `workday`, `kline`, `trade_history`, `order_history`, `finance`, and `f10`, without changing business ingestion behavior yet.
 
-## Exit Criteria For Phase 0a
+## Completed Phase 0a Exit Evidence
 
 - `collector.db` schema exists in code and is migration-safe
 - phase state can be read and updated consistently
@@ -59,8 +65,9 @@ Design and implement the initial `collector.db` schema plus the first phase-gate
 - control-plane tests pass
 - control documents and machine state remain consistent
 
-## Planned Entry Criteria For Phase 0b
+## Exit Criteria For Phase 0b
 
-- phase 0a exit criteria are satisfied
-- provider boundary is documented in code-facing terms
-- anti-coupling rules are stable enough to enforce in tests
+- provider interfaces exist for planned collector domains
+- collector-owned domain models exist for provider-facing flows
+- the first `tdx-api` provider adapter compiles
+- anti-coupling tests or checks pass

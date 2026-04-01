@@ -35,14 +35,14 @@ Do not skip files. Do not rely on memory from previous sessions.
 6. Do not change storage contracts outside the current phase scope.
 7. Do not commit unless all blocking tests for the current phase pass.
 8. Do not build collector core directly on top of `tdx.Client`, `tdx.Manage`, or `protocol.*`. Provider access must go through the collector provider adapter boundary.
-8. Do not mark a phase complete unless:
+9. Do not mark a phase complete unless:
    - all phase checklist items are complete
    - all blocking tests pass
    - [WORK_LOG.md](/Users/huangjiahao/workspace/tdx-api/docs/collector/WORK_LOG.md) is updated
    - [PROGRESS.md](/Users/huangjiahao/workspace/tdx-api/docs/collector/PROGRESS.md) is updated
    - [STATE.yaml](/Users/huangjiahao/workspace/tdx-api/docs/collector/STATE.yaml) is updated
-9. If upstream instability prevents reliable verification, stop, log the blocker, and do not advance the phase.
-10. If the worktree already contains unrelated user changes, do not revert them.
+10. If upstream instability prevents reliable verification, stop, log the blocker, and do not advance the phase.
+11. If the worktree already contains unrelated user changes, do not revert them.
 
 ## Execution Loop
 
