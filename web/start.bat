@@ -8,7 +8,6 @@ echo 正在启动服务器...
 echo.
 
 cd /d %~dp0
-go run server.go
+go run .
 
 pause
-

@@ -55,6 +55,9 @@ COPY --from=builder /app/stock-web .
 COPY --from=builder /app/web/static ./static
 # ===================================================================
 
+# 预置数据库缓存，避免容器首次启动时立即全量拉取远程代码表
+COPY --from=builder /app/data/database ./data/database
+
 # 更改文件所有者
 RUN chown -R appuser:appuser /app
 

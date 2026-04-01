@@ -143,11 +143,20 @@ func (this *Client) handlerDealMessage(c *client.Client, msg ios.Acker) {
 
 	case protocol.TypeHeart:
 
+	case protocol.TypeFinanceInfo:
+		resp, err = protocol.MFinanceInfo.Decode(f.Data)
+
 	case protocol.TypeCount:
 		resp, err = protocol.MCount.Decode(f.Data)
 
 	case protocol.TypeCode:
 		resp, err = protocol.MCode.Decode(f.Data)
+
+	case protocol.TypeCompanyInfoCategory:
+		resp, err = protocol.MCompanyInfoCategory.Decode(f.Data)
+
+	case protocol.TypeCompanyInfoContent:
+		resp, err = protocol.MCompanyInfoContent.Decode(f.Data)
 
 	case protocol.TypeQuote:
 		resp = protocol.MQuote.Decode(f.Data)
@@ -347,6 +356,48 @@ func (this *Client) GetQuote(codes ...string) (protocol.QuotesResp, error) {
 	}
 
 	return quotes, nil
+}
+
+// GetFinanceInfo 获取财务数据
+func (this *Client) GetFinanceInfo(code string) (*protocol.FinanceInfo, error) {
+	code = protocol.AddPrefix(code)
+	f, err := protocol.MFinanceInfo.Frame(code)
+	if err != nil {
+		return nil, err
+	}
+	result, err := this.SendFrame(f)
+	if err != nil {
+		return nil, err
+	}
+	return result.(*protocol.FinanceInfo), nil
+}
+
+// GetCompanyInfoCategory 获取F10目录
+func (this *Client) GetCompanyInfoCategory(code string) (protocol.CompanyInfoCategories, error) {
+	code = protocol.AddPrefix(code)
+	f, err := protocol.MCompanyInfoCategory.Frame(code)
+	if err != nil {
+		return nil, err
+	}
+	result, err := this.SendFrame(f)
+	if err != nil {
+		return nil, err
+	}
+	return result.(protocol.CompanyInfoCategories), nil
+}
+
+// GetCompanyInfoContent 获取F10正文内容
+func (this *Client) GetCompanyInfoContent(code, filename string, start, length uint32) (string, error) {
+	code = protocol.AddPrefix(code)
+	f, err := protocol.MCompanyInfoContent.Frame(code, filename, start, length)
+	if err != nil {
+		return "", err
+	}
+	result, err := this.SendFrame(f)
+	if err != nil {
+		return "", err
+	}
+	return result.(string), nil
 }
 
 // GetMinute 获取分时数据,todo 解析好像不对,先用历史数据

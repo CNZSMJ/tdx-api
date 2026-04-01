@@ -112,8 +112,8 @@ func NewCodes(c *Client, db *xorm.Engine) (*Codes, error) {
 				return cc, cc.Update()
 			}
 		} else {
-			//当前时间在9点之前,且更新时间在上个节点之前
-			if updateTime.Sub(node.Add(time.Hour*24)) < 0 {
+			//当前时间在9点之前,只有在昨日9点前仍未更新时才需要刷新
+			if updateTime.Sub(node.Add(-time.Hour*24)) < 0 {
 				return cc, cc.Update()
 			}
 		}

@@ -1,0 +1,5 @@
+data/
+web/data/
+*.db
+*.db-journal
+scripts/__pycache__/

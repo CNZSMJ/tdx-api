@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,10 +23,76 @@ var (
 	client      *tdx.Client
 	manager     *tdx.Manage
 	taskManager = NewTaskManager()
+	databaseDir string
 )
+
+func configureDatabaseDir() {
+	_, sourceFile, _, ok := runtime.Caller(0)
+	if !ok {
+		return
+	}
+
+	webDir := filepath.Dir(sourceFile)
+	projectRoot := filepath.Dir(webDir)
+	targetDir := filepath.Join(projectRoot, "data", "database")
+	legacyDir := filepath.Join(projectRoot, "web", "data", "database")
+	databaseDir = targetDir
+
+	if _, err := os.Stat(targetDir); err == nil {
+		return
+	}
+
+	if _, err := os.Stat(legacyDir); err != nil {
+		return
+	}
+
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		log.Printf("创建统一数据目录失败: %v", err)
+		return
+	}
+
+	for _, name := range []string{"codes.db", "workday.db"} {
+		src := filepath.Join(legacyDir, name)
+		dst := filepath.Join(targetDir, name)
+		if _, err := os.Stat(src); err != nil {
+			continue
+		}
+		if _, err := os.Stat(dst); err == nil {
+			continue
+		}
+		if err := copyFile(src, dst); err != nil {
+			log.Printf("迁移数据库 %s 失败: %v", name, err)
+			continue
+		}
+		log.Printf("已迁移数据库: %s -> %s", src, dst)
+	}
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = out.Close()
+	}()
+
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+
+	return out.Sync()
+}
 
 func init() {
 	var err error
+	configureDatabaseDir()
 	// 连接通达信服务器
 	client, err = tdx.DialDefault(tdx.WithDebug(false))
 	if err != nil {
@@ -32,10 +101,10 @@ func init() {
 	log.Println("成功连接到通达信服务器")
 
 	// 初始化代码缓存
-	if err = os.MkdirAll(tdx.DefaultDatabaseDir, 0755); err != nil {
+	if err = os.MkdirAll(databaseDir, 0755); err != nil {
 		log.Printf("创建数据目录失败: %v", err)
 	}
-	if codes, err := tdx.NewCodesSqlite(client); err != nil {
+	if codes, err := tdx.NewCodesSqlite(client, filepath.Join(databaseDir, "codes.db")); err != nil {
 		log.Printf("初始化代码库失败: %v", err)
 	} else {
 		tdx.DefaultCodes = codes
@@ -47,7 +116,9 @@ func init() {
 	}
 
 	manager, err = tdx.NewManage(&tdx.ManageConfig{
-		Number: 4,
+		Number:          4,
+		CodesFilename:   filepath.Join(databaseDir, "codes.db"),
+		WorkdayFileName: filepath.Join(databaseDir, "workday.db"),
 	})
 	if err != nil {
 		log.Fatalf("初始化数据管理器失败: %v", err)
@@ -470,6 +541,83 @@ func handleGetStockInfo(w http.ResponseWriter, r *http.Request) {
 	successResponse(w, result)
 }
 
+func handleGetFinance(w http.ResponseWriter, r *http.Request) {
+	code := r.URL.Query().Get("code")
+	if code == "" {
+		errorResponse(w, "股票代码不能为空")
+		return
+	}
+
+	resp, err := client.GetFinanceInfo(code)
+	if err != nil {
+		errorResponse(w, fmt.Sprintf("获取财务数据失败: %v", err))
+		return
+	}
+
+	successResponse(w, resp)
+}
+
+func handleGetF10Categories(w http.ResponseWriter, r *http.Request) {
+	code := r.URL.Query().Get("code")
+	if code == "" {
+		errorResponse(w, "股票代码不能为空")
+		return
+	}
+
+	resp, err := client.GetCompanyInfoCategory(code)
+	if err != nil {
+		errorResponse(w, fmt.Sprintf("获取F10目录失败: %v", err))
+		return
+	}
+
+	successResponse(w, resp)
+}
+
+func handleGetF10Content(w http.ResponseWriter, r *http.Request) {
+	code := r.URL.Query().Get("code")
+	filename := r.URL.Query().Get("filename")
+	startStr := r.URL.Query().Get("start")
+	lengthStr := r.URL.Query().Get("length")
+
+	if code == "" {
+		errorResponse(w, "股票代码不能为空")
+		return
+	}
+	if filename == "" {
+		errorResponse(w, "filename不能为空")
+		return
+	}
+	if startStr == "" || lengthStr == "" {
+		errorResponse(w, "start和length不能为空")
+		return
+	}
+
+	start, err := strconv.ParseUint(startStr, 10, 32)
+	if err != nil {
+		errorResponse(w, "start参数格式错误")
+		return
+	}
+	length, err := strconv.ParseUint(lengthStr, 10, 32)
+	if err != nil {
+		errorResponse(w, "length参数格式错误")
+		return
+	}
+
+	content, err := client.GetCompanyInfoContent(code, filename, uint32(start), uint32(length))
+	if err != nil {
+		errorResponse(w, fmt.Sprintf("获取F10正文失败: %v", err))
+		return
+	}
+
+	successResponse(w, map[string]interface{}{
+		"code":     protocol.AddPrefix(code),
+		"filename": filename,
+		"start":    uint32(start),
+		"length":   uint32(length),
+		"content":  content,
+	})
+}
+
 func handleCreatePullKlineTask(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		errorResponse(w, "只支持POST请求")
@@ -715,6 +863,9 @@ func main() {
 	http.HandleFunc("/api/trade", handleGetTrade)
 	http.HandleFunc("/api/search", handleSearchCode)
 	http.HandleFunc("/api/stock-info", handleGetStockInfo)
+	http.HandleFunc("/api/finance", handleGetFinance)
+	http.HandleFunc("/api/f10/categories", handleGetF10Categories)
+	http.HandleFunc("/api/f10/content", handleGetF10Content)
 	http.HandleFunc("/api/codes", handleGetCodes)
 	http.HandleFunc("/api/batch-quote", handleBatchQuote)
 	http.HandleFunc("/api/kline-history", handleGetKlineHistory)

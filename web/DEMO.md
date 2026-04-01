@@ -18,7 +18,7 @@ cd web
 **手动启动**：
 ```bash
 cd web
-go run server.go
+go run .
 ```
 
 看到以下提示表示启动成功：
@@ -328,4 +328,3 @@ http://localhost:8080
 - 📱 000858 五粮液（深市）
 
 祝您使用愉快！ 📈💰
-
