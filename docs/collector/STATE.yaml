@@ -1,0 +1,54 @@
+project: tdx-api-collector
+goal: full automated safe collector
+
+current_phase:
+  id: phase_0a
+  name: Control Plane
+  status: in_progress
+
+next_phase:
+  id: phase_0b
+  name: Provider Decoupling
+
+current_task:
+  id: phase_0a_task_1
+  summary: Implement the collector control plane foundation without changing existing ingestion behavior.
+
+required_read_order:
+  - docs/collector/START_HERE.md
+  - docs/collector/MASTER_PLAN.md
+  - docs/collector/PROGRESS.md
+  - docs/collector/STATE.yaml
+  - docs/collector/TEST_MATRIX.md
+  - docs/collector/DATA_CONTRACT.md
+  - docs/collector/WORK_LOG.md
+
+allowed_to_commit: false
+allowed_to_advance: false
+
+phase_exit_criteria:
+  - collector_db_schema_ready
+  - phase_state_machine_ready
+  - validation_gate_ready
+  - control_plane_tests_green
+  - docs_and_state_consistent
+
+last_verified_commit: null
+last_verified_at: null
+last_test_suite: []
+
+blocking_issues: []
+
+required_evidence:
+  - exact commands
+  - exact test results
+  - updated progress file
+  - updated work log
+  - updated state file
+
+anti_fabrication_rules:
+  - no inferred field semantics may be promoted to fact without evidence
+  - no phase may be marked done without passing blocking tests
+  - no downstream phase work is allowed before current phase exit
+  - no publish without staging and validation
+  - no collector core feature may be added through direct dependency on tdx-api internals once provider decoupling starts
