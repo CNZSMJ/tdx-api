@@ -742,10 +742,13 @@ func handleCreatePullTradeTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Code      string `json:"code"`
-		Dir       string `json:"dir"`
-		StartYear int    `json:"start_year"`
-		EndYear   int    `json:"end_year"`
+		Code       string   `json:"code"`
+		Codes      []string `json:"codes"`
+		AssetTypes []string `json:"asset_types"`
+		Dir        string   `json:"dir"`
+		Limit      int      `json:"limit"`
+		StartYear  int      `json:"start_year"`
+		EndYear    int      `json:"end_year"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -753,9 +756,48 @@ func handleCreatePullTradeTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Code == "" {
-		errorResponse(w, "code不能为空")
-		return
+	codes := make([]string, 0, len(req.Codes)+1)
+	for _, code := range req.Codes {
+		code = strings.ToLower(strings.TrimSpace(code))
+		if code == "" {
+			continue
+		}
+		if protocol.IsIndex(code) {
+			errorResponse(w, "pull-trade 暂不支持指数代码，请仅传股票或ETF代码")
+			return
+		}
+		codes = append(codes, code)
+	}
+	if req.Code != "" {
+		code := strings.ToLower(strings.TrimSpace(req.Code))
+		if protocol.IsIndex(code) {
+			errorResponse(w, "pull-trade 暂不支持指数代码，请仅传股票或ETF代码")
+			return
+		}
+		codes = append(codes, code)
+	}
+
+	assetTypes := req.AssetTypes
+	if len(assetTypes) > 0 {
+		valid := make([]string, 0, len(assetTypes))
+		for _, v := range assetTypes {
+			switch strings.ToLower(strings.TrimSpace(v)) {
+			case extend.AssetStock, extend.AssetETF:
+				valid = append(valid, strings.ToLower(strings.TrimSpace(v)))
+			case extend.AssetIndex:
+				errorResponse(w, "pull-trade 暂不支持 index 类型，请仅使用 stock 或 etf")
+				return
+			}
+		}
+		if len(valid) == 0 {
+			errorResponse(w, "asset_types参数无效")
+			return
+		}
+		assetTypes = valid
+	}
+
+	if len(codes) == 0 && len(assetTypes) == 0 {
+		assetTypes = []string{extend.AssetStock}
 	}
 
 	dir := req.Dir
@@ -764,11 +806,14 @@ func handleCreatePullTradeTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	puller := extend.NewPullTrade(dir)
+	puller.Codes = codes
+	puller.AssetTypes = assetTypes
+	puller.Limit = req.Limit
 	puller.StartYear = req.StartYear
 	puller.EndYear = req.EndYear
 
 	taskID := taskManager.Run("pull_trade", func(ctx context.Context) error {
-		return puller.Pull(ctx, manager, req.Code)
+		return puller.Run(ctx, manager)
 	})
 
 	successResponse(w, map[string]string{
