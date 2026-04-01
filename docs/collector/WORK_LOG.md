@@ -202,3 +202,60 @@ Do not summarize test results vaguely. Record exact commands and exact outcomes.
 - Commit sha: `pending current commit`
 - Blockers: none
 - Next step: move historical trade ingestion to DB-first storage and prove derived bars remain reproducible
+
+## 2026-04-02 03:14 CST
+
+- Phase: `3 - Historical Trade`
+- Goal: move historical trade ingestion to DB-first storage and prove derived minute bars remain reproducible from stored raw trade rows
+- Files changed:
+  - `collector/trade.go`
+  - `collector/trade_test.go`
+  - `docs/collector/PROGRESS.md`
+  - `docs/collector/STATE.yaml`
+  - `docs/collector/DATA_CONTRACT.md`
+  - `docs/collector/WORK_LOG.md`
+- Commands run:
+  - `gofmt -w collector/*.go`
+  - `go test ./collector -run 'TestTradeRefreshPublishesDBFirstAndPersistsCursor|TestTradeRefreshIsReplaySafeAndDerivedBarsAreReproducible|TestKlineRefreshPublishesAndPersistsCursor|TestKlineRefreshIsOverlapSafeAcrossRestart|TestKlineRefreshRecordsGap|TestMetadataRefreshPublishesCodesAndWorkdays|TestMetadataRefreshIsReplaySafeAcrossRestart|TestCollectorCoreAvoidsDirectTDXCoupling|TestDocsConsistency' -v`
+  - `go test ./...`
+  - `cd web && go test ./...`
+- Results:
+  - Added DB-first historical trade publish flow to per-code SQLite databases
+  - Added replay-safe per-day replacement for raw historical trade rows
+  - Added derived 1/5/15/30/60 minute bars that are computed from stored raw trade rows
+  - Added trade cursor persistence in `collector.db`
+  - Added tests that verify DB-first publish, replay-safe replacement, and derived-bar reproducibility
+  - Verified collector targeted tests, root Go tests, and web Go tests pass
+  - Completed phase `3 - Historical Trade`
+  - Advanced project state to `4 - Order History`
+- Commit sha: `pending current commit`
+- Blockers: none
+- Next step: automate DB-first order-history ingestion while keeping unresolved field semantics explicitly unresolved
+
+## 2026-04-02 03:16 CST
+
+- Phase: `4 - Order History`
+- Goal: automate DB-first order-history ingestion while keeping unresolved field semantics explicitly unresolved
+- Files changed:
+  - `collector/order_history.go`
+  - `collector/order_history_test.go`
+  - `docs/collector/PROGRESS.md`
+  - `docs/collector/STATE.yaml`
+  - `docs/collector/DATA_CONTRACT.md`
+  - `docs/collector/WORK_LOG.md`
+- Commands run:
+  - `gofmt -w collector/*.go`
+  - `go test ./collector -run 'TestOrderHistoryRefreshPublishesDBFirstAndPersistsCursor|TestOrderHistoryReplayPreservesRawDeltaValues|TestTradeRefreshPublishesDBFirstAndPersistsCursor|TestTradeRefreshIsReplaySafeAndDerivedBarsAreReproducible|TestKlineRefreshPublishesAndPersistsCursor|TestKlineRefreshIsOverlapSafeAcrossRestart|TestKlineRefreshRecordsGap|TestMetadataRefreshPublishesCodesAndWorkdays|TestMetadataRefreshIsReplaySafeAcrossRestart|TestCollectorCoreAvoidsDirectTDXCoupling|TestDocsConsistency' -v`
+  - `go test ./...`
+  - `cd web && go test ./...`
+- Results:
+  - Added DB-first order-history publish flow to per-code SQLite databases
+  - Added replay-safe per-day replacement for raw order-history rows
+  - Added order-history cursor persistence in `collector.db`
+  - Added tests that verify DB-first publish, replay-safe replacement, and raw `BuySellDelta` preservation
+  - Verified collector targeted tests, root Go tests, and web Go tests pass
+  - Completed phase `4 - Order History`
+  - Advanced project state to `5 - Live Capture`
+- Commit sha: `pending current commit`
+- Blockers: none
+- Next step: add trading-session live capture with safe replay and close reconciliation

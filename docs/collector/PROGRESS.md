@@ -2,10 +2,10 @@
 
 ## Current Snapshot
 
-- Current phase: `3 - Historical Trade`
+- Current phase: `5 - Live Capture`
 - Phase status: `in_progress`
-- Current task: `Move historical trade ingestion to DB-first storage with replay-safe publish and derived-bar reproducibility.`
-- Next phase after current completion: `4 - Order History`
+- Current task: `Add trading-session live capture for quote/minute/trade with session-safe replay and end-of-day reconciliation.`
+- Next phase after current completion: `6 - Fundamentals`
 
 ## Phase Status Board
 
@@ -15,9 +15,9 @@
 | 0b | Provider Decoupling | done |
 | 1 | Metadata | done |
 | 2 | Historical Kline | done |
-| 3 | Historical Trade | in_progress |
-| 4 | Order History | pending |
-| 5 | Live Capture | pending |
+| 3 | Historical Trade | done |
+| 4 | Order History | done |
+| 5 | Live Capture | in_progress |
 | 6 | Fundamentals | pending |
 | 7 | Final Acceptance | pending |
 
@@ -62,21 +62,39 @@
   - first publish correctness
   - overlap-safe replay after restart
   - missing-window gap recording
+- Added collector-owned historical trade publish flow with:
+  - DB-first raw trade storage
+  - replay-safe per-day replacement
+  - derived 1/5/15/30/60 minute bars published from stored raw trades
+  - trade cursor persistence in `collector.db`
+- Added historical trade tests covering:
+  - first DB publish correctness
+  - replay-safe day replacement
+  - derived minute-bar reproducibility from stored raw rows
+- Added collector-owned order-history publish flow with:
+  - DB-first raw order-history storage
+  - replay-safe per-day replacement
+  - order-history cursor persistence in `collector.db`
+  - raw `BuySellDelta` preservation
+- Added order-history tests covering:
+  - first DB publish correctness
+  - replay-safe day replacement
+  - unresolved field preservation for `BuySellDelta`
 
 ## Current Phase Checklist
 
-- [ ] Define DB-first historical trade storage contract
-- [ ] Add historical trade staging/publish flow
-- [ ] Add replay-safe dedupe rules for historical trade rows
-- [ ] Add derived-bar reproducibility tests
-- [ ] Update contracts and logs for phase 3 outputs
+- [ ] Define live quote/minute/trade storage contract
+- [ ] Add trading-session staging/publish flow for live capture
+- [ ] Add session restart recovery and end-of-day reconciliation rules
+- [ ] Add live capture tests for replay and reconciliation
+- [ ] Update contracts and logs for phase 5 outputs
 
 ## Current Phase Rules
 
 - Keep provider access behind collector interfaces introduced in phase `0b`.
-- Do not keep historical trade data CSV-only once phase `3` begins.
-- Any derived minute bars must be reproducible from stored raw historical trade rows.
-- Replay of an already-seen trade day must not duplicate published trade rows.
+- Live capture must not overwrite published historical data.
+- Restart during a session must not create duplicate live rows.
+- End-of-day reconciliation must be validation-led before publish.
 
 ## Current Blockers
 
@@ -84,7 +102,7 @@
 
 ## Next Single Task
 
-Implement DB-first historical trade ingestion with replay-safe publish and tests that prove derived bars can be reproduced from stored raw trade data.
+Implement trading-session live capture for quote/minute/trade with safe replay and close reconciliation, without violating the existing historical publish contracts.
 
 ## Completed Phase 0a Exit Evidence
 
@@ -118,9 +136,25 @@ Implement DB-first historical trade ingestion with replay-safe publish and tests
 - kline validation and replay tests pass
 - `go test ./collector -run 'TestKlineRefreshPublishesAndPersistsCursor|TestKlineRefreshIsOverlapSafeAcrossRestart|TestKlineRefreshRecordsGap|TestMetadataRefreshPublishesCodesAndWorkdays|TestMetadataRefreshIsReplaySafeAcrossRestart|TestCollectorCoreAvoidsDirectTDXCoupling|TestDocsConsistency' -v` passes
 
-## Exit Criteria For Phase 3
+## Completed Phase 3 Exit Evidence
 
 - historical trade raw data lands in DB as primary storage
 - replay of a previously published trade day is dedupe-safe
 - derived minute bars are reproducible from stored raw trade data
 - historical trade validation and replay tests pass
+- `go test ./collector -run 'TestTradeRefreshPublishesDBFirstAndPersistsCursor|TestTradeRefreshIsReplaySafeAndDerivedBarsAreReproducible|TestKlineRefreshPublishesAndPersistsCursor|TestKlineRefreshIsOverlapSafeAcrossRestart|TestKlineRefreshRecordsGap|TestMetadataRefreshPublishesCodesAndWorkdays|TestMetadataRefreshIsReplaySafeAcrossRestart|TestCollectorCoreAvoidsDirectTDXCoupling|TestDocsConsistency' -v` passes
+
+## Completed Phase 4 Exit Evidence
+
+- order-history raw data lands in DB as primary storage
+- replay of a previously published order-history day is dedupe-safe
+- unresolved field semantics remain explicitly unresolved in contracts and tests
+- order-history validation and replay tests pass
+- `go test ./collector -run 'TestOrderHistoryRefreshPublishesDBFirstAndPersistsCursor|TestOrderHistoryReplayPreservesRawDeltaValues|TestTradeRefreshPublishesDBFirstAndPersistsCursor|TestTradeRefreshIsReplaySafeAndDerivedBarsAreReproducible|TestKlineRefreshPublishesAndPersistsCursor|TestKlineRefreshIsOverlapSafeAcrossRestart|TestKlineRefreshRecordsGap|TestMetadataRefreshPublishesCodesAndWorkdays|TestMetadataRefreshIsReplaySafeAcrossRestart|TestCollectorCoreAvoidsDirectTDXCoupling|TestDocsConsistency' -v` passes
+
+## Exit Criteria For Phase 5
+
+- live quote/minute/trade data lands in DB-first storage
+- session restart is replay-safe
+- end-of-day reconciliation does not corrupt historical data
+- live capture validation and replay tests pass

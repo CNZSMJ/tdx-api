@@ -105,3 +105,19 @@ No agent may convert these unresolved semantics into hard business claims withou
   - `domain = kline, asset_type = <asset>, instrument = <code>, period = <period>`
 - overlap replay is handled by deleting published rows from the first staged timestamp forward, then inserting the newly staged rows inside one transaction.
 - detected missing windows are recorded in `collector_gap`.
+
+## Implemented Historical Trade Publish Rules
+
+- historical trade now publishes raw day-level trades into per-code SQLite databases as the primary source of truth.
+- replay safety is enforced by replacing one whole published trade day at a time inside a transaction.
+- derived 1/5/15/30/60 minute bars are generated from stored raw trade rows, not directly from upstream payloads.
+- trade replay state is persisted through `collector_cursor` records with:
+  - `domain = trade_history, asset_type = <asset>, instrument = <code>`
+
+## Implemented Order-History Publish Rules
+
+- order-history now publishes raw day-level rows into per-code SQLite databases as the primary source of truth.
+- replay safety is enforced by replacing one whole published order-history day at a time inside a transaction.
+- raw `BuySellDelta` values are stored as-is; collector tests verify preservation rather than asserting a business meaning.
+- order-history replay state is persisted through `collector_cursor` records with:
+  - `domain = order_history, asset_type = <asset>, instrument = <code>`
