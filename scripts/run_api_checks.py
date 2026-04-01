@@ -22,10 +22,14 @@ ENDPOINTS = [
     ("market_count", "GET", "/api/market-count"),
     ("stock_codes", "GET", "/api/stock-codes"),
     ("etf_codes", "GET", "/api/etf-codes"),
+    ("index_codes", "GET", "/api/index-codes"),
     ("server_status", "GET", "/api/server-status"),
     ("health", "GET", "/api/health"),
     ("etf_list", "GET", "/api/etf?exchange=sh&limit=10"),
+    ("finance", "GET", "/api/finance?code=000001"),
+    ("f10_categories", "GET", "/api/f10/categories?code=000001"),
     ("trade_history", "GET", "/api/trade-history?code=000001&date=20241108&start=0&count=200"),
+    ("order_history", "GET", "/api/order-history?code=000001&date=20260331"),
     ("trade_history_full", "GET", "/api/trade-history/full?code=000001&start_date=2024-10-01&end_date=2024-10-08&limit=500"),
     ("minute_trade_all", "GET", "/api/minute-trade-all?code=000001&date=20241108"),
     ("kline_all_tdx", "GET", "/api/kline-all/tdx?code=000001&type=day&limit=1000"),
@@ -34,6 +38,7 @@ ENDPOINTS = [
     ("workday_range", "GET", "/api/workday/range?start=2024-11-01&end=2024-11-08"),
     ("income", "GET", "/api/income?code=000001&start_date=2024-11-01&days=5,10,20"),
     ("tasks_list", "GET", "/api/tasks"),
+    ("pull_trade_batch", "POST", "/api/tasks/pull-trade", {"json": {"codes": ["000001", "510300"], "limit": 1, "start_year": 2026, "end_year": 2026}}),
 ]
 
 
@@ -111,4 +116,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

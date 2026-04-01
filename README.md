@@ -88,8 +88,13 @@ go run .
 | `/api/market-count` | 市场数量统计 |
 | `/api/stock-codes` | 股票代码 |
 | `/api/etf-codes` | ETF代码 |
+| `/api/index-codes` | 指数代码 |
 | `/api/etf` | ETF列表 |
+| `/api/finance` | 财务数据 |
+| `/api/f10/categories` | F10目录 |
+| `/api/f10/content` | F10正文 |
 | `/api/trade-history` | 历史成交 |
+| `/api/order-history` | 历史委托分布 |
 | `/api/trade-history/full` | 完整历史成交 |
 | `/api/minute-trade-all` | 全部分时成交 |
 | `/api/workday` | 交易日查询 |
@@ -102,6 +107,28 @@ go run .
 | `/api/health` | 健康检查 |
 
 **完整API文档**: [API_接口文档.md](API_接口文档.md)
+
+### 指数池配置
+
+服务默认会从交易所代码表自动识别全量指数，也支持自定义覆盖：
+
+- 配置文件：`data/database/index_codes.json`
+- 环境变量：`TDX_INDEX_CODES=sh000001,sh000300,sz399006`
+
+`index_codes.json` 支持两种格式：
+
+```json
+["sh000001", "sh000300", "sz399006"]
+```
+
+```json
+[
+  { "code": "sh000001", "name": "上证指数" },
+  { "code": "sh000300", "name": "沪深300" }
+]
+```
+
+指数代码必须带交易所前缀，例如 `sh000001`、`sz399001`。
 
 ---
 
@@ -118,6 +145,38 @@ curl "http://localhost:8080/api/kline?code=000001&type=day"
 
 # 搜索股票
 curl "http://localhost:8080/api/search?keyword=平安"
+
+# 获取财务数据
+curl "http://localhost:8080/api/finance?code=000001"
+
+# 获取F10目录
+curl "http://localhost:8080/api/f10/categories?code=000001"
+
+# 获取指数代码
+curl "http://localhost:8080/api/index-codes"
+
+# 创建混合证券K线任务
+curl -X POST "http://localhost:8080/api/tasks/pull-kline" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "asset_types": ["stock", "etf", "index"],
+    "index_codes": ["sh000001", "sh000300", "sz399006"],
+    "tables": ["day"],
+    "limit": 1
+  }'
+
+# 创建股票/ETF成交采集任务
+curl -X POST "http://localhost:8080/api/tasks/pull-trade" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "asset_types": ["stock", "etf"],
+    "limit": 2,
+    "start_year": 2025,
+    "end_year": 2026
+  }'
+
+# 获取历史委托分布
+curl "http://localhost:8080/api/order-history?code=000001&date=2026-03-31"
 
 # 健康检查
 curl "http://localhost:8080/api/health"

@@ -509,16 +509,25 @@ GET /api/index?code=sh000001&type=day
 
 **接口**: `POST /api/tasks/pull-kline`
 
-**描述**: 启动后台任务，批量拉取指定股票、指定周期的K线数据并存入本地数据库（默认目录：`data/database/kline`）。任务在后台异步执行，可通过任务管理接口查询状态。
+**描述**: 启动后台任务，批量拉取指定证券、指定周期的K线数据并存入本地数据库（默认目录：`data/database/kline`）。任务在后台异步执行，可通过任务管理接口查询状态。
 
 **请求参数**（JSON Body）:
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| codes | array | 否 | 股票代码数组，默认遍历全部A股 |
+| codes | array | 否 | 证券代码数组；为空时按 `asset_types` 自动选择代码池 |
+| index_codes | array | 否 | 临时覆盖的指数代码列表，仅在 `asset_types` 包含 `index` 且 `codes` 为空时生效 |
+| asset_types | array | 否 | 采集对象类型，支持 `stock` / `etf` / `index`；默认 `["stock"]` |
 | tables | array | 否 | K线类型列表，取值见下表，默认 `["day"]` |
 | dir | string | 否 | 数据库存储目录，默认 `data/database/kline` |
 | limit | int | 否 | 并发协程数量，默认1 |
 | start_date | string | 否 | 起始日期阈值（`YYYY-MM-DD` 或 `YYYYMMDD`），早于此日期的数据不会重新拉取 |
+
+**说明**:
+- 当 `codes` 为空时，服务会按 `asset_types` 自动拼装代码池
+- `index` 默认使用内置核心指数清单，可通过 `/api/index-codes` 查看
+- 若配置了 `data/database/index_codes.json` 或环境变量 `TDX_INDEX_CODES`，`/api/index-codes` 会优先使用自定义指数池
+- `index_codes` 必须使用带交易所前缀的指数代码，如 `sh000001`、`sz399001`
+- 若 `codes` 中混合了股票、ETF、指数，服务会按代码类型自动切换采集实现
 
 **K线类型列表**:
 `minute`, `5minute`, `15minute`, `30minute`, `hour`, `day`, `week`, `month`, `quarter`, `year`
@@ -528,7 +537,7 @@ GET /api/index?code=sh000001&type=day
 curl -X POST http://localhost:8080/api/tasks/pull-kline \
   -H "Content-Type: application/json" \
   -d '{
-    "codes": ["000001","600519"],
+    "asset_types": ["stock", "etf", "index"],
     "tables": ["day","week","month"],
     "limit": 4,
     "start_date": "2020-01-01"
@@ -552,24 +561,33 @@ curl -X POST http://localhost:8080/api/tasks/pull-kline \
 
 **接口**: `POST /api/tasks/pull-trade`
 
-**描述**: 拉取指定股票从 `start_year` 到 `end_year` 的历史分时成交数据，并自动导出CSV（默认目录：`data/database/trade`）。
+**描述**: 拉取指定股票或 ETF 从 `start_year` 到 `end_year` 的历史分时成交数据，并自动导出CSV（默认目录：`data/database/trade`）。
 
 **请求参数**（JSON Body）:
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| code | string | 是 | 股票代码（如：000001） |
+| code | string | 否 | 单个证券代码，兼容旧用法 |
+| codes | array | 否 | 批量证券代码列表 |
+| asset_types | array | 否 | 采集对象类型，支持 `stock` / `etf`；默认 `["stock"]` |
 | dir | string | 否 | 输出目录，默认 `data/database/trade` |
+| limit | int | 否 | 并发协程数量，默认1 |
 | start_year | int | 否 | 起始年份，默认2000 |
 | end_year | int | 否 | 结束年份，默认当年 |
+
+**说明**:
+- 若同时未提供 `code` 与 `codes`，服务会按 `asset_types` 自动拼装代码池
+- `pull-trade` 当前暂不支持 `index`，传入指数代码会直接报错
+- 该接口保留旧版单 `code` 调法，兼容已有调用
 
 **请求示例**:
 ```bash
 curl -X POST http://localhost:8080/api/tasks/pull-trade \
   -H "Content-Type: application/json" \
   -d '{
-    "code": "000001",
-    "start_year": 2015,
-    "end_year": 2023
+    "asset_types": ["stock", "etf"],
+    "limit": 2,
+    "start_year": 2025,
+    "end_year": 2026
   }'
 ```
 
@@ -646,7 +664,95 @@ curl -X POST http://localhost:8080/api/tasks/pull-trade \
 
 ---
 
-### 16. 获取历史分时成交（分页）
+### 16. 获取财务数据
+
+**接口**: `GET /api/finance`
+
+**描述**: 获取单只证券的财务摘要数据，字段为通达信原始财务口径。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| code | string | 是 | 股票代码 |
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "code": "000001",
+    "liutongguben": 2188390000,
+    "zongguben": 19405918198,
+    "gudongrenshu": 124352,
+    "updated_date": 20260321
+  }
+}
+```
+
+---
+
+### 17. 获取 F10 目录
+
+**接口**: `GET /api/f10/categories`
+
+**描述**: 获取指定证券的 F10 栏目目录，可用于后续拉取具体正文内容。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| code | string | 是 | 股票代码 |
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": [
+    {
+      "Name": "最新提示",
+      "FileName": "000001.txt",
+      "Start": 0,
+      "Length": 1744
+    }
+  ]
+}
+```
+
+---
+
+### 18. 获取 F10 正文
+
+**接口**: `GET /api/f10/content`
+
+**描述**: 按 F10 目录项返回正文文本，通常配合 `/api/f10/categories` 使用。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| code | string | 是 | 股票代码 |
+| filename | string | 是 | F10 文件名 |
+| start | int | 是 | 起始偏移 |
+| length | int | 是 | 读取长度 |
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "code": "000001",
+    "filename": "000001.txt",
+    "start": 0,
+    "length": 1744,
+    "content": "平安银行股份有限公司..."
+  }
+}
+```
+
+---
+
+### 19. 获取历史分时成交（分页）
 
 **接口**: `GET /api/trade-history`
 
@@ -681,7 +787,50 @@ curl -X POST http://localhost:8080/api/tasks/pull-trade \
 
 ---
 
-### 17. 获取全天分时成交
+### 20. 获取历史委托分布
+
+**接口**: `GET /api/order-history`
+
+**描述**: 获取指定交易日的历史委托分布数据。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| code | string | 是 | 股票代码 |
+| date | string | 是 | 交易日期（YYYYMMDD 或 YYYY-MM-DD） |
+
+**字段说明**:
+| 字段 | 说明 |
+|------|------|
+| Price | 价格，单位为厘，实际价格 = `Price / 1000` |
+| BuySellDelta | 买卖差原始值，正数偏买盘，负数偏卖盘，`0` 表示相对平衡或无明显偏向 |
+| Volume | 委托量 |
+
+**说明**: `BuySellDelta` 是基于通达信历史委托返回值的推断命名，用于表达买卖盘偏向；其具体业务定义仍建议结合更多样本进一步校验。
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "date": "20260331",
+    "Count": 240,
+    "PreClose": 10990,
+    "List": [
+      {
+        "Price": 11050,
+        "BuySellDelta": -368,
+        "Volume": 21016
+      }
+    ]
+  }
+}
+```
+
+---
+
+### 21. 获取全天分时成交
 
 **接口**: `GET /api/minute-trade-all`
 
@@ -714,7 +863,7 @@ curl -X POST http://localhost:8080/api/tasks/pull-trade \
 
 ---
 
-### 18. 查询交易日信息
+### 22. 查询交易日信息
 
 **接口**: `GET /api/workday`
 
@@ -755,7 +904,7 @@ curl -X POST http://localhost:8080/api/tasks/pull-trade \
 
 ---
 
-### 19. 获取市场证券数量
+### 23. 获取市场证券数量
 
 **接口**: `GET /api/market-count`
 
@@ -779,7 +928,7 @@ curl -X POST http://localhost:8080/api/tasks/pull-trade \
 
 ---
 
-### 20. 获取股票代码列表
+### 24. 获取股票代码列表
 
 **接口**: `GET /api/stock-codes`
 
@@ -809,7 +958,7 @@ curl -X POST http://localhost:8080/api/tasks/pull-trade \
 
 ---
 
-### 21. 获取ETF代码列表
+### 25. 获取ETF代码列表
 
 **接口**: `GET /api/etf-codes`
 
@@ -832,7 +981,44 @@ curl -X POST http://localhost:8080/api/tasks/pull-trade \
 
 ---
 
-### 22. 获取股票全部历史K线
+### 26. 获取指数代码列表
+
+**接口**: `GET /api/index-codes`
+
+**描述**: 返回当前服务使用的指数代码列表，参数与 `/api/stock-codes` 相同。
+
+**来源优先级**:
+1. 环境变量 `TDX_INDEX_CODES`
+2. 配置文件 `data/database/index_codes.json`
+3. 交易所代码表自动识别的全量指数
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "count": 10,
+    "source": "builtin",
+    "list": [
+      "sh000001",
+      "sz399001",
+      "sz399006"
+    ],
+    "items": [
+      {
+        "name": "上证指数",
+        "code": "000001",
+        "exchange": "sh"
+      }
+    ]
+  }
+}
+```
+
+---
+
+### 27. 获取股票全部历史K线
 
 **接口**: `GET /api/kline-all`
 
@@ -849,7 +1035,7 @@ curl -X POST http://localhost:8080/api/tasks/pull-trade \
 
 ---
 
-### 23. 获取指数全部历史K线
+### 28. 获取指数全部历史K线
 
 **接口**: `GET /api/index/all`
 
@@ -859,7 +1045,7 @@ curl -X POST http://localhost:8080/api/tasks/pull-trade \
 
 ---
 
-### 24. 获取上市以来分时成交
+### 29. 获取上市以来分时成交
 
 **接口**: `GET /api/trade-history/full`
 
@@ -874,7 +1060,7 @@ curl -X POST http://localhost:8080/api/tasks/pull-trade \
 
 ---
 
-### 25. 获取交易日范围
+### 30. 获取交易日范围
 
 **接口**: `GET /api/workday/range`
 
@@ -888,7 +1074,7 @@ curl -X POST http://localhost:8080/api/tasks/pull-trade \
 
 ---
 
-### 26. 计算收益区间指标
+### 31. 计算收益区间指标
 
 **接口**: `GET /api/income`
 
@@ -1214,4 +1400,3 @@ curl -X POST http://localhost:8080/api/batch-quote \
 ---
 
 **Happy Coding!** 🎉
-

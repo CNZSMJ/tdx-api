@@ -28,19 +28,24 @@
 17. **GET /api/tasks/{id}** - 查询任务详情
 18. **POST /api/tasks/{id}/cancel** - 取消任务
 
-### ✅ 新增数据服务接口（12个）
+### ✅ 新增数据服务接口（17个）
 19. **GET /api/etf** - ETF基金列表
-20. **GET /api/trade-history** - 历史分时成交分页
-21. **GET /api/minute-trade-all** - 全天分时成交汇总
-22. **GET /api/workday** - 交易日信息查询
-23. **GET /api/market-count** - 各交易所证券数量
-24. **GET /api/stock-codes** - 全部股票代码
-25. **GET /api/etf-codes** - 全部ETF代码
-26. **GET /api/kline-all** - 股票历史K线全集
-27. **GET /api/index/all** - 指数历史K线全集
-28. **GET /api/trade-history/full** - 上市以来分时成交
-29. **GET /api/workday/range** - 交易日范围列表
-30. **GET /api/income** - 收益区间分析
+20. **GET /api/finance** - 财务数据
+21. **GET /api/f10/categories** - F10目录
+22. **GET /api/f10/content** - F10正文
+23. **GET /api/trade-history** - 历史分时成交分页
+24. **GET /api/order-history** - 历史委托分布
+25. **GET /api/minute-trade-all** - 全天分时成交汇总
+26. **GET /api/workday** - 交易日信息查询
+27. **GET /api/market-count** - 各交易所证券数量
+28. **GET /api/stock-codes** - 全部股票代码
+29. **GET /api/etf-codes** - 全部ETF代码
+30. **GET /api/index-codes** - 核心指数代码
+31. **GET /api/kline-all** - 股票历史K线全集
+32. **GET /api/index/all** - 指数历史K线全集
+33. **GET /api/trade-history/full** - 上市以来分时成交
+34. **GET /api/workday/range** - 交易日范围列表
+35. **GET /api/income** - 收益区间分析
 
 ---
 
@@ -75,10 +80,15 @@ func main() {
 	http.HandleFunc("/api/market-count", handleGetMarketCount)
 	http.HandleFunc("/api/stock-codes", handleGetStockCodes)
 	http.HandleFunc("/api/etf-codes", handleGetETFCodes)
+	http.HandleFunc("/api/index-codes", handleGetIndexCodes)
 	http.HandleFunc("/api/server-status", handleGetServerStatus)
 	http.HandleFunc("/api/health", handleHealthCheck)
 	http.HandleFunc("/api/etf", handleGetETFList)
+	http.HandleFunc("/api/finance", handleGetFinance)
+	http.HandleFunc("/api/f10/categories", handleGetF10Categories)
+	http.HandleFunc("/api/f10/content", handleGetF10Content)
 	http.HandleFunc("/api/trade-history", handleGetTradeHistory)
+	http.HandleFunc("/api/order-history", handleGetOrderHistory)
 	http.HandleFunc("/api/trade-history/full", handleGetTradeHistoryFull)
 	http.HandleFunc("/api/minute-trade-all", handleGetMinuteTradeAll)
 	http.HandleFunc("/api/kline-all", handleGetKlineAll)
@@ -97,6 +107,14 @@ func main() {
 	log.Fatal(http.ListenAndServe(port, nil))
 }
 ```
+
+`POST /api/tasks/pull-kline` 现在支持 `asset_types` 参数，可选 `stock` / `etf` / `index`。当 `codes` 为空时，服务会按 `asset_types` 自动拼装采集代码池；其中 `index` 默认使用交易所代码表自动识别出的指数列表，可通过 `/api/index-codes` 查看。
+
+如果需要自定义指数池，有两种方式：
+- 全局方式：配置 `data/database/index_codes.json` 或环境变量 `TDX_INDEX_CODES`
+- 任务方式：在 `POST /api/tasks/pull-kline` 中传入 `index_codes`
+
+`POST /api/tasks/pull-trade` 现在支持 `codes / asset_types / limit`，并保留旧版单 `code` 调法；当前仅支持 `stock` 与 `etf`，不支持 `index`。
 
 ### 方法二：复制扩展函数到server.go
 
@@ -557,4 +575,3 @@ func setCache(key string, val interface{}) {
 ---
 
 **现在所有功能都已打包为API接口，可以直接使用！** 🎉
-
