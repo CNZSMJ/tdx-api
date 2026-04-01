@@ -17,6 +17,34 @@ These rules apply to all collector domains:
 - collector code may depend on provider interfaces and collector domain models
 - collector core must not use upstream protocol structs as persistent schema definitions
 - swapping the provider should require adapter replacement, not collector-core redesign
+- `collector/provider_tdx.go` is the current upstream adapter boundary; new collector core files must not import `github.com/injoyai/tdx` or `protocol.*`
+
+## Provider Contract Inventory
+
+Collector-owned provider contracts currently include:
+
+- `UniverseProvider`
+- `CalendarProvider`
+- `QuoteProvider`
+- `MinuteProvider`
+- `KlineProvider`
+- `TradeHistoryProvider`
+- `OrderHistoryProvider`
+- `FinanceProvider`
+- `F10Provider`
+
+Collector-owned provider-facing domain models currently include:
+
+- `Instrument`
+- `TradingDay`
+- `QuoteSnapshot`
+- `MinutePoint`
+- `KlineBar`
+- `TradeTick`
+- `OrderHistorySnapshot`
+- `FinanceSnapshot`
+- `F10Category`
+- `F10Content`
 
 ## Domain Contract Table
 

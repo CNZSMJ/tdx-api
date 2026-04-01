@@ -6,16 +6,16 @@ import (
 	"time"
 
 	_ "github.com/glebarez/go-sqlite"
-	tdx "github.com/injoyai/tdx"
 	"xorm.io/core"
 	"xorm.io/xorm"
 )
 
 const DefaultDBName = "collector.db"
+const DefaultBaseDir = "./data/database"
 
 func DefaultDBPath(baseDir string) string {
 	if baseDir == "" {
-		baseDir = tdx.DefaultDatabaseDir
+		baseDir = DefaultBaseDir
 	}
 	return filepath.Join(baseDir, DefaultDBName)
 }

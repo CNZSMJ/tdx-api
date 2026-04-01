@@ -84,3 +84,55 @@ Do not summarize test results vaguely. Record exact commands and exact outcomes.
 - Commit sha: `pending current commit`
 - Blockers: none
 - Next step: define provider interfaces and collector-owned domain models before any metadata automation
+
+## 2026-04-02 02:55 CST
+
+- Phase: `0b - Provider Decoupling`
+- Goal: isolate collector-facing contracts from direct `tdx-api` coupling before starting metadata automation
+- Files changed:
+  - `collector/store.go`
+  - `collector/domain.go`
+  - `collector/provider.go`
+  - `collector/provider_tdx.go`
+  - `collector/provider_test.go`
+  - `collector/anti_coupling_test.go`
+  - `docs/collector/PROGRESS.md`
+  - `docs/collector/STATE.yaml`
+  - `docs/collector/DATA_CONTRACT.md`
+  - `docs/collector/WORK_LOG.md`
+- Commands run:
+  - `git status --short`
+  - `sed -n '1,240p' docs/collector/PROGRESS.md`
+  - `sed -n '1,260p' collector/store.go`
+  - `rg -n "type Client|type Manage|DefaultDatabaseDir|GetQuote\\(|GetHistoryOrders\\(|GetFinanceInfo\\(|GetCompanyInfoCategory\\(|GetCompanyInfoContent\\(|GetMinute\\(|GetHistoryMinute\\(|GetMinuteTradeAll\\(|GetHistoryTradeDay\\(|GetKline" client.go manage.go codes.go extend web -g '!**/*_test.go'`
+  - `sed -n '1,240p' collector/models.go`
+  - `sed -n '1,240p' collector/docs.go`
+  - `sed -n '1,240p' collector/docs_test.go`
+  - `sed -n '1,260p' protocol/model_finance.go`
+  - `sed -n '1,260p' protocol/model_company.go`
+  - `sed -n '1,260p' protocol/model_trade.go`
+  - `sed -n '1,260p' protocol/model_history_orders.go`
+  - `sed -n '1,220p' protocol/model_quote.go`
+  - `sed -n '1,260p' manage.go`
+  - `sed -n '1,260p' codes.go`
+  - `sed -n '1,260p' workday.go`
+  - `sed -n '1,260p' protocol/model_kline.go`
+  - `sed -n '1,220p' protocol/types_price.go`
+  - `gofmt -w collector/*.go`
+  - `go test ./...`
+  - `cd web && go test ./...`
+  - `go test ./collector -run 'TestCollectorCoreAvoidsDirectTDXCoupling|TestTDXProviderCompileContract|TestDocsConsistency' -v`
+- Results:
+  - Removed the collector control package's direct dependency on `tdx.DefaultDatabaseDir`
+  - Added collector-owned domain contracts for instruments, workdays, quotes, minute points, kline bars, trades, order history, finance, and F10
+  - Added collector-owned provider interfaces that cover the planned collection domains
+  - Added `collector/provider_tdx.go` as the first upstream adapter boundary
+  - Added a compile-time provider contract assertion
+  - Added an anti-coupling test that fails if non-adapter collector files import `github.com/injoyai/tdx` or `protocol.*`
+  - Verified full root and web Go test suites pass
+  - Verified targeted decoupling checks pass
+  - Completed phase `0b`
+  - Advanced project state to `1 - Metadata`
+- Commit sha: `pending current commit`
+- Blockers: none
+- Next step: implement safe metadata refresh scaffolding for `codes` and `workday` with replay-safe publish rules

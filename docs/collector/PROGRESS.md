@@ -2,18 +2,18 @@
 
 ## Current Snapshot
 
-- Current phase: `0b - Provider Decoupling`
+- Current phase: `1 - Metadata`
 - Phase status: `in_progress`
-- Current task: `Define collector provider interfaces, collector-owned domain models, and the first tdx provider adapter boundary.`
-- Next phase after current completion: `1 - Metadata`
+- Current task: `Make codes/workday refresh fully stateful, restart-safe, and safe to rerun without publishing duplicates.`
+- Next phase after current completion: `2 - Historical Kline`
 
 ## Phase Status Board
 
 | Phase | Name | Status |
 |---|---|---|
 | 0a | Control Plane | done |
-| 0b | Provider Decoupling | in_progress |
-| 1 | Metadata | pending |
+| 0b | Provider Decoupling | done |
+| 1 | Metadata | in_progress |
 | 2 | Historical Kline | pending |
 | 3 | Historical Trade | pending |
 | 4 | Order History | pending |
@@ -21,9 +21,10 @@
 | 6 | Fundamentals | pending |
 | 7 | Final Acceptance | pending |
 
-## Completed In Current Phase
+## Recently Completed
 
 - Phase `0a` is complete
+- Phase `0b` is complete
 - Created the collector control documents under `docs/collector/`
 - Defined the phase model, anti-drift rules, and documentation entrypoint
 - Defined the final collector domains and storage targets
@@ -34,20 +35,33 @@
   - validation gate scaffolding
   - operation-log persistence helpers
   - control-document consistency tests
+- Added collector-owned provider-facing domain contracts for:
+  - instruments
+  - trading days
+  - quote snapshots
+  - minute snapshots
+  - kline bars
+  - historical trades
+  - order history
+  - finance
+  - F10 directory/content
+- Added collector provider interfaces for all planned domains
+- Added the first `tdx-api` provider adapter at `collector/provider_tdx.go`
+- Added an anti-coupling test to block new non-adapter imports of `github.com/injoyai/tdx` and `protocol.*`
 
 ## Current Phase Checklist
 
-- [ ] Define provider interfaces for planned collector domains
-- [ ] Define collector-owned domain models for provider-facing flows
-- [ ] Add the first `tdx-api` provider adapter skeleton
-- [ ] Add anti-coupling tests or static checks
-- [ ] Update contracts and logs for phase 0b outputs
+- [ ] Design metadata publish flow for `codes` and `workday`
+- [ ] Add metadata state persistence to `collector.db`
+- [ ] Add safe rerun protection and duplicate-prevention checks
+- [ ] Add startup recovery path for metadata refresh
+- [ ] Update contracts and logs for phase 1 outputs
 
 ## Current Phase Rules
 
-- Do not start metadata automation until phase 0b exit criteria are satisfied.
-- Do not let collector core depend directly on `tdx.Client`, `tdx.Manage`, or `protocol.*`.
-- Any new provider-facing model must belong to collector-owned contracts, not upstream protocol structs.
+- Keep provider access behind collector interfaces introduced in phase `0b`.
+- Do not publish metadata updates directly over existing state without validation.
+- Any metadata refresh must be safe to replay after restart without creating duplicate published rows.
 
 ## Current Blockers
 
@@ -55,7 +69,7 @@
 
 ## Next Single Task
 
-Define collector provider interfaces and collector-owned domain models for `codes`, `workday`, `kline`, `trade_history`, `order_history`, `finance`, and `f10`, without changing business ingestion behavior yet.
+Implement safe metadata refresh scaffolding for `codes` and `workday`, backed by `collector.db` state and replay-safe publish rules, without breaking current query behavior.
 
 ## Completed Phase 0a Exit Evidence
 
@@ -65,9 +79,17 @@ Define collector provider interfaces and collector-owned domain models for `code
 - control-plane tests pass
 - control documents and machine state remain consistent
 
-## Exit Criteria For Phase 0b
+## Completed Phase 0b Exit Evidence
 
 - provider interfaces exist for planned collector domains
 - collector-owned domain models exist for provider-facing flows
 - the first `tdx-api` provider adapter compiles
-- anti-coupling tests or checks pass
+- anti-coupling tests pass
+- `go test ./collector -run 'TestCollectorCoreAvoidsDirectTDXCoupling|TestTDXProviderCompileContract|TestDocsConsistency' -v` passes
+
+## Exit Criteria For Phase 1
+
+- codes refresh has stateful publish protection
+- workday refresh has stateful publish protection
+- metadata replay after restart does not duplicate published rows
+- metadata validation and persistence tests pass
