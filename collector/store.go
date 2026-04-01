@@ -141,3 +141,27 @@ func (s *Store) UpsertCollectCursor(record *CollectCursorRecord) error {
 	_, err = s.engine.Insert(record)
 	return err
 }
+
+func (s *Store) UpsertCollectGap(record *CollectGapRecord) error {
+	now := time.Now()
+	if record.CreatedAt.IsZero() {
+		record.CreatedAt = now
+	}
+	record.UpdatedAt = now
+	has, err := s.engine.Where(
+		"Domain = ? AND AssetType = ? AND Instrument = ? AND Period = ? AND StartKey = ? AND EndKey = ?",
+		record.Domain, record.AssetType, record.Instrument, record.Period, record.StartKey, record.EndKey,
+	).Exist(new(CollectGapRecord))
+	if err != nil {
+		return err
+	}
+	if has {
+		_, err = s.engine.Where(
+			"Domain = ? AND AssetType = ? AND Instrument = ? AND Period = ? AND StartKey = ? AND EndKey = ?",
+			record.Domain, record.AssetType, record.Instrument, record.Period, record.StartKey, record.EndKey,
+		).AllCols().Update(record)
+		return err
+	}
+	_, err = s.engine.Insert(record)
+	return err
+}

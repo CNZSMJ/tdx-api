@@ -210,34 +210,14 @@ func (p *TDXProvider) Klines(ctx context.Context, query KlineQuery) ([]KlineBar,
 	if query.Code == "" {
 		return nil, errors.New("kline query requires code")
 	}
+	if query.AssetType == AssetTypeUnknown {
+		query.AssetType = detectAssetType(query.Code)
+	}
 
 	var resp *protocol.KlineResp
 	if err := p.withClient(ctx, func(client *tdx.Client) error {
 		var err error
-		switch query.Period {
-		case PeriodMinute:
-			resp, err = fetchKlineWithLimit(query.Limit, client.GetKlineMinuteAll, client.GetKlineMinute, query.Code)
-		case Period5Minute:
-			resp, err = fetchKlineWithLimit(query.Limit, client.GetKline5MinuteAll, client.GetKline5Minute, query.Code)
-		case Period15Minute:
-			resp, err = fetchKlineWithLimit(query.Limit, client.GetKline15MinuteAll, client.GetKline15Minute, query.Code)
-		case Period30Minute:
-			resp, err = fetchKlineWithLimit(query.Limit, client.GetKline30MinuteAll, client.GetKline30Minute, query.Code)
-		case Period60Minute:
-			resp, err = fetchKlineWithLimit(query.Limit, client.GetKlineHourAll, client.GetKlineHour, query.Code)
-		case PeriodDay:
-			resp, err = fetchKlineWithLimit(query.Limit, client.GetKlineDayAll, client.GetKlineDay, query.Code)
-		case PeriodWeek:
-			resp, err = fetchKlineWithLimit(query.Limit, client.GetKlineWeekAll, client.GetKlineWeek, query.Code)
-		case PeriodMonth:
-			resp, err = fetchKlineWithLimit(query.Limit, client.GetKlineMonthAll, client.GetKlineMonth, query.Code)
-		case PeriodQuarter:
-			resp, err = fetchKlineWithLimit(query.Limit, client.GetKlineQuarterAll, client.GetKlineQuarter, query.Code)
-		case PeriodYear:
-			resp, err = fetchKlineWithLimit(query.Limit, client.GetKlineYearAll, client.GetKlineYear, query.Code)
-		default:
-			err = fmt.Errorf("unsupported kline period: %s", query.Period)
-		}
+		resp, err = fetchKlineRange(client, query)
 		return err
 	}); err != nil {
 		return nil, err
@@ -486,6 +466,171 @@ func fetchKlineWithLimit(limit int, allFn func(code string) (*protocol.KlineResp
 		return resp.List[i].Time.Before(resp.List[j].Time)
 	})
 	return resp, nil
+}
+
+func fetchKlineRange(client *tdx.Client, query KlineQuery) (*protocol.KlineResp, error) {
+	if client == nil {
+		return nil, errors.New("nil client")
+	}
+
+	isIndex := query.AssetType == AssetTypeIndex || protocol.IsIndex(query.Code)
+	type allFunc func(code string) (*protocol.KlineResp, error)
+	type limitFunc func(code string, start, count uint16) (*protocol.KlineResp, error)
+	type untilFunc func(code string, f func(k *protocol.Kline) bool) (*protocol.KlineResp, error)
+
+	var (
+		all   allFunc
+		lim   limitFunc
+		until untilFunc
+	)
+	switch query.Period {
+	case PeriodMinute:
+		if isIndex {
+			all = func(code string) (*protocol.KlineResp, error) {
+				return client.GetIndexAll(protocol.TypeKlineMinute, code)
+			}
+			lim = func(code string, start, count uint16) (*protocol.KlineResp, error) {
+				return client.GetIndex(protocol.TypeKlineMinute, code, start, count)
+			}
+			until = func(code string, f func(k *protocol.Kline) bool) (*protocol.KlineResp, error) {
+				return client.GetIndexUntil(protocol.TypeKlineMinute, code, f)
+			}
+		} else {
+			all, lim, until = client.GetKlineMinuteAll, client.GetKlineMinute, client.GetKlineMinuteUntil
+		}
+	case Period5Minute:
+		if isIndex {
+			all = func(code string) (*protocol.KlineResp, error) {
+				return client.GetIndexAll(protocol.TypeKline5Minute, code)
+			}
+			lim = func(code string, start, count uint16) (*protocol.KlineResp, error) {
+				return client.GetIndex(protocol.TypeKline5Minute, code, start, count)
+			}
+			until = func(code string, f func(k *protocol.Kline) bool) (*protocol.KlineResp, error) {
+				return client.GetIndexUntil(protocol.TypeKline5Minute, code, f)
+			}
+		} else {
+			all, lim, until = client.GetKline5MinuteAll, client.GetKline5Minute, client.GetKline5MinuteUntil
+		}
+	case Period15Minute:
+		if isIndex {
+			all = func(code string) (*protocol.KlineResp, error) {
+				return client.GetIndexAll(protocol.TypeKline15Minute, code)
+			}
+			lim = func(code string, start, count uint16) (*protocol.KlineResp, error) {
+				return client.GetIndex(protocol.TypeKline15Minute, code, start, count)
+			}
+			until = func(code string, f func(k *protocol.Kline) bool) (*protocol.KlineResp, error) {
+				return client.GetIndexUntil(protocol.TypeKline15Minute, code, f)
+			}
+		} else {
+			all, lim, until = client.GetKline15MinuteAll, client.GetKline15Minute, client.GetKline15MinuteUntil
+		}
+	case Period30Minute:
+		if isIndex {
+			all = func(code string) (*protocol.KlineResp, error) {
+				return client.GetIndexAll(protocol.TypeKline30Minute, code)
+			}
+			lim = func(code string, start, count uint16) (*protocol.KlineResp, error) {
+				return client.GetIndex(protocol.TypeKline30Minute, code, start, count)
+			}
+			until = func(code string, f func(k *protocol.Kline) bool) (*protocol.KlineResp, error) {
+				return client.GetIndexUntil(protocol.TypeKline30Minute, code, f)
+			}
+		} else {
+			all, lim, until = client.GetKline30MinuteAll, client.GetKline30Minute, client.GetKline30MinuteUntil
+		}
+	case Period60Minute:
+		if isIndex {
+			all = func(code string) (*protocol.KlineResp, error) {
+				return client.GetIndexAll(protocol.TypeKline60Minute, code)
+			}
+			lim = func(code string, start, count uint16) (*protocol.KlineResp, error) {
+				return client.GetIndex(protocol.TypeKline60Minute, code, start, count)
+			}
+			until = func(code string, f func(k *protocol.Kline) bool) (*protocol.KlineResp, error) {
+				return client.GetIndexUntil(protocol.TypeKline60Minute, code, f)
+			}
+		} else {
+			all, lim, until = client.GetKlineHourAll, client.GetKlineHour, client.GetKlineHourUntil
+		}
+	case PeriodDay:
+		if isIndex {
+			all, lim, until = client.GetIndexDayAll, client.GetIndexDay, client.GetIndexDayUntil
+		} else {
+			all, lim, until = client.GetKlineDayAll, client.GetKlineDay, client.GetKlineDayUntil
+		}
+	case PeriodWeek:
+		if isIndex {
+			all = client.GetIndexWeekAll
+			lim = func(code string, start, count uint16) (*protocol.KlineResp, error) {
+				return client.GetIndex(protocol.TypeKlineWeek, code, start, count)
+			}
+			until = func(code string, f func(k *protocol.Kline) bool) (*protocol.KlineResp, error) {
+				return client.GetIndexUntil(protocol.TypeKlineWeek, code, f)
+			}
+		} else {
+			all, lim, until = client.GetKlineWeekAll, client.GetKlineWeek, client.GetKlineWeekUntil
+		}
+	case PeriodMonth:
+		if isIndex {
+			all = client.GetIndexMonthAll
+			lim = func(code string, start, count uint16) (*protocol.KlineResp, error) {
+				return client.GetIndex(protocol.TypeKlineMonth, code, start, count)
+			}
+			until = func(code string, f func(k *protocol.Kline) bool) (*protocol.KlineResp, error) {
+				return client.GetIndexUntil(protocol.TypeKlineMonth, code, f)
+			}
+		} else {
+			all, lim, until = client.GetKlineMonthAll, client.GetKlineMonth, client.GetKlineMonthUntil
+		}
+	case PeriodQuarter:
+		if isIndex {
+			all = client.GetIndexQuarterAll
+			lim = func(code string, start, count uint16) (*protocol.KlineResp, error) {
+				return client.GetIndex(protocol.TypeKlineQuarter, code, start, count)
+			}
+			until = func(code string, f func(k *protocol.Kline) bool) (*protocol.KlineResp, error) {
+				return client.GetIndexUntil(protocol.TypeKlineQuarter, code, f)
+			}
+		} else {
+			all, lim, until = client.GetKlineQuarterAll, client.GetKlineQuarter, client.GetKlineQuarterUntil
+		}
+	case PeriodYear:
+		if isIndex {
+			all = client.GetIndexYearAll
+			lim = func(code string, start, count uint16) (*protocol.KlineResp, error) {
+				return client.GetIndex(protocol.TypeKlineYear, code, start, count)
+			}
+			until = func(code string, f func(k *protocol.Kline) bool) (*protocol.KlineResp, error) {
+				return client.GetIndexUntil(protocol.TypeKlineYear, code, f)
+			}
+		} else {
+			all, lim, until = client.GetKlineYearAll, client.GetKlineYear, client.GetKlineYearUntil
+		}
+	default:
+		return nil, fmt.Errorf("unsupported kline period: %s", query.Period)
+	}
+
+	if !query.Since.IsZero() {
+		resp, err := until(query.Code, func(k *protocol.Kline) bool {
+			return !k.Time.After(query.Since)
+		})
+		if err != nil {
+			return nil, err
+		}
+		filtered := make([]*protocol.Kline, 0, len(resp.List))
+		for _, item := range resp.List {
+			if item.Time.After(query.Since) {
+				filtered = append(filtered, item)
+			}
+		}
+		resp.List = filtered
+		resp.Count = uint16(len(filtered))
+		return resp, nil
+	}
+
+	return fetchKlineWithLimit(query.Limit, all, lim, query.Code)
 }
 
 func (p *TDXProvider) refreshInstruments() ([]Instrument, error) {

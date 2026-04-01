@@ -2,10 +2,10 @@
 
 ## Current Snapshot
 
-- Current phase: `2 - Historical Kline`
+- Current phase: `3 - Historical Trade`
 - Phase status: `in_progress`
-- Current task: `Build the kline staging/publish flow with cursor persistence, gap-safe replay, and overlap-safe validation.`
-- Next phase after current completion: `3 - Historical Trade`
+- Current task: `Move historical trade ingestion to DB-first storage with replay-safe publish and derived-bar reproducibility.`
+- Next phase after current completion: `4 - Order History`
 
 ## Phase Status Board
 
@@ -14,8 +14,8 @@
 | 0a | Control Plane | done |
 | 0b | Provider Decoupling | done |
 | 1 | Metadata | done |
-| 2 | Historical Kline | in_progress |
-| 3 | Historical Trade | pending |
+| 2 | Historical Kline | done |
+| 3 | Historical Trade | in_progress |
 | 4 | Order History | pending |
 | 5 | Live Capture | pending |
 | 6 | Fundamentals | pending |
@@ -52,20 +52,31 @@
 - Added metadata cursor persistence in `collector.db`
 - Added replay-safe metadata validation logs
 - Added metadata tests that prove publish correctness and restart-safe replay
+- Added collector-owned kline staging/publish flow with:
+  - per-code SQLite publish databases
+  - per-period staging tables
+  - cursor persistence in `collector.db`
+  - overlap-safe replay replacement
+  - gap recording in `collector_gap`
+- Added kline tests covering:
+  - first publish correctness
+  - overlap-safe replay after restart
+  - missing-window gap recording
 
 ## Current Phase Checklist
 
-- [ ] Define kline staging schema and publish contract
-- [ ] Add kline cursor persistence and overlap-safe replay rules
-- [ ] Add gap detection for kline periods
-- [ ] Add restart-safe kline publish tests
-- [ ] Update contracts and logs for phase 2 outputs
+- [ ] Define DB-first historical trade storage contract
+- [ ] Add historical trade staging/publish flow
+- [ ] Add replay-safe dedupe rules for historical trade rows
+- [ ] Add derived-bar reproducibility tests
+- [ ] Update contracts and logs for phase 3 outputs
 
 ## Current Phase Rules
 
 - Keep provider access behind collector interfaces introduced in phase `0b`.
-- Do not write kline rows directly into published tables without staging validation.
-- Any overlap replay must prove that rerunning an already-published window does not corrupt published bars.
+- Do not keep historical trade data CSV-only once phase `3` begins.
+- Any derived minute bars must be reproducible from stored raw historical trade rows.
+- Replay of an already-seen trade day must not duplicate published trade rows.
 
 ## Current Blockers
 
@@ -73,7 +84,7 @@
 
 ## Next Single Task
 
-Implement the first safe kline staging/publish pipeline with cursor persistence and overlap-safe replay tests, without changing existing query routes yet.
+Implement DB-first historical trade ingestion with replay-safe publish and tests that prove derived bars can be reproduced from stored raw trade data.
 
 ## Completed Phase 0a Exit Evidence
 
@@ -99,9 +110,17 @@ Implement the first safe kline staging/publish pipeline with cursor persistence 
 - metadata validation and persistence tests pass
 - `go test ./collector -run 'TestMetadataRefreshPublishesCodesAndWorkdays|TestMetadataRefreshIsReplaySafeAcrossRestart|TestCollectorCoreAvoidsDirectTDXCoupling|TestDocsConsistency' -v` passes
 
-## Exit Criteria For Phase 2
+## Completed Phase 2 Exit Evidence
 
 - kline write path uses staging and publish flow
 - kline cursor persistence survives restart
 - overlap replay does not duplicate or corrupt bars
 - kline validation and replay tests pass
+- `go test ./collector -run 'TestKlineRefreshPublishesAndPersistsCursor|TestKlineRefreshIsOverlapSafeAcrossRestart|TestKlineRefreshRecordsGap|TestMetadataRefreshPublishesCodesAndWorkdays|TestMetadataRefreshIsReplaySafeAcrossRestart|TestCollectorCoreAvoidsDirectTDXCoupling|TestDocsConsistency' -v` passes
+
+## Exit Criteria For Phase 3
+
+- historical trade raw data lands in DB as primary storage
+- replay of a previously published trade day is dedupe-safe
+- derived minute bars are reproducible from stored raw trade data
+- historical trade validation and replay tests pass

@@ -169,3 +169,36 @@ Do not summarize test results vaguely. Record exact commands and exact outcomes.
 - Commit sha: `pending current commit`
 - Blockers: none
 - Next step: build kline staging/publish flow with cursor persistence and overlap-safe replay checks
+
+## 2026-04-02 03:10 CST
+
+- Phase: `2 - Historical Kline`
+- Goal: add a collector-owned kline publish pipeline with staging, cursor persistence, overlap-safe replay, and missing-window visibility
+- Files changed:
+  - `collector/domain.go`
+  - `collector/provider_tdx.go`
+  - `collector/store.go`
+  - `collector/kline.go`
+  - `collector/kline_test.go`
+  - `docs/collector/PROGRESS.md`
+  - `docs/collector/STATE.yaml`
+  - `docs/collector/DATA_CONTRACT.md`
+  - `docs/collector/WORK_LOG.md`
+- Commands run:
+  - `gofmt -w collector/*.go`
+  - `go test ./collector -run 'TestKlineRefreshPublishesAndPersistsCursor|TestKlineRefreshIsOverlapSafeAcrossRestart|TestKlineRefreshRecordsGap|TestMetadataRefreshPublishesCodesAndWorkdays|TestMetadataRefreshIsReplaySafeAcrossRestart|TestCollectorCoreAvoidsDirectTDXCoupling|TestDocsConsistency' -v`
+  - `go test ./...`
+  - `cd web && go test ./...`
+- Results:
+  - Added collector-owned kline staging/publish flow per code and period
+  - Extended the `tdx` provider adapter so index kline queries use the correct upstream index path
+  - Added kline cursor persistence in `collector.db`
+  - Added overlap-safe replay replacement for published bars
+  - Added gap recording into `collector_gap`
+  - Added tests that verify first publish, restart-safe overlap replay, and missing-window gap recording
+  - Verified collector targeted tests, root Go tests, and web Go tests pass
+  - Completed phase `2 - Historical Kline`
+  - Advanced project state to `3 - Historical Trade`
+- Commit sha: `pending current commit`
+- Blockers: none
+- Next step: move historical trade ingestion to DB-first storage and prove derived bars remain reproducible

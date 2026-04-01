@@ -97,3 +97,11 @@ No agent may convert these unresolved semantics into hard business claims withou
 - metadata publish state is persisted through `collector_cursor` records with:
   - `domain = codes, asset_type = metadata, instrument = all`
   - `domain = workday, asset_type = metadata, instrument = all`
+
+## Implemented Kline Publish Rules
+
+- kline bars now publish through collector-owned staging tables inside each per-code SQLite database.
+- kline replay state is persisted through `collector_cursor` records with:
+  - `domain = kline, asset_type = <asset>, instrument = <code>, period = <period>`
+- overlap replay is handled by deleting published rows from the first staged timestamp forward, then inserting the newly staged rows inside one transaction.
+- detected missing windows are recorded in `collector_gap`.

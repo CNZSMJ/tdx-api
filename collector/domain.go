@@ -198,6 +198,7 @@ type KlineQuery struct {
 	AssetType AssetType
 	Period    KlinePeriod
 	Limit     int
+	Since     time.Time
 }
 
 type MinuteQuery struct {
