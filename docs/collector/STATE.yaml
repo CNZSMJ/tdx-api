@@ -4,7 +4,7 @@ goal: full automated safe collector
 current_phase:
   id: phase_7
   name: Final Acceptance
-  status: in_progress
+  status: done
 
 next_phase:
   id: completed
@@ -12,7 +12,7 @@ next_phase:
 
 current_task:
   id: phase_7_task_1
-  summary: Run end-to-end acceptance, verify restart catch-up coverage, and publish the final acceptance report.
+  summary: Final acceptance completed with startup catch-up automation, restart recovery evidence, and a published acceptance report.
 
 required_read_order:
   - docs/collector/START_HERE.md
@@ -24,7 +24,7 @@ required_read_order:
   - docs/collector/WORK_LOG.md
 
 allowed_to_commit: true
-allowed_to_advance: false
+allowed_to_advance: true
 
 phase_exit_criteria:
   - acceptance_coverage_ready
@@ -33,11 +33,12 @@ phase_exit_criteria:
   - final_blocking_suite_green
 
 last_verified_commit: null
-last_verified_at: "2026-04-02 03:24:33 CST"
+last_verified_at: "2026-04-02 22:38:18 CST"
 last_test_suite:
+  - go test ./collector -run 'TestCollectorRuntimeStartupCatchUpAcrossDomains|TestCollectorFinalAcceptanceEndToEndCatchUp' -v
+  - go test ./collector -v
   - go test ./...
   - cd web && go test ./...
-  - go test ./collector -run 'TestFundamentalsRefreshFinanceAndF10AreReplaySafe|TestLiveCaptureStoresQuotesAndSessionData|TestLiveCaptureReplayAndReconcileAreSafe|TestOrderHistoryRefreshPublishesDBFirstAndPersistsCursor|TestOrderHistoryReplayPreservesRawDeltaValues|TestTradeRefreshPublishesDBFirstAndPersistsCursor|TestTradeRefreshIsReplaySafeAndDerivedBarsAreReproducible|TestKlineRefreshPublishesAndPersistsCursor|TestKlineRefreshIsOverlapSafeAcrossRestart|TestKlineRefreshRecordsGap|TestMetadataRefreshPublishesCodesAndWorkdays|TestMetadataRefreshIsReplaySafeAcrossRestart|TestCollectorCoreAvoidsDirectTDXCoupling|TestDocsConsistency' -v
 
 blocking_issues: []
 

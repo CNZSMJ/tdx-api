@@ -316,3 +316,55 @@ Do not summarize test results vaguely. Record exact commands and exact outcomes.
 - Commit sha: `pending current commit`
 - Blockers: none
 - Next step: run end-to-end acceptance and publish the final acceptance report
+
+## 2026-04-02 22:38 CST
+
+- Phase: `7 - Final Acceptance`
+- Goal: automate startup catch-up, verify restart recovery across implemented collector domains, and publish the final acceptance report
+- Files changed:
+  - `collector/store.go`
+  - `collector/runtime.go`
+  - `collector/runtime_test.go`
+  - `collector/acceptance_test.go`
+  - `docs/collector/FINAL_ACCEPTANCE_REPORT.md`
+  - `docs/collector/PROGRESS.md`
+  - `docs/collector/STATE.yaml`
+  - `docs/collector/WORK_LOG.md`
+- Commands run:
+  - `sed -n '1,260p' docs/collector/START_HERE.md`
+  - `sed -n '1,260p' docs/collector/MASTER_PLAN.md`
+  - `sed -n '1,260p' docs/collector/PROGRESS.md`
+  - `sed -n '1,260p' docs/collector/STATE.yaml`
+  - `sed -n '1,260p' docs/collector/TEST_MATRIX.md`
+  - `sed -n '1,260p' docs/collector/DATA_CONTRACT.md`
+  - `sed -n '1,320p' docs/collector/WORK_LOG.md`
+  - `sed -n '1,260p' collector/acceptance_test.go`
+  - `go test ./collector -run 'TestCollectorFinalAcceptanceEndToEndCatchUp' -v`
+  - `go test ./collector -v`
+  - `gofmt -w collector/*.go`
+  - `go test ./collector -run 'TestCollectorRuntimeStartupCatchUpAcrossDomains|TestCollectorFinalAcceptanceEndToEndCatchUp|TestDocsConsistency' -v`
+  - `go test ./collector -v`
+  - `go test ./collector -run 'TestCollectorRuntimeStartupCatchUpAcrossDomains|TestCollectorFinalAcceptanceEndToEndCatchUp' -v`
+  - `go test ./...`
+  - `cd web && go test ./...`
+  - `git rev-parse HEAD`
+  - `date '+%Y-%m-%d %H:%M:%S CST'`
+- Results:
+  - Found and corrected a leftover phase-state documentation mismatch from the interrupted prior run: `PROGRESS.md` had `Completed` while `STATE.yaml` required `completed - Completed`.
+  - Added `collector/runtime.go` to automate startup catch-up through the existing collector services without introducing new direct coupling to `tdx-api` internals.
+  - Added `TestCollectorRuntimeStartupCatchUpAcrossDomains` to verify startup catch-up across metadata, kline, trade history, order history, live reconciliation, finance, and F10 after reopening the same `collector.db`.
+  - Updated `TestCollectorFinalAcceptanceEndToEndCatchUp` to exercise the runtime rather than manual per-service calls.
+  - Recorded the final acceptance report in `docs/collector/FINAL_ACCEPTANCE_REPORT.md`.
+  - Exact test outcomes:
+    - `go test ./collector -run 'TestCollectorFinalAcceptanceEndToEndCatchUp' -v` -> `PASS`
+    - `go test ./collector -v` (before docs fix) -> `FAIL` because `TestDocsConsistency` reported `progress next phase mismatch: got "Completed" want "completed - Completed"`
+    - `go test ./collector -run 'TestCollectorRuntimeStartupCatchUpAcrossDomains|TestCollectorFinalAcceptanceEndToEndCatchUp|TestDocsConsistency' -v` -> `PASS`
+    - `go test ./collector -v` -> `PASS`
+    - `go test ./collector -run 'TestCollectorRuntimeStartupCatchUpAcrossDomains|TestCollectorFinalAcceptanceEndToEndCatchUp' -v` -> `PASS`
+    - `go test ./...` -> `PASS`
+    - `cd web && go test ./...` -> `PASS`
+  - Completed phase `7 - Final Acceptance`
+  - Set `allowed_to_advance: true`
+- Commit sha: `pending current commit`
+- Blockers: none
+- Next step: none; collector final acceptance is complete

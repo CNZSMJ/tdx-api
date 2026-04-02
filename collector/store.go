@@ -116,6 +116,16 @@ func (s *Store) AddOperationLog(record *OperationLogRecord) error {
 	return err
 }
 
+func (s *Store) AddScheduleRun(record *ScheduleRunRecord) error {
+	_, err := s.engine.Insert(record)
+	return err
+}
+
+func (s *Store) UpdateScheduleRun(record *ScheduleRunRecord) error {
+	_, err := s.engine.ID(record.ID).AllCols().Update(record)
+	return err
+}
+
 func (s *Store) GetCollectCursor(domain, assetType, instrument, period string) (*CollectCursorRecord, error) {
 	record := new(CollectCursorRecord)
 	has, err := s.engine.Where("Domain = ? AND AssetType = ? AND Instrument = ? AND Period = ?", domain, assetType, instrument, period).Get(record)

@@ -3,9 +3,9 @@
 ## Current Snapshot
 
 - Current phase: `7 - Final Acceptance`
-- Phase status: `in_progress`
-- Current task: `Run end-to-end acceptance, verify restart catch-up coverage, and publish the final acceptance report.`
-- Next phase after current completion: `Completed`
+- Phase status: `done`
+- Current task: `Final acceptance completed; startup catch-up coverage, restart recovery evidence, and the acceptance report are recorded.`
+- Next phase after current completion: `completed - Completed`
 
 ## Phase Status Board
 
@@ -19,7 +19,7 @@
 | 4 | Order History | done |
 | 5 | Live Capture | done |
 | 6 | Fundamentals | done |
-| 7 | Final Acceptance | in_progress |
+| 7 | Final Acceptance | done |
 
 ## Recently Completed
 
@@ -99,13 +99,16 @@
   - finance replay-safe refresh
   - F10 replay-safe directory/content sync
   - hashed F10 content persistence
+- Added `collector/runtime.go` to automate startup catch-up across implemented collector domains
+- Added phase-7 acceptance tests for runtime startup catch-up and end-to-end restart recovery
+- Published the final acceptance report at `docs/collector/FINAL_ACCEPTANCE_REPORT.md`
 
 ## Current Phase Checklist
 
-- [ ] Add end-to-end acceptance test coverage
-- [ ] Verify long-downtime/restart catch-up behavior across collector domains
-- [ ] Publish final acceptance report
-- [ ] Update final progress, state, and work log
+- [x] Add end-to-end acceptance test coverage
+- [x] Verify long-downtime/restart catch-up behavior across collector domains
+- [x] Publish final acceptance report
+- [x] Update final progress, state, and work log
 
 ## Current Phase Rules
 
@@ -116,11 +119,11 @@
 
 ## Current Blockers
 
-- None recorded yet
+- None
 
 ## Next Single Task
 
-Run end-to-end acceptance, verify restart/catch-up behavior across all implemented collector domains, and write the final acceptance report.
+None. Phase `7 - Final Acceptance` is complete.
 
 ## Completed Phase 0a Exit Evidence
 
@@ -186,9 +189,14 @@ Run end-to-end acceptance, verify restart/catch-up behavior across all implement
 - fundamentals validation and replay tests pass
 - `go test ./collector -run 'TestFundamentalsRefreshFinanceAndF10AreReplaySafe|TestLiveCaptureStoresQuotesAndSessionData|TestLiveCaptureReplayAndReconcileAreSafe|TestOrderHistoryRefreshPublishesDBFirstAndPersistsCursor|TestOrderHistoryReplayPreservesRawDeltaValues|TestTradeRefreshPublishesDBFirstAndPersistsCursor|TestTradeRefreshIsReplaySafeAndDerivedBarsAreReproducible|TestKlineRefreshPublishesAndPersistsCursor|TestKlineRefreshIsOverlapSafeAcrossRestart|TestKlineRefreshRecordsGap|TestMetadataRefreshPublishesCodesAndWorkdays|TestMetadataRefreshIsReplaySafeAcrossRestart|TestCollectorCoreAvoidsDirectTDXCoupling|TestDocsConsistency' -v` passes
 
-## Exit Criteria For Phase 7
+## Completed Phase 7 Exit Evidence
 
-- end-to-end acceptance coverage is present
-- restart/catch-up behavior is verified across implemented domains
-- final acceptance report exists and matches the executed evidence
-- final blocking suite passes
+- startup catch-up is automated through `collector/runtime.go` without breaking the provider adapter boundary
+- end-to-end acceptance coverage exists in:
+  - `collector/runtime_test.go`
+  - `collector/acceptance_test.go`
+- final acceptance report exists at `docs/collector/FINAL_ACCEPTANCE_REPORT.md`
+- `go test ./collector -run 'TestCollectorRuntimeStartupCatchUpAcrossDomains|TestCollectorFinalAcceptanceEndToEndCatchUp' -v` passes
+- `go test ./collector -v` passes
+- `go test ./...` passes
+- `cd web && go test ./...` passes
