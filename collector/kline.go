@@ -190,6 +190,112 @@ func (s *KlineService) Refresh(ctx context.Context, query KlineCollectQuery) err
 	})
 }
 
+func (s *KlineService) ReconcileDate(ctx context.Context, query KlineCollectQuery, date string) error {
+	if query.Code == "" {
+		return errors.New("kline reconcile requires code")
+	}
+	if query.Period == "" {
+		return errors.New("kline reconcile requires period")
+	}
+	target, err := parseTradeCursor(date)
+	if err != nil {
+		return err
+	}
+	if query.AssetType == AssetTypeUnknown {
+		query.AssetType = detectAssetType(query.Code)
+	}
+
+	since := target.Add(-periodOverlapDuration(query.Period, s.cfg.ReplayOverlap))
+	bars, err := s.provider.Klines(ctx, KlineQuery{
+		Code:      query.Code,
+		AssetType: query.AssetType,
+		Period:    query.Period,
+		Since:     since,
+	})
+	if err != nil {
+		return err
+	}
+	staged, err := validateKlineBars(query, bars)
+	if err != nil {
+		return err
+	}
+	if len(staged) == 0 {
+		return nil
+	}
+
+	if err := os.MkdirAll(s.cfg.BaseDir, 0o777); err != nil {
+		return err
+	}
+	engine, err := openMetadataEngine(filepath.Join(s.cfg.BaseDir, query.Code+".db"))
+	if err != nil {
+		return err
+	}
+	defer engine.Close()
+
+	spec, err := klinePeriodSpec(query.Period)
+	if err != nil {
+		return err
+	}
+	if err := engine.Table(spec.PublishedTable).Sync2(new(KlinePublishRow)); err != nil {
+		return err
+	}
+	if err := engine.Table(spec.StagingTable).Sync2(new(KlinePublishRow)); err != nil {
+		return err
+	}
+
+	if _, err := engine.Transaction(func(session *xorm.Session) (interface{}, error) {
+		if _, err := session.Exec("DELETE FROM " + spec.StagingTable); err != nil {
+			return nil, err
+		}
+		rows := make([]any, 0, len(staged))
+		for _, bar := range staged {
+			rows = append(rows, bar)
+		}
+		if _, err := session.Table(spec.StagingTable).Insert(rows...); err != nil {
+			return nil, err
+		}
+		count, err := session.Table(spec.StagingTable).Count(new(KlinePublishRow))
+		if err != nil {
+			return nil, err
+		}
+		if count != int64(len(staged)) {
+			return nil, fmt.Errorf("kline reconcile staging count mismatch: got %d want %d", count, len(staged))
+		}
+		if _, err := session.Table(spec.PublishedTable).Where("Date >= ?", staged[0].Date).Delete(new(KlinePublishRow)); err != nil {
+			return nil, err
+		}
+		if _, err := session.Table(spec.PublishedTable).Insert(rows...); err != nil {
+			return nil, err
+		}
+		if _, err := session.Exec("DELETE FROM " + spec.StagingTable); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}); err != nil {
+		return err
+	}
+
+	last := staged[len(staged)-1]
+	if err := s.store.UpsertCollectCursor(&CollectCursorRecord{
+		Domain:     "kline",
+		AssetType:  string(query.AssetType),
+		Instrument: query.Code,
+		Period:     string(query.Period),
+		Cursor:     strconv.FormatInt(last.Date, 10),
+	}); err != nil {
+		return err
+	}
+	return s.store.AddValidationRun(&ValidationRunRecord{
+		RunID:       fmt.Sprintf("kline-reconcile-%s-%s-%s-%d", query.Code, query.Period, date, time.Now().UnixNano()),
+		PhaseID:     "phase_7",
+		SuiteName:   "kline_reconcile",
+		Status:      "passed",
+		Blocking:    true,
+		CommandText: "kline reconcile publish transaction",
+		OutputText:  fmt.Sprintf("code=%s period=%s date=%s rows=%d", query.Code, query.Period, date, len(staged)),
+	})
+}
+
 func (s *KlineService) recordKlineGap(query KlineCollectQuery, cursorValue string, firstPublished int64) error {
 	cursorUnix, err := strconv.ParseInt(cursorValue, 10, 64)
 	if err != nil {

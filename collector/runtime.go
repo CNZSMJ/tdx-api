@@ -6,20 +6,26 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
 type RuntimeConfig struct {
-	ScheduleName     string
-	Now              func() time.Time
-	CalendarLookback int
-	KlinePeriods     []KlinePeriod
-	Metadata         MetadataConfig
-	Kline            KlineConfig
-	Trade            TradeConfig
-	OrderHistory     OrderHistoryConfig
-	Live             LiveCaptureConfig
-	Fundamentals     FundamentalsConfig
+	ScheduleName          string
+	DailySyncScheduleName string
+	ReconcileScheduleName string
+	ReportDir             string
+	Now                   func() time.Time
+	CalendarLookback      int
+	BootstrapStartDate    string
+	RequestMinInterval    time.Duration
+	KlinePeriods          []KlinePeriod
+	Metadata              MetadataConfig
+	Kline                 KlineConfig
+	Trade                 TradeConfig
+	OrderHistory          OrderHistoryConfig
+	Live                  LiveCaptureConfig
+	Fundamentals          FundamentalsConfig
 }
 
 type Runtime struct {
@@ -47,6 +53,12 @@ func NewRuntime(store *Store, provider Provider, cfg RuntimeConfig) (*Runtime, e
 	if cfg.ScheduleName == "" {
 		cfg.ScheduleName = "collector_startup_catchup"
 	}
+	if cfg.DailySyncScheduleName == "" {
+		cfg.DailySyncScheduleName = "collector_daily_full_sync"
+	}
+	if cfg.ReconcileScheduleName == "" {
+		cfg.ReconcileScheduleName = "collector_daily_reconcile"
+	}
 	if cfg.CalendarLookback <= 0 {
 		cfg.CalendarLookback = 30
 	}
@@ -55,6 +67,7 @@ func NewRuntime(store *Store, provider Provider, cfg RuntimeConfig) (*Runtime, e
 	}
 
 	wireRuntimeConfig(&cfg)
+	provider = newThrottledProvider(provider, cfg.RequestMinInterval)
 
 	metadata, err := NewMetadataService(store, provider, cfg.Metadata)
 	if err != nil {
@@ -94,9 +107,17 @@ func NewRuntime(store *Store, provider Provider, cfg RuntimeConfig) (*Runtime, e
 	}, nil
 }
 
-func (r *Runtime) RunStartupCatchUp(ctx context.Context) (err error) {
+func (r *Runtime) RunStartupCatchUp(ctx context.Context) error {
+	return r.runCatchUp(ctx, r.cfg.ScheduleName, "collector_startup_catchup")
+}
+
+func (r *Runtime) RunDailyFullSync(ctx context.Context) error {
+	return r.runCatchUp(ctx, r.cfg.DailySyncScheduleName, "collector_daily_full_sync")
+}
+
+func (r *Runtime) runCatchUp(ctx context.Context, scheduleName, suiteName string) (err error) {
 	run := &ScheduleRunRecord{
-		ScheduleName: r.cfg.ScheduleName,
+		ScheduleName: scheduleName,
 		Status:       "running",
 		StartedAt:    r.cfg.Now(),
 	}
@@ -235,10 +256,10 @@ func (r *Runtime) RunStartupCatchUp(ctx context.Context) (err error) {
 	return r.store.AddValidationRun(&ValidationRunRecord{
 		RunID:       fmt.Sprintf("runtime-%d", time.Now().UnixNano()),
 		PhaseID:     "phase_7",
-		SuiteName:   "collector_startup_catchup",
+		SuiteName:   suiteName,
 		Status:      "passed",
 		Blocking:    true,
-		CommandText: "collector runtime startup catch-up",
+		CommandText: scheduleName,
 		OutputText:  details,
 	})
 }
@@ -278,11 +299,15 @@ func wireRuntimeConfig(cfg *RuntimeConfig) {
 	if cfg.Fundamentals.BaseDir == "" {
 		cfg.Fundamentals.BaseDir = filepath.Join(DefaultBaseDir, "fundamentals")
 	}
+	if cfg.ReportDir == "" {
+		cfg.ReportDir = filepath.Join(DefaultBaseDir, "collector_reports")
+	}
 }
 
 func (r *Runtime) loadTradingDays(ctx context.Context, instruments []Instrument) ([]TradingDay, error) {
 	start := r.cfg.Now().AddDate(0, 0, -r.cfg.CalendarLookback)
 	end := r.cfg.Now().Add(24 * time.Hour)
+	needsBootstrap := false
 	for _, instrument := range instruments {
 		cursors := []struct {
 			domain string
@@ -303,6 +328,7 @@ func (r *Runtime) loadTradingDays(ctx context.Context, instruments []Instrument)
 				return nil, err
 			}
 			if cursor == nil || cursor.Cursor == "" {
+				needsBootstrap = true
 				continue
 			}
 			parsed, err := parseTradeCursor(cursor.Cursor)
@@ -313,6 +339,9 @@ func (r *Runtime) loadTradingDays(ctx context.Context, instruments []Instrument)
 				start = parsed
 			}
 		}
+	}
+	if needsBootstrap {
+		start = parseBootstrapStartDate(r.cfg.BootstrapStartDate)
 	}
 
 	items, err := r.provider.TradingDays(ctx, TradingDayQuery{
@@ -353,7 +382,11 @@ func (r *Runtime) pendingTradingDates(domain string, assetType AssetType, code s
 		return nil, err
 	}
 	if cursor == nil || cursor.Cursor == "" {
-		return []string{tradingDays[len(tradingDays)-1].Date}, nil
+		out := make([]string, 0, len(tradingDays))
+		for _, day := range tradingDays {
+			out = append(out, day.Date)
+		}
+		return out, nil
 	}
 
 	out := make([]string, 0, len(tradingDays))
@@ -363,6 +396,18 @@ func (r *Runtime) pendingTradingDates(domain string, assetType AssetType, code s
 		}
 	}
 	return out, nil
+}
+
+func parseBootstrapStartDate(value string) time.Time {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}
+	}
+	ts, err := parseTradeCursor(value)
+	if err != nil {
+		return time.Time{}
+	}
+	return ts
 }
 
 func normalizeInstruments(items []Instrument) []Instrument {

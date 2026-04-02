@@ -12,19 +12,105 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/injoyai/tdx"
+	collectorpkg "github.com/injoyai/tdx/collector"
 	"github.com/injoyai/tdx/extend"
 	"github.com/injoyai/tdx/protocol"
 )
 
 var (
-	client      *tdx.Client
-	manager     *tdx.Manage
-	taskManager = NewTaskManager()
-	databaseDir string
+	client             *tdx.Client
+	manager            *tdx.Manage
+	taskManager        = NewTaskManager()
+	databaseDir        string
+	collectorRuntime   *collectorpkg.Runtime
+	collectorRunActive atomic.Bool
+	collectorJobState  = newCollectorExecutionState()
 )
+
+const (
+	collectorDailySyncSpec      = "0 0 18 * * *"
+	collectorDailyReconcileSpec = "0 0 19 * * *"
+	collectorRunTimeout         = 6 * time.Hour
+	collectorRequestMinInterval = 250 * time.Millisecond
+)
+
+type collectorJobSnapshot struct {
+	Name        string    `json:"name"`
+	Trigger     string    `json:"trigger"`
+	Date        string    `json:"date,omitempty"`
+	Status      string    `json:"status"`
+	Error       string    `json:"error,omitempty"`
+	ReportPath  string    `json:"report_path,omitempty"`
+	StartedAt   time.Time `json:"started_at"`
+	CompletedAt time.Time `json:"completed_at,omitempty"`
+}
+
+type collectorExecutionState struct {
+	mu      sync.RWMutex
+	current *collectorJobSnapshot
+	last    map[string]collectorJobSnapshot
+}
+
+func newCollectorExecutionState() *collectorExecutionState {
+	return &collectorExecutionState{
+		last: make(map[string]collectorJobSnapshot),
+	}
+}
+
+func (s *collectorExecutionState) start(name, trigger, date string) *collectorJobSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.current = &collectorJobSnapshot{
+		Name:      name,
+		Trigger:   trigger,
+		Date:      date,
+		Status:    "running",
+		StartedAt: time.Now(),
+	}
+	return s.current
+}
+
+func (s *collectorExecutionState) finish(job *collectorJobSnapshot, status, reportPath string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if job == nil {
+		return
+	}
+	job.Status = status
+	job.ReportPath = reportPath
+	job.CompletedAt = time.Now()
+	if err != nil {
+		job.Error = err.Error()
+	}
+	s.last[job.Name] = *job
+	s.current = nil
+}
+
+func (s *collectorExecutionState) snapshot() map[string]any {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	last := make(map[string]collectorJobSnapshot, len(s.last))
+	for key, value := range s.last {
+		last[key] = value
+	}
+	out := map[string]any{
+		"active": collectorRunActive.Load(),
+		"last":   last,
+	}
+	if s.current != nil {
+		current := *s.current
+		out["current"] = current
+	}
+	return out
+}
 
 func configureDatabaseDir() {
 	_, sourceFile, _, ok := runtime.Caller(0)
@@ -130,6 +216,259 @@ func init() {
 		log.Printf("更新交易日数据失败: %v", err)
 	}
 	manager.Cron.Start()
+	initCollectorRuntime()
+}
+
+func initCollectorRuntime() {
+	store, err := collectorpkg.OpenStore(filepath.Join(databaseDir, "collector.db"))
+	if err != nil {
+		log.Printf("初始化 collector store 失败: %v", err)
+		return
+	}
+
+	runtime, err := collectorpkg.NewRuntime(
+		store,
+		collectorpkg.NewTDXProvider(manager, client),
+		collectorpkg.RuntimeConfig{
+			ScheduleName:          "collector_startup_catchup",
+			DailySyncScheduleName: "collector_daily_full_sync",
+			ReconcileScheduleName: "collector_daily_reconcile",
+			ReportDir:             filepath.Join(databaseDir, "collector_reports"),
+			BootstrapStartDate:    strings.TrimSpace(os.Getenv("COLLECTOR_BOOTSTRAP_START")),
+			RequestMinInterval:    collectorRequestMinInterval,
+			KlinePeriods:          collectorKlinePeriods(),
+			Metadata: collectorpkg.MetadataConfig{
+				CodesDBPath:   filepath.Join(databaseDir, "codes.db"),
+				WorkdayDBPath: filepath.Join(databaseDir, "workday.db"),
+			},
+			Kline:        collectorpkg.KlineConfig{BaseDir: filepath.Join(databaseDir, "kline")},
+			Trade:        collectorpkg.TradeConfig{BaseDir: filepath.Join(databaseDir, "trade")},
+			OrderHistory: collectorpkg.OrderHistoryConfig{BaseDir: filepath.Join(databaseDir, "order_history")},
+			Live:         collectorpkg.LiveCaptureConfig{BaseDir: filepath.Join(databaseDir, "live")},
+			Fundamentals: collectorpkg.FundamentalsConfig{BaseDir: filepath.Join(databaseDir, "fundamentals")},
+		},
+	)
+	if err != nil {
+		log.Printf("初始化 collector runtime 失败: %v", err)
+		_ = store.Close()
+		return
+	}
+	collectorRuntime = runtime
+
+	if _, err := manager.Cron.AddFunc(collectorDailySyncSpec, func() {
+		go runCollectorCatchUp("daily-18:00")
+	}); err != nil {
+		log.Printf("注册 collector 每日 18:00 全量同步失败: %v", err)
+		return
+	}
+
+	if _, err := manager.Cron.AddFunc(collectorDailyReconcileSpec, func() {
+		go runCollectorReconcile("daily-19:00", time.Now().Format("20060102"))
+	}); err != nil {
+		log.Printf("注册 collector 每日 19:00 对账失败: %v", err)
+		return
+	}
+
+	bootstrapStart := strings.TrimSpace(os.Getenv("COLLECTOR_BOOTSTRAP_START"))
+	if bootstrapStart == "" {
+		bootstrapStart = "provider-earliest"
+	}
+	log.Printf("已启用 collector 计划: startup catch-up + 每日 18:00 全量同步 + 每日 19:00 对账，本地时区=%s bootstrap_start=%s min_request_interval=%s", time.Now().Location(), bootstrapStart, collectorRequestMinInterval)
+	go runCollectorStartupSequence()
+}
+
+func collectorKlinePeriods() []collectorpkg.KlinePeriod {
+	return []collectorpkg.KlinePeriod{
+		collectorpkg.PeriodMinute,
+		collectorpkg.Period5Minute,
+		collectorpkg.Period15Minute,
+		collectorpkg.Period30Minute,
+		collectorpkg.Period60Minute,
+		collectorpkg.PeriodDay,
+		collectorpkg.PeriodWeek,
+		collectorpkg.PeriodMonth,
+		collectorpkg.PeriodQuarter,
+		collectorpkg.PeriodYear,
+	}
+}
+
+func runCollectorStartupSequence() {
+	if err := runCollectorCatchUp("startup"); err != nil {
+		log.Printf("collector startup catch-up 失败: %v", err)
+	}
+	if err := runCollectorMissedMaintenance(); err != nil {
+		log.Printf("collector 漏跑补偿失败: %v", err)
+	}
+}
+
+func runCollectorCatchUp(trigger string) error {
+	if collectorRuntime == nil {
+		return fmt.Errorf("collector runtime 未初始化，跳过触发: %s", trigger)
+	}
+	if !collectorRunActive.CompareAndSwap(false, true) {
+		return fmt.Errorf("collector 全量补采仍在运行，跳过触发: %s", trigger)
+	}
+	defer collectorRunActive.Store(false)
+
+	jobName := "daily_full_sync"
+	runFn := collectorRuntime.RunDailyFullSync
+	if trigger == "startup" {
+		jobName = "startup_catchup"
+		runFn = collectorRuntime.RunStartupCatchUp
+	}
+	job := collectorJobState.start(jobName, trigger, "")
+	log.Printf("collector 全量补采开始: trigger=%s", trigger)
+	ctx, cancel := context.WithTimeout(context.Background(), collectorRunTimeout)
+	defer cancel()
+
+	started := time.Now()
+	if err := runFn(ctx); err != nil {
+		collectorJobState.finish(job, "failed", "", err)
+		log.Printf("collector 全量补采失败: trigger=%s duration=%s err=%v", trigger, time.Since(started), err)
+		return err
+	}
+	collectorJobState.finish(job, "passed", "", nil)
+	log.Printf("collector 全量补采完成: trigger=%s duration=%s", trigger, time.Since(started))
+	return nil
+}
+
+func runCollectorReconcile(trigger, date string) (*collectorpkg.ReconcileReport, error) {
+	if collectorRuntime == nil {
+		return nil, fmt.Errorf("collector runtime 未初始化，跳过对账: trigger=%s date=%s", trigger, date)
+	}
+	if !collectorRunActive.CompareAndSwap(false, true) {
+		return nil, fmt.Errorf("collector 任务仍在运行，跳过对账: trigger=%s date=%s", trigger, date)
+	}
+	defer collectorRunActive.Store(false)
+
+	jobName := "daily_reconcile"
+	if trigger == "manual" {
+		jobName = "manual_reconcile"
+	}
+	job := collectorJobState.start(jobName, trigger, date)
+	log.Printf("collector 对账开始: trigger=%s date=%s", trigger, date)
+	ctx, cancel := context.WithTimeout(context.Background(), collectorRunTimeout)
+	defer cancel()
+
+	started := time.Now()
+	report, err := collectorRuntime.ReconcileDateWithTrigger(ctx, date, trigger)
+	if err != nil {
+		collectorJobState.finish(job, "failed", "", err)
+		log.Printf("collector 对账失败: trigger=%s date=%s duration=%s err=%v", trigger, date, time.Since(started), err)
+		return nil, err
+	}
+	collectorJobState.finish(job, report.Status, report.ReportPath, nil)
+	log.Printf("collector 对账完成: trigger=%s date=%s status=%s duration=%s report=%s", trigger, date, report.Status, time.Since(started), report.ReportPath)
+	return report, nil
+}
+
+func runCollectorMissedMaintenance() error {
+	if collectorRuntime == nil {
+		return nil
+	}
+	now := time.Now()
+	syncAnchor := mostRecentScheduleAnchor(now, 18)
+	if hasRun, err := collectorRuntime.HasSuccessfulRunInWindow(collectorRuntime.DailySyncScheduleName(), syncAnchor, syncAnchor.Add(24*time.Hour)); err != nil {
+		return err
+	} else if !hasRun {
+		log.Printf("collector 检测到 18:00 全量同步漏跑，开始补偿: anchor=%s", syncAnchor.Format(time.RFC3339))
+		if err := runCollectorCatchUp("compensate-daily-18:00"); err != nil {
+			return err
+		}
+	}
+
+	reconcileDate := mostRecentReconcileDate(now)
+	hasReconcile, err := collectorRuntime.HasSuccessfulReconcileForDate(reconcileDate)
+	if err != nil {
+		return err
+	}
+	if !hasReconcile {
+		log.Printf("collector 检测到 19:00 对账漏跑，开始补偿: date=%s", reconcileDate)
+		if _, err := runCollectorReconcile("compensate-daily-19:00", reconcileDate); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func mostRecentScheduleAnchor(now time.Time, hour int) time.Time {
+	anchor := time.Date(now.Year(), now.Month(), now.Day(), hour, 0, 0, 0, now.Location())
+	if now.Before(anchor) {
+		return anchor.Add(-24 * time.Hour)
+	}
+	return anchor
+}
+
+func mostRecentReconcileDate(now time.Time) string {
+	anchor := time.Date(now.Year(), now.Month(), now.Day(), 19, 0, 0, 0, now.Location())
+	if now.Before(anchor) {
+		return now.AddDate(0, 0, -1).Format("20060102")
+	}
+	return now.Format("20060102")
+}
+
+func handleCollectorStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		errorResponse(w, "只支持GET请求")
+		return
+	}
+	if collectorRuntime == nil {
+		errorResponse(w, "collector runtime 未初始化")
+		return
+	}
+	status, err := collectorRuntime.Status()
+	if err != nil {
+		errorResponse(w, "读取collector状态失败: "+err.Error())
+		return
+	}
+	successResponse(w, map[string]any{
+		"runtime": status,
+		"jobs":    collectorJobState.snapshot(),
+		"schedule": map[string]string{
+			"daily_full_sync": collectorDailySyncSpec,
+			"daily_reconcile": collectorDailyReconcileSpec,
+		},
+	})
+}
+
+func handleCollectorReconcile(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		if collectorRuntime == nil {
+			errorResponse(w, "collector runtime 未初始化")
+			return
+		}
+		date := strings.TrimSpace(r.URL.Query().Get("date"))
+		if date == "" {
+			var req struct {
+				Date string `json:"date"`
+			}
+			if r.Body != nil {
+				_ = json.NewDecoder(r.Body).Decode(&req)
+				date = strings.TrimSpace(req.Date)
+			}
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), collectorRunTimeout)
+		defer cancel()
+		_ = ctx
+		report, err := runCollectorReconcile("manual", date)
+		if err != nil {
+			errorResponse(w, "执行对账失败: "+err.Error())
+			return
+		}
+		successResponse(w, report)
+	case http.MethodGet:
+		date := strings.TrimSpace(r.URL.Query().Get("date"))
+		report, err := collectorpkg.ReadReconcileReport(filepath.Join(databaseDir, "collector_reports"), date)
+		if err != nil {
+			errorResponse(w, "读取对账报告失败: "+err.Error())
+			return
+		}
+		successResponse(w, report)
+	default:
+		errorResponse(w, "只支持GET和POST请求")
+	}
 }
 
 // Response 统一响应结构
@@ -956,6 +1295,8 @@ func main() {
 	http.HandleFunc("/api/index-codes", handleGetIndexCodes)
 	http.HandleFunc("/api/server-status", handleGetServerStatus)
 	http.HandleFunc("/api/health", handleHealthCheck)
+	http.HandleFunc("/api/collector/status", handleCollectorStatus)
+	http.HandleFunc("/api/collector/reconcile", handleCollectorReconcile)
 	http.HandleFunc("/api/etf", handleGetETFList)
 	http.HandleFunc("/api/trade-history", handleGetTradeHistory)
 	http.HandleFunc("/api/order-history", handleGetOrderHistory)

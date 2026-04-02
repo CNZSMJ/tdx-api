@@ -4,7 +4,7 @@
 
 - Current phase: `7 - Final Acceptance`
 - Phase status: `done`
-- Current task: `Final acceptance completed; startup catch-up coverage, restart recovery evidence, and the acceptance report are recorded.`
+- Current task: `Final acceptance remains complete; operations hardening now adds 18:00 full-sync persistence, 19:00 reconciliation/reporting, missed-run compensation, status observability, and provider request throttling.`
 - Next phase after current completion: `completed - Completed`
 
 ## Phase Status Board
@@ -102,6 +102,16 @@
 - Added `collector/runtime.go` to automate startup catch-up across implemented collector domains
 - Added phase-7 acceptance tests for runtime startup catch-up and end-to-end restart recovery
 - Published the final acceptance report at `docs/collector/FINAL_ACCEPTANCE_REPORT.md`
+- Wired the collector runtime into `web/server.go` so the web service now runs one startup catch-up, one daily full synchronization at `18:00`, and one daily reconciliation/repair run at `19:00` local server time
+- Added date-based reconciliation/report support through `collector/reconcile.go`
+- Added an external reconciliation API at `/api/collector/reconcile`
+- Hardened collector operations with:
+  - a distinct `collector_daily_full_sync` schedule record instead of reusing startup markers
+  - startup missed-run compensation for the latest 18:00 sync / 19:00 reconciliation windows
+  - a status API at `/api/collector/status`
+  - provider request throttling to reduce upstream rate-limit / ban risk
+  - empty-cursor bootstrap behavior that backfills all available trading days instead of only the latest day
+  - richer reconciliation reports that now record per-domain before/after row counts, per-table row counts, cursor summaries, and target-date coverage
 
 ## Current Phase Checklist
 
@@ -192,6 +202,8 @@ None. Phase `7 - Final Acceptance` is complete.
 ## Completed Phase 7 Exit Evidence
 
 - startup catch-up is automated through `collector/runtime.go` without breaking the provider adapter boundary
+- startup catch-up backfills all available trading days for empty cursors instead of only the latest day
+- operational scheduling is observable through `/api/collector/status` and distinct schedule-run records
 - end-to-end acceptance coverage exists in:
   - `collector/runtime_test.go`
   - `collector/acceptance_test.go`

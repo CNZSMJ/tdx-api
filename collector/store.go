@@ -126,6 +126,51 @@ func (s *Store) UpdateScheduleRun(record *ScheduleRunRecord) error {
 	return err
 }
 
+func (s *Store) LatestScheduleRun(scheduleName string, statuses ...string) (*ScheduleRunRecord, error) {
+	record := new(ScheduleRunRecord)
+	session := s.engine.Where("ScheduleName = ?", scheduleName)
+	if len(statuses) > 0 {
+		session = session.In("Status", statuses)
+	}
+	has, err := session.Desc("StartedAt").Get(record)
+	if err != nil {
+		return nil, err
+	}
+	if !has {
+		return nil, nil
+	}
+	return record, nil
+}
+
+func (s *Store) ListRecentScheduleRuns(limit int) ([]ScheduleRunRecord, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	records := make([]ScheduleRunRecord, 0, limit)
+	err := s.engine.Desc("StartedAt").Limit(limit).Find(&records)
+	return records, err
+}
+
+func (s *Store) HasScheduleRunInWindow(scheduleName string, windowStart, windowEnd time.Time, statuses ...string) (bool, error) {
+	session := s.engine.Where("ScheduleName = ? AND StartedAt >= ? AND StartedAt < ?", scheduleName, windowStart, windowEnd)
+	if len(statuses) > 0 {
+		session = session.In("Status", statuses)
+	}
+	return session.Exist(new(ScheduleRunRecord))
+}
+
+func (s *Store) HasScheduleRunWithDetails(scheduleName, detailsNeedle string, statuses ...string) (bool, error) {
+	session := s.engine.Where("ScheduleName = ? AND Details LIKE ?", scheduleName, "%"+detailsNeedle+"%")
+	if len(statuses) > 0 {
+		session = session.In("Status", statuses)
+	}
+	return session.Exist(new(ScheduleRunRecord))
+}
+
+func (s *Store) CountOpenCollectGaps() (int64, error) {
+	return s.engine.Where("Status = ?", "open").Count(new(CollectGapRecord))
+}
+
 func (s *Store) GetCollectCursor(domain, assetType, instrument, period string) (*CollectCursorRecord, error) {
 	record := new(CollectCursorRecord)
 	has, err := s.engine.Where("Domain = ? AND AssetType = ? AND Instrument = ? AND Period = ?", domain, assetType, instrument, period).Get(record)

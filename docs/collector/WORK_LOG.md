@@ -18,6 +18,46 @@ Do not summarize test results vaguely. Record exact commands and exact outcomes.
 
 ---
 
+## 2026-04-02 23:59 CST
+
+- Phase: `7 - Final Acceptance`
+- Goal: harden collector operations so daily local databases stay current, repairable, observable, and less likely to trip upstream rate limits
+- Files changed:
+  - `collector/store.go`
+  - `collector/runtime.go`
+  - `collector/runtime_test.go`
+  - `collector/reconcile.go`
+  - `collector/reconcile_test.go`
+  - `collector/status.go`
+  - `collector/provider_throttle.go`
+  - `collector/provider_throttle_test.go`
+  - `web/server.go`
+  - `docs/collector/FINAL_ACCEPTANCE_REPORT.md`
+  - `docs/collector/PROGRESS.md`
+  - `docs/collector/STATE.yaml`
+  - `docs/collector/WORK_LOG.md`
+- Commands run:
+  - `gofmt -w collector/store.go collector/provider_throttle.go collector/status.go collector/runtime.go collector/reconcile.go web/server.go`
+  - `gofmt -w collector/runtime_test.go collector/provider_throttle_test.go web/server.go collector/runtime.go collector/status.go collector/reconcile.go`
+  - `go test ./collector`
+  - `go test ./...`
+  - `cd web && go test ./...`
+- Results:
+  - Added provider-level request throttling inside collector runtime construction to serialize upstream calls with a minimum interval
+  - Changed empty-cursor startup catch-up to bootstrap all available trading days instead of only the latest day
+  - Split startup catch-up and daily 18:00 full sync into distinct persistent schedule names
+  - Added startup missed-run compensation for the latest required `18:00` full sync and `19:00` reconciliation windows
+  - Routed manual reconciliation through the same in-process job lock as scheduled maintenance to avoid concurrent writes
+  - Added `/api/collector/status` for run-state and gap observability
+  - Extended reconciliation reports with open-gap visibility plus per-domain before/after row counts, table-level counts, cursor summaries, and target-date coverage
+  - Added tests for full bootstrap behavior, distinct daily sync scheduling, and provider throttling
+  - Verified `go test ./collector` passes
+  - Verified `go test ./...` passes
+  - Verified `cd web && go test ./...` passes
+- Commit sha: `not committed yet`
+- Blockers: none
+- Next step: commit the operational hardening changes after user review
+
 ## 2026-04-02 03:10 CST
 
 - Phase: `0 - Control Plane`
@@ -368,3 +408,104 @@ Do not summarize test results vaguely. Record exact commands and exact outcomes.
 - Commit sha: `pending current commit`
 - Blockers: none
 - Next step: none; collector final acceptance is complete
+
+## 2026-04-02 23:13 CST
+
+- Phase: `7 - Final Acceptance`
+- Goal: connect the collector runtime to the long-running web service so it performs startup catch-up and one full catch-up every day at `18:00`
+- Files changed:
+  - `web/server.go`
+  - `docs/collector/FINAL_ACCEPTANCE_REPORT.md`
+  - `docs/collector/PROGRESS.md`
+  - `docs/collector/STATE.yaml`
+  - `docs/collector/WORK_LOG.md`
+- Commands run:
+  - `sed -n '900,1040p' web/server.go`
+  - `sed -n '1,220p' manage.go`
+  - `rg -n "collector|RunStartupCatchUp|cron.New|AddFunc|Start\\(" web *.go collector -g '!collector/*_test.go'`
+  - `sed -n '1,180p' web/server.go`
+  - `cat web/go.mod`
+  - `gofmt -w web/server.go`
+  - `go test ./...`
+  - `cd web && go test ./...`
+- Results:
+  - Confirmed the collector runtime existed only as library code and was not yet wired into any long-running process.
+  - Connected `collector/runtime.go` into `web/server.go` using the existing `manager.Cron`.
+  - Added one startup catch-up trigger and one daily full catch-up trigger at `18:00` local server time using cron spec `0 0 18 * * *`.
+  - Configured the daily full catch-up to cover all implemented collector domains, including all currently supported kline periods.
+  - Added overlap protection so startup catch-up and scheduled catch-up cannot run concurrently.
+  - Documented the operational schedule in the collector docs and clarified that the `18:00` run can only refresh data up to the latest completed trading session.
+- Commit sha: `not committed yet`
+- Blockers: none
+- Next step: keep the service running; the collector will execute one startup catch-up and then one full catch-up every day at `18:00`
+
+## 2026-04-02 23:27 CST
+
+- Phase: `7 - Final Acceptance`
+- Goal: add daily date-based reconciliation at `19:00`, repair the requested trading day, write one report per date to disk, and expose a date-driven reconciliation API
+- Files changed:
+  - `collector/reconcile.go`
+  - `collector/reconcile_test.go`
+  - `collector/runtime.go`
+  - `collector/kline.go`
+  - `collector/acceptance_test.go`
+  - `web/server.go`
+  - `docs/collector/FINAL_ACCEPTANCE_REPORT.md`
+  - `docs/collector/PROGRESS.md`
+  - `docs/collector/STATE.yaml`
+  - `docs/collector/WORK_LOG.md`
+- Commands run:
+  - `gofmt -w collector/*.go web/server.go`
+  - `go test ./collector -run 'TestCollectorReconcileDateWritesReportAndRepairsTradingDay|TestCollectorRuntimeStartupCatchUpAcrossDomains|TestCollectorFinalAcceptanceEndToEndCatchUp|TestDocsConsistency' -v`
+  - `go test ./...`
+  - `cd web && go test ./...`
+- Results:
+  - Added `collector/reconcile.go` with `ReconcileDate(date)` support, per-domain reconciliation results, and daily JSON report persistence to `collector_reports/reconcile-YYYYMMDD.json`.
+  - Implemented repair-by-republish for repairable domains during reconciliation:
+    - metadata
+    - kline
+    - trade_history
+    - order_history
+    - live_capture
+    - finance
+    - f10
+  - Added explicit reconciliation reporting for domains that are not fully reconstructible by date:
+    - `quote_snapshot` is captured as best-effort only for the current date and is marked unsupported for non-current historical dates.
+  - Added `KlineService.ReconcileDate(...)` so date-based reconciliation can republish the requested date window instead of relying only on cursor-driven incremental refresh.
+  - Added one external API at `/api/collector/reconcile`:
+    - `POST` executes reconciliation for the requested `date`
+    - `GET` reads the stored report for the requested `date`
+  - Changed the long-running web service schedule from a daily `18:00` full catch-up to a daily `19:00` reconciliation/repair run with report output.
+  - Exact test outcomes:
+    - `go test ./collector -run 'TestCollectorReconcileDateWritesReportAndRepairsTradingDay|TestCollectorRuntimeStartupCatchUpAcrossDomains|TestCollectorFinalAcceptanceEndToEndCatchUp|TestDocsConsistency' -v` -> `PASS`
+    - `go test ./...` -> `PASS`
+    - `cd web && go test ./...` -> `PASS`
+- Commit sha: `not committed yet`
+- Blockers: none
+- Next step: keep the service running; it will execute startup catch-up once and then one date-based reconciliation/repair run every day at `19:00`
+
+## 2026-04-02 23:31 CST
+
+- Phase: `7 - Final Acceptance`
+- Goal: restore the previously requested daily `18:00` full synchronization without changing the existing `19:00` reconciliation plan
+- Files changed:
+  - `web/server.go`
+  - `docs/collector/FINAL_ACCEPTANCE_REPORT.md`
+  - `docs/collector/PROGRESS.md`
+  - `docs/collector/WORK_LOG.md`
+- Commands run:
+  - `gofmt -w web/server.go`
+  - `go test ./collector -v`
+  - `go test ./...`
+  - `cd web && go test ./...`
+- Results:
+  - Restored one independent daily collector synchronization task at `18:00` local server time using `runCollectorCatchUp("daily-18:00")`.
+  - Kept the previously added `19:00` daily reconciliation/repair task unchanged.
+  - Final collector schedule is now:
+    - startup catch-up once after boot
+    - daily `18:00` full synchronization
+    - daily `19:00` reconciliation/repair with report output
+  - Retained overlap protection so the `18:00` and `19:00` tasks cannot run concurrently with each other or with startup catch-up.
+- Commit sha: `not committed yet`
+- Blockers: none
+- Next step: keep the service running; it will execute startup catch-up once, then one daily full synchronization at `18:00`, then one daily reconciliation/repair run at `19:00`

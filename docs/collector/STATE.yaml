@@ -12,7 +12,7 @@ next_phase:
 
 current_task:
   id: phase_7_task_1
-  summary: Final acceptance completed with startup catch-up automation, restart recovery evidence, and a published acceptance report.
+  summary: Final acceptance completed and then operationally hardened with distinct 18:00/19:00 maintenance records, missed-run compensation, status observability, full bootstrap backfill, and provider throttling.
 
 required_read_order:
   - docs/collector/START_HERE.md
@@ -33,9 +33,8 @@ phase_exit_criteria:
   - final_blocking_suite_green
 
 last_verified_commit: null
-last_verified_at: "2026-04-02 22:38:18 CST"
+last_verified_at: "2026-04-02 23:59:00 CST"
 last_test_suite:
-  - go test ./collector -run 'TestCollectorRuntimeStartupCatchUpAcrossDomains|TestCollectorFinalAcceptanceEndToEndCatchUp' -v
   - go test ./collector -v
   - go test ./...
   - cd web && go test ./...

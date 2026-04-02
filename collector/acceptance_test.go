@@ -53,7 +53,13 @@ func (p *acceptanceProvider) TradingDays(ctx context.Context, query TradingDayQu
 }
 
 func (p *acceptanceProvider) IsTradingDay(ctx context.Context, day time.Time) (bool, error) {
-	return true, nil
+	target := day.Format("20060102")
+	for _, item := range p.tradingDays {
+		if item.Date == target {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (p *acceptanceProvider) Quotes(ctx context.Context, codes []string) ([]QuoteSnapshot, error) {
