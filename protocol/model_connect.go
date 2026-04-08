@@ -11,6 +11,8 @@ var (
 	MCount               = count{}
 	MQuote               = quote{}
 	MCode                = code{}
+	MBlockFileMeta       = blockFileMeta{}
+	MBlockFileData       = blockFileData{}
 	MCompanyInfoCategory = companyInfoCategory{}
 	MCompanyInfoContent  = companyInfoContent{}
 	MMinute              = minute{}

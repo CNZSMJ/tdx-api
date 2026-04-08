@@ -11,11 +11,43 @@ import (
 	"time"
 
 	"github.com/injoyai/tdx"
+	collectorpkg "github.com/injoyai/tdx/collector"
 	"github.com/injoyai/tdx/extend"
 	"github.com/injoyai/tdx/protocol"
 )
 
 // 扩展API接口
+
+func handleGetProfile(w http.ResponseWriter, r *http.Request) {
+	code := strings.TrimSpace(r.URL.Query().Get("code"))
+	if code == "" {
+		errorResponse(w, "code 为必填参数")
+		return
+	}
+
+	models, err := getAllCodeModels()
+	if err != nil {
+		errorResponse(w, "获取证券信息失败: "+err.Error())
+		return
+	}
+
+	codeUpper := strings.ToUpper(code)
+	for _, model := range models {
+		if strings.ToUpper(model.Code) == codeUpper || strings.ToUpper(model.FullCode()) == codeUpper {
+			successResponse(w, map[string]interface{}{
+				"code":       model.Code,
+				"name":       model.Name,
+				"exchange":   strings.ToLower(model.Exchange),
+				"decimal":    model.Decimal,
+				"multiple":   model.Multiple,
+				"last_price": model.LastPrice,
+			})
+			return
+		}
+	}
+
+	errorResponse(w, fmt.Sprintf("证券未找到: %s", code))
+}
 
 // 获取股票代码列表
 func handleGetCodes(w http.ResponseWriter, r *http.Request) {
@@ -1175,6 +1207,120 @@ func buildExtendKlines(code string, list []*protocol.Kline) extend.Klines {
 	return ks
 }
 
+// 获取板块列表
+func handleGetBlocks(w http.ResponseWriter, r *http.Request) {
+	if collectorRuntime == nil {
+		errorResponse(w, "collector runtime 未初始化")
+		return
+	}
+	bs := collectorRuntime.BlockService()
+	if bs == nil {
+		errorResponse(w, "板块服务未初始化")
+		return
+	}
+
+	typeFilter := strings.TrimSpace(r.URL.Query().Get("type"))
+	keyword := strings.TrimSpace(r.URL.Query().Get("keyword"))
+
+	var records []collectorpkg.BlockGroupRecord
+	if keyword != "" {
+		records = bs.SearchBlocks(keyword)
+	} else {
+		records = bs.GetBlocks(collectorpkg.BlockType(typeFilter))
+	}
+
+	type blockItem struct {
+		Name       string `json:"name"`
+		BlockType  string `json:"block_type"`
+		Source     string `json:"source"`
+		StockCount int    `json:"stock_count"`
+	}
+	items := make([]blockItem, 0, len(records))
+	for _, r := range records {
+		items = append(items, blockItem{
+			Name:       r.Name,
+			BlockType:  r.BlockType,
+			Source:     r.Source,
+			StockCount: r.StockCount,
+		})
+	}
+
+	successResponse(w, map[string]interface{}{
+		"count": len(items),
+		"list":  items,
+	})
+}
+
+// 获取板块成份股
+func handleGetBlockMembers(w http.ResponseWriter, r *http.Request) {
+	if collectorRuntime == nil {
+		errorResponse(w, "collector runtime 未初始化")
+		return
+	}
+	bs := collectorRuntime.BlockService()
+	if bs == nil {
+		errorResponse(w, "板块服务未初始化")
+		return
+	}
+
+	name := strings.TrimSpace(r.URL.Query().Get("name"))
+	if name == "" {
+		errorResponse(w, "name 为必填参数")
+		return
+	}
+	blockType := strings.TrimSpace(r.URL.Query().Get("type"))
+
+	codes := bs.GetBlockMembers(blockType, name)
+	successResponse(w, map[string]interface{}{
+		"block_name": name,
+		"count":      len(codes),
+		"codes":      codes,
+	})
+}
+
+// 获取个股所属板块
+func handleGetStockBlocks(w http.ResponseWriter, r *http.Request) {
+	if collectorRuntime == nil {
+		errorResponse(w, "collector runtime 未初始化")
+		return
+	}
+	bs := collectorRuntime.BlockService()
+	if bs == nil {
+		errorResponse(w, "板块服务未初始化")
+		return
+	}
+
+	code := strings.TrimSpace(r.URL.Query().Get("code"))
+	if code == "" {
+		errorResponse(w, "code 为必填参数")
+		return
+	}
+
+	groups := bs.GetStockBlocks(code)
+
+	type blockItem struct {
+		Name       string `json:"name"`
+		BlockType  string `json:"block_type"`
+		Source     string `json:"source"`
+		StockCount int    `json:"stock_count"`
+	}
+	items := make([]blockItem, 0, len(groups))
+	for _, g := range groups {
+		items = append(items, blockItem{
+			Name:       g.Name,
+			BlockType:  g.BlockType,
+			Source:     g.Source,
+			StockCount: g.StockCount,
+		})
+	}
+
+	successResponse(w, map[string]interface{}{
+		"code":  code,
+		"count": len(items),
+		"list":  items,
+	})
+}
+
 func parseBool(value string) bool {
 	if value == "" {
 		return false
@@ -1367,5 +1513,110 @@ func fetchIndexAll(code, klineType string) ([]*protocol.Kline, error) {
 			return nil, err
 		}
 		return resp.List, nil
+	}
+}
+
+// ─── 板块排名 & 板块内个股排名 ─────────────────────────────
+
+func getTickerService() *collectorpkg.TickerService {
+	if collectorRuntime == nil {
+		return nil
+	}
+	return collectorRuntime.TickerService()
+}
+
+func handleBlockRanking(w http.ResponseWriter, r *http.Request) {
+	ts := getTickerService()
+	if ts == nil {
+		errorResponse(w, "实时行情服务未初始化")
+		return
+	}
+
+	blockType := strings.TrimSpace(r.URL.Query().Get("type"))
+	sortBy := strings.TrimSpace(r.URL.Query().Get("sort_by"))
+	order := strings.TrimSpace(r.URL.Query().Get("order"))
+	limit := 0
+	if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+
+	ranks := ts.GetBlockRanking(blockType, sortBy, order, limit)
+	resp := map[string]interface{}{
+		"count": len(ranks),
+		"list":  ranks,
+	}
+	addTickerMeta(resp, ts)
+	successResponse(w, resp)
+}
+
+func handleBlockStocks(w http.ResponseWriter, r *http.Request) {
+	ts := getTickerService()
+	if ts == nil {
+		errorResponse(w, "实时行情服务未初始化")
+		return
+	}
+
+	name := strings.TrimSpace(r.URL.Query().Get("name"))
+	if name == "" {
+		errorResponse(w, "name 为必填参数")
+		return
+	}
+	blockType := strings.TrimSpace(r.URL.Query().Get("type"))
+	sortBy := strings.TrimSpace(r.URL.Query().Get("sort_by"))
+	order := strings.TrimSpace(r.URL.Query().Get("order"))
+	limit := 0
+	if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+
+	blockPct, ticks := ts.GetBlockStocks(blockType, name, sortBy, order, limit)
+	resp := map[string]interface{}{
+		"block_name":       name,
+		"block_pct_change": blockPct,
+		"count":            len(ticks),
+		"list":             ticks,
+	}
+	addTickerMeta(resp, ts)
+	successResponse(w, resp)
+}
+
+func handleTickerStatus(w http.ResponseWriter, _ *http.Request) {
+	ts := getTickerService()
+	if ts == nil {
+		errorResponse(w, "实时行情服务未初始化")
+		return
+	}
+	resp := map[string]interface{}{
+		"running": ts.Running(),
+	}
+	addTickerMeta(resp, ts)
+	successResponse(w, resp)
+}
+
+// addTickerMeta appends updated_at and status hint to an API response.
+func addTickerMeta(resp map[string]interface{}, ts *collectorpkg.TickerService) {
+	updatedAt := ts.UpdatedAt()
+	if updatedAt.IsZero() {
+		resp["updated_at"] = nil
+		if ts.Running() {
+			resp["status"] = "waiting"
+			resp["status_hint"] = "Ticker 已启动，等待盘中时段(09:15-15:05)开始采集"
+		} else {
+			resp["status"] = "not_started"
+			resp["status_hint"] = "Ticker 尚未启动，服务可能仍在初始化中"
+		}
+	} else {
+		resp["updated_at"] = updatedAt.Format(time.RFC3339)
+		age := time.Since(updatedAt)
+		if age < 10*time.Second {
+			resp["status"] = "live"
+		} else {
+			resp["status"] = "stale"
+			resp["status_hint"] = fmt.Sprintf("数据已过期 %s，当前可能处于非交易时段", age.Truncate(time.Second))
+		}
 	}
 }

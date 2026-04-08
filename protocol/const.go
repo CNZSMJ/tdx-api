@@ -11,6 +11,8 @@ const (
 	TypeQuote               = 0x053E //行情信息
 	TypeMinute              = 0x051D //分时数据
 	TypeMinuteTrade         = 0x0FC5 //分时交易
+	TypeBlockFileMeta       = 0x02C5 //板块文件元信息
+	TypeBlockFileData       = 0x06B9 //板块文件数据
 	TypeCompanyInfoCategory = 0x02CF //F10目录
 	TypeCompanyInfoContent  = 0x02D0 //F10正文
 	TypeHistoryMinute       = 0x0FB4 //历史分时数据

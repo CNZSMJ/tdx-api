@@ -33,11 +33,53 @@ var (
 )
 
 const (
-	collectorDailySyncSpec      = "0 0 18 * * *"
-	collectorDailyReconcileSpec = "0 0 19 * * *"
-	collectorRunTimeout         = 6 * time.Hour
-	collectorRequestMinInterval = 250 * time.Millisecond
+	collectorDailySyncSpec             = "0 0 18 * * *"
+	collectorDailyReconcileSpec        = "0 0 19 * * *"
+	collectorRunTimeout                = 6 * time.Hour // default for daily_full_sync / reconcile; override with COLLECTOR_RUN_TIMEOUT
+	collectorDefaultWorkers            = 4
+	collectorMaxCatchupWorkers         = 32 // TDX 侧连接过多易被限流；需要更高请改此常量并自担风险
+	collectorDefaultRequestMinInterval = 150 * time.Millisecond
 )
+
+// collectorCatchUpContext returns a context for runCollectorCatchUp.
+// Root cause of startup failures: a single 6h deadline is shorter than full
+// startup catch-up for thousands of symbols (trade/live/order per trading day).
+// Startup trigger defaults to no overall deadline; set COLLECTOR_STARTUP_CATCHUP_TIMEOUT to cap it.
+func collectorCatchUpContext(trigger string) (context.Context, context.CancelFunc) {
+	if trigger == "startup" {
+		if d := collectorStartupCatchUpTimeoutFromEnv(); d > 0 {
+			return context.WithTimeout(context.Background(), d)
+		}
+		return context.WithCancel(context.Background())
+	}
+	return context.WithTimeout(context.Background(), collectorGeneralRunTimeout())
+}
+
+func collectorStartupCatchUpTimeoutFromEnv() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("COLLECTOR_STARTUP_CATCHUP_TIMEOUT"))
+	if raw == "" || raw == "0" {
+		return 0
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		log.Printf("collector: 忽略无效的 COLLECTOR_STARTUP_CATCHUP_TIMEOUT=%q", raw)
+		return 0
+	}
+	return d
+}
+
+func collectorGeneralRunTimeout() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("COLLECTOR_RUN_TIMEOUT"))
+	if raw == "" {
+		return collectorRunTimeout
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		log.Printf("collector: 忽略无效的 COLLECTOR_RUN_TIMEOUT=%q，使用默认 %v", raw, collectorRunTimeout)
+		return collectorRunTimeout
+	}
+	return d
+}
 
 type collectorJobSnapshot struct {
 	Name        string    `json:"name"`
@@ -202,7 +244,7 @@ func init() {
 	}
 
 	manager, err = tdx.NewManage(&tdx.ManageConfig{
-		Number:          4,
+		Number:          collectorCatchupWorkersForPool(),
 		CodesFilename:   filepath.Join(databaseDir, "codes.db"),
 		WorkdayFileName: filepath.Join(databaseDir, "workday.db"),
 	})
@@ -235,7 +277,8 @@ func initCollectorRuntime() {
 			ReconcileScheduleName: "collector_daily_reconcile",
 			ReportDir:             filepath.Join(databaseDir, "collector_reports"),
 			BootstrapStartDate:    strings.TrimSpace(os.Getenv("COLLECTOR_BOOTSTRAP_START")),
-			RequestMinInterval:    collectorRequestMinInterval,
+			RequestMinInterval:    collectorRequestMinInterval(),
+			CatchUpWorkers:        collectorCatchUpWorkers(),
 			KlinePeriods:          collectorKlinePeriods(),
 			Metadata: collectorpkg.MetadataConfig{
 				CodesDBPath:   filepath.Join(databaseDir, "codes.db"),
@@ -273,8 +316,55 @@ func initCollectorRuntime() {
 	if bootstrapStart == "" {
 		bootstrapStart = "provider-earliest"
 	}
-	log.Printf("已启用 collector 计划: startup catch-up + 每日 18:00 全量同步 + 每日 19:00 对账，本地时区=%s bootstrap_start=%s min_request_interval=%s", time.Now().Location(), bootstrapStart, collectorRequestMinInterval)
+	log.Printf("已启用 collector 计划: startup catch-up + 每日 18:00 全量同步 + 每日 19:00 对账，本地时区=%s bootstrap_start=%s min_request_interval=%s catch_up_workers=%d", time.Now().Location(), bootstrapStart, collectorRequestMinInterval(), collectorCatchUpWorkers())
+
 	go runCollectorStartupSequence()
+}
+
+func collectorRequestMinInterval() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("COLLECTOR_REQUEST_MIN_INTERVAL"))
+	if raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+			return d
+		}
+	}
+	return collectorDefaultRequestMinInterval
+}
+
+// collectorCatchupWorkersForPool 在 init 阶段创建 TDX 连接池时使用（此时 manager 尚未就绪）。
+// 须与 collectorCatchUpWorkers / 限流 slot 数一致，否则 worker 会在 manage.Do 上空等连接。
+func collectorCatchupWorkersForPool() int {
+	if n, ok := collectorCatchupWorkersFromEnv(); ok {
+		return n
+	}
+	return collectorDefaultWorkers
+}
+
+func collectorCatchupWorkersFromEnv() (int, bool) {
+	raw := strings.TrimSpace(os.Getenv("COLLECTOR_CATCHUP_WORKERS"))
+	if raw == "" {
+		return 0, false
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil || v <= 0 {
+		log.Printf("collector: 忽略无效的 COLLECTOR_CATCHUP_WORKERS=%q", raw)
+		return 0, false
+	}
+	if v > collectorMaxCatchupWorkers {
+		log.Printf("collector: COLLECTOR_CATCHUP_WORKERS=%d 超过上限 %d，已使用 %d", v, collectorMaxCatchupWorkers, collectorMaxCatchupWorkers)
+		v = collectorMaxCatchupWorkers
+	}
+	return v, true
+}
+
+func collectorCatchUpWorkers() int {
+	if n, ok := collectorCatchupWorkersFromEnv(); ok {
+		return n
+	}
+	if manager != nil && manager.Config != nil && manager.Config.Number > 0 {
+		return manager.Config.Number
+	}
+	return collectorDefaultWorkers
 }
 
 func collectorKlinePeriods() []collectorpkg.KlinePeriod {
@@ -317,8 +407,12 @@ func runCollectorCatchUp(trigger string) error {
 		runFn = collectorRuntime.RunStartupCatchUp
 	}
 	job := collectorJobState.start(jobName, trigger, "")
-	log.Printf("collector 全量补采开始: trigger=%s", trigger)
-	ctx, cancel := context.WithTimeout(context.Background(), collectorRunTimeout)
+	if trigger == "startup" && collectorStartupCatchUpTimeoutFromEnv() == 0 {
+		log.Printf("collector 全量补采开始: trigger=%s (启动补采未设置 COLLECTOR_STARTUP_CATCHUP_TIMEOUT，无整体 deadline)", trigger)
+	} else {
+		log.Printf("collector 全量补采开始: trigger=%s", trigger)
+	}
+	ctx, cancel := collectorCatchUpContext(trigger)
 	defer cancel()
 
 	started := time.Now()
@@ -347,7 +441,7 @@ func runCollectorReconcile(trigger, date string) (*collectorpkg.ReconcileReport,
 	}
 	job := collectorJobState.start(jobName, trigger, date)
 	log.Printf("collector 对账开始: trigger=%s date=%s", trigger, date)
-	ctx, cancel := context.WithTimeout(context.Background(), collectorRunTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), collectorGeneralRunTimeout())
 	defer cancel()
 
 	started := time.Now()
@@ -530,12 +624,13 @@ func handleGetKline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	limit := parsePositiveInt(r.URL.Query().Get("limit"))
+
 	var resp *protocol.KlineResp
 	var err error
 
 	switch klineType {
 	case "minute1":
-		// 分钟K线不需要复权
 		resp, err = client.GetKlineMinuteAll(code)
 	case "minute5":
 		resp, err = client.GetKline5MinuteAll(code)
@@ -546,29 +641,29 @@ func handleGetKline(w http.ResponseWriter, r *http.Request) {
 	case "hour":
 		resp, err = client.GetKlineHourAll(code)
 	case "week":
-		// 周K线使用前复权（从日K线转换）
 		resp, err = getQfqKlineDay(code)
 		if err == nil && len(resp.List) > 0 {
-			// 将日K线转换为周K线（简化版：每5个交易日合并）
 			resp = convertToWeekKline(resp)
 		}
 	case "month":
-		// 月K线使用前复权（从日K线转换）
 		resp, err = getQfqKlineDay(code)
 		if err == nil && len(resp.List) > 0 {
-			// 将日K线转换为月K线
 			resp = convertToMonthKline(resp)
 		}
 	case "day":
 		fallthrough
 	default:
-		// 日K线使用前复权数据
 		resp, err = getQfqKlineDay(code)
 	}
 
 	if err != nil {
 		errorResponse(w, fmt.Sprintf("获取K线失败: %v", err))
 		return
+	}
+
+	if limit > 0 && resp != nil && len(resp.List) > limit {
+		resp.List = resp.List[len(resp.List)-limit:]
+		resp.Count = uint16(len(resp.List))
 	}
 
 	successResponse(w, resp)
@@ -801,8 +896,24 @@ func handleSearchCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	typeFilter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("type")))
+	limit := parsePositiveInt(r.URL.Query().Get("limit"))
+	if limit <= 0 {
+		limit = 50
+	}
+
 	keywordUpper := strings.ToUpper(keyword)
-	results := []map[string]string{}
+
+	type SearchResult struct {
+		Code      string  `json:"code"`
+		Name      string  `json:"name"`
+		Exchange  string  `json:"exchange"`
+		Decimal   int8    `json:"decimal"`
+		Multiple  uint16  `json:"multiple"`
+		LastPrice float64 `json:"last_price"`
+	}
+
+	results := []SearchResult{}
 	seen := map[string]struct{}{}
 
 	codeModels, err := getAllCodeModels()
@@ -813,9 +924,24 @@ func handleSearchCode(w http.ResponseWriter, r *http.Request) {
 
 	for _, model := range codeModels {
 		fullCode := model.FullCode()
-		if !protocol.IsStock(fullCode) {
-			continue
+
+		if typeFilter != "" && typeFilter != "all" {
+			switch typeFilter {
+			case "stock":
+				if !protocol.IsStock(fullCode) {
+					continue
+				}
+			case "etf":
+				if !protocol.IsETF(fullCode) {
+					continue
+				}
+			case "index":
+				if !protocol.IsIndex(fullCode) {
+					continue
+				}
+			}
 		}
+
 		if _, ok := seen[model.Code]; ok {
 			continue
 		}
@@ -823,15 +949,18 @@ func handleSearchCode(w http.ResponseWriter, r *http.Request) {
 		codeUpper := strings.ToUpper(model.Code)
 		nameUpper := strings.ToUpper(model.Name)
 		if strings.Contains(codeUpper, keywordUpper) || strings.Contains(nameUpper, keywordUpper) {
-			results = append(results, map[string]string{
-				"code":     model.Code,
-				"name":     model.Name,
-				"exchange": strings.ToLower(model.Exchange),
+			results = append(results, SearchResult{
+				Code:      model.Code,
+				Name:      model.Name,
+				Exchange:  strings.ToLower(model.Exchange),
+				Decimal:   model.Decimal,
+				Multiple:  model.Multiple,
+				LastPrice: model.LastPrice,
 			})
 			seen[model.Code] = struct{}{}
 		}
 
-		if len(results) >= 50 {
+		if len(results) >= limit {
 			break
 		}
 	}
@@ -1279,6 +1408,7 @@ func main() {
 	http.HandleFunc("/api/minute", handleGetMinute)
 	http.HandleFunc("/api/trade", handleGetTrade)
 	http.HandleFunc("/api/search", handleSearchCode)
+	http.HandleFunc("/api/profile", handleGetProfile)
 	http.HandleFunc("/api/stock-info", handleGetStockInfo)
 	http.HandleFunc("/api/finance", handleGetFinance)
 	http.HandleFunc("/api/f10/categories", handleGetF10Categories)
@@ -1308,6 +1438,12 @@ func main() {
 	http.HandleFunc("/api/workday", handleGetWorkday)
 	http.HandleFunc("/api/workday/range", handleGetWorkdayRange)
 	http.HandleFunc("/api/income", handleGetIncome)
+	http.HandleFunc("/api/blocks", handleGetBlocks)
+	http.HandleFunc("/api/block/members", handleGetBlockMembers)
+	http.HandleFunc("/api/stock/blocks", handleGetStockBlocks)
+	http.HandleFunc("/api/block/ranking", handleBlockRanking)
+	http.HandleFunc("/api/block/stocks", handleBlockStocks)
+	http.HandleFunc("/api/ticker/status", handleTickerStatus)
 	http.HandleFunc("/api/tasks/pull-kline", handleCreatePullKlineTask)
 	http.HandleFunc("/api/tasks/pull-trade", handleCreatePullTradeTask)
 	http.HandleFunc("/api/tasks", handleListTasks)

@@ -62,6 +62,10 @@ func (s *stubProvider) F10Content(ctx context.Context, query F10ContentQuery) (*
 	return nil, errors.New("not implemented")
 }
 
+func (s *stubProvider) BlockGroups(ctx context.Context, filename string) ([]BlockInfo, error) {
+	return nil, errors.New("not implemented")
+}
+
 func TestMetadataRefreshPublishesCodesAndWorkdays(t *testing.T) {
 	tmp := t.TempDir()
 	store, err := OpenStore(filepath.Join(tmp, "collector.db"))

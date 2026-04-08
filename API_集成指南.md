@@ -47,6 +47,14 @@
 34. **GET /api/workday/range** - 交易日范围列表
 35. **GET /api/income** - 收益区间分析
 
+### ✅ 板块数据与实时排名接口（6个）
+36. **GET /api/blocks** - 板块列表（行业/概念/风格，支持关键词搜索）
+37. **GET /api/block/members** - 板块成份股代码列表
+38. **GET /api/stock/blocks** - 个股所属板块查询
+39. **GET /api/block/ranking** - 板块实时涨幅排名（盘中3秒刷新，支持涨幅/成交额/涨停数排序）
+40. **GET /api/block/stocks** - 板块内个股实时排名（支持涨幅/成交额/成交量/振幅排序）
+41. **GET /api/ticker/status** - 实时行情轮询服务状态
+
 ---
 
 ## 🚀 如何集成扩展接口
@@ -95,6 +103,16 @@ func main() {
 	http.HandleFunc("/api/workday", handleGetWorkday)
 	http.HandleFunc("/api/workday/range", handleGetWorkdayRange)
 	http.HandleFunc("/api/income", handleGetIncome)
+
+	// === 板块数据路由 ===
+	http.HandleFunc("/api/blocks", handleGetBlocks)
+	http.HandleFunc("/api/block/members", handleGetBlockMembers)
+	http.HandleFunc("/api/stock/blocks", handleGetStockBlocks)
+
+	// === 实时板块排名路由 ===
+	http.HandleFunc("/api/block/ranking", handleBlockRanking)
+	http.HandleFunc("/api/block/stocks", handleBlockStocks)
+	http.HandleFunc("/api/ticker/status", handleTickerStatus)
 
 	// === 任务调度路由 ===
 	http.HandleFunc("/api/tasks/pull-kline", handleCreatePullKlineTask)
@@ -370,6 +388,17 @@ curl "http://localhost:8080/api/health"
 | /api/server-status | GET | 服务状态 |
 | /api/health | GET | 健康检查 |
 
+### 板块数据与实时排名接口
+
+| 接口 | 方法 | 说明 |
+|-----|------|------|
+| /api/blocks | GET | 板块列表（行业/概念/风格，支持搜索） |
+| /api/block/members | GET | 板块成份股代码 |
+| /api/stock/blocks | GET | 个股所属板块 |
+| /api/block/ranking | GET | 板块实时涨幅排名（盘中3秒刷新） |
+| /api/block/stocks | GET | 板块内个股实时排名 |
+| /api/ticker/status | GET | 实时行情轮询状态 |
+
 ### 静态文件
 
 | 路径 | 说明 | 状态 |
@@ -559,7 +588,7 @@ func setCache(key string, val interface{}) {
 ## ✅ 总结
 
 ### 已完成
-✅ 26个完整API接口  
+✅ 32个完整API接口（含板块数据与实时排名）  
 ✅ 详细的接口文档  
 ✅ 使用示例（Python/JavaScript/cURL）  
 ✅ 集成指南  

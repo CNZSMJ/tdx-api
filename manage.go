@@ -8,8 +8,16 @@ import (
 )
 
 const (
-	DefaultDatabaseDir = "./data/database"
+	DefaultDatabaseDir   = "./data/database"
+	defaultClientTimeout = 15 * time.Second
 )
+
+func applyClientTimeout(cli *Client) *Client {
+	if cli != nil {
+		cli.SetTimeout(defaultClientTimeout)
+	}
+	return cli
+}
 
 func NewManageMysql(cfg *ManageConfig, op ...client.Option) (*Manage, error) {
 	//初始化配置
@@ -31,7 +39,7 @@ func NewManageMysql(cfg *ManageConfig, op ...client.Option) (*Manage, error) {
 	if err != nil {
 		return nil, err
 	}
-	commonClient.Wait.SetTimeout(time.Second * 5)
+	applyClientTimeout(commonClient)
 
 	//代码管理
 	codes, err := NewCodesMysql(commonClient, cfg.CodesFilename)
@@ -47,7 +55,11 @@ func NewManageMysql(cfg *ManageConfig, op ...client.Option) (*Manage, error) {
 
 	//连接池
 	p, err := NewPool(func() (*Client, error) {
-		return cfg.Dial(op...)
+		cli, err := cfg.Dial(op...)
+		if err != nil {
+			return nil, err
+		}
+		return applyClientTimeout(cli), nil
 	}, cfg.Number)
 	if err != nil {
 		return nil, err
@@ -82,7 +94,7 @@ func NewManage(cfg *ManageConfig, op ...client.Option) (*Manage, error) {
 	if err != nil {
 		return nil, err
 	}
-	commonClient.Wait.SetTimeout(time.Second * 5)
+	applyClientTimeout(commonClient)
 
 	//代码管理
 	codes, err := NewCodesSqlite(commonClient, cfg.CodesFilename)
@@ -98,7 +110,11 @@ func NewManage(cfg *ManageConfig, op ...client.Option) (*Manage, error) {
 
 	//连接池
 	p, err := NewPool(func() (*Client, error) {
-		return cfg.Dial(op...)
+		cli, err := cfg.Dial(op...)
+		if err != nil {
+			return nil, err
+		}
+		return applyClientTimeout(cli), nil
 	}, cfg.Number)
 	if err != nil {
 		return nil, err

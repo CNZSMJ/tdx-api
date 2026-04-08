@@ -59,6 +59,10 @@ func (s *orderHistoryStubProvider) F10Content(ctx context.Context, query F10Cont
 	return nil, errors.New("not implemented")
 }
 
+func (s *orderHistoryStubProvider) BlockGroups(ctx context.Context, filename string) ([]BlockInfo, error) {
+	return nil, errors.New("not implemented")
+}
+
 func TestOrderHistoryRefreshPublishesDBFirstAndPersistsCursor(t *testing.T) {
 	tmp := t.TempDir()
 	store, err := OpenStore(filepath.Join(tmp, "collector.db"))

@@ -141,21 +141,39 @@ func NewCodes(c *Client, db *xorm.Engine) (*Codes, error) {
 		now := time.Now()
 		node := time.Date(now.Year(), now.Month(), now.Day(), 9, 0, 0, 0, time.Local)
 		updateTime := time.Unix(update.Time, 0)
+		needRefresh := false
 		if now.Sub(node) > 0 {
 			//当前时间在9点之后,且更新时间在9点之前,需要更新
 			if updateTime.Sub(node) < 0 {
-				return cc, cc.Update()
+				needRefresh = true
 			}
 		} else {
 			//当前时间在9点之前,只有在昨日9点前仍未更新时才需要刷新
 			if updateTime.Sub(node.Add(-time.Hour*24)) < 0 {
-				return cc, cc.Update()
+				needRefresh = true
 			}
+		}
+		if needRefresh {
+			if err := cc.Update(); err != nil {
+				cached, cacheErr := cc.GetCodes(true)
+				if cacheErr != nil || len(cached) == 0 {
+					return cc, err
+				}
+				cc.applyCodes(cached)
+				logs.Err(err)
+				return cc, nil
+			}
+			return cc, nil
 		}
 	}
 
 	//从缓存中加载
-	return cc, cc.Update(true)
+	cached, err := cc.GetCodes(true)
+	if err != nil {
+		return cc, err
+	}
+	cc.applyCodes(cached)
+	return cc, nil
 }
 
 type Codes struct {
@@ -256,6 +274,13 @@ func (this *Codes) Update(byDB ...bool) error {
 	if err != nil {
 		return err
 	}
+	this.applyCodes(codes)
+	//更新时间
+	_, err = this.db.Where("`Key`=?", "codes").Update(&UpdateModel{Time: time.Now().Unix()})
+	return err
+}
+
+func (this *Codes) applyCodes(codes []*CodeModel) {
 	codeMap := make(map[string]*CodeModel)
 	exchanges := make(map[string][]string)
 	for _, code := range codes {
@@ -268,9 +293,6 @@ func (this *Codes) Update(byDB ...bool) error {
 	if this.GetIndexSource() == "builtin" {
 		this.indexes = detectIndexModels(codes)
 	}
-	//更新时间
-	_, err = this.db.Where("`Key`=?", "codes").Update(&UpdateModel{Time: time.Now().Unix()})
-	return err
 }
 
 // GetCodes 更新股票并返回结果

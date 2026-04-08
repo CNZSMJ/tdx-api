@@ -1110,6 +1110,288 @@ curl -X POST http://localhost:8080/api/tasks/pull-trade \
 
 ---
 
+## 🏷️ 板块数据接口
+
+### 32. 获取板块列表
+
+**接口**: `GET /api/blocks`
+
+**描述**: 获取行业板块、概念板块等分类列表，支持按类型筛选或关键词搜索。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| type | string | 否 | 板块类型：`industry`（行业）/ `concept`（概念）/ `style`（风格）/ `index_block`（指数板块），默认返回全部 |
+| keyword | string | 否 | 搜索关键词（模糊匹配板块名称），与 type 互斥 |
+
+**请求示例**:
+```
+GET /api/blocks?type=concept
+GET /api/blocks?keyword=半导体
+```
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "count": 3,
+    "list": [
+      {
+        "name": "半导体",
+        "block_type": "concept",
+        "source": "block_gn.dat",
+        "stock_count": 85
+      }
+    ]
+  }
+}
+```
+
+---
+
+### 33. 获取板块成份股
+
+**接口**: `GET /api/block/members`
+
+**描述**: 获取指定板块的成份股代码列表。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| name | string | 是 | 板块名称（如：半导体） |
+
+**请求示例**:
+```
+GET /api/block/members?name=半导体
+```
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "block_name": "半导体",
+    "count": 85,
+    "codes": ["sz000100", "sz002049", "sh600460"]
+  }
+}
+```
+
+---
+
+### 34. 获取个股所属板块
+
+**接口**: `GET /api/stock/blocks`
+
+**描述**: 查询指定个股属于哪些板块（行业、概念等）。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| code | string | 是 | 股票代码（如：sh600460） |
+
+**请求示例**:
+```
+GET /api/stock/blocks?code=sh600460
+```
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "code": "sh600460",
+    "count": 5,
+    "blocks": [
+      {
+        "name": "半导体",
+        "block_type": "concept",
+        "source": "block_gn.dat",
+        "stock_count": 85
+      },
+      {
+        "name": "电子元器件",
+        "block_type": "industry",
+        "source": "block.dat",
+        "stock_count": 120
+      }
+    ]
+  }
+}
+```
+
+---
+
+## 📈 实时板块排名接口
+
+以下接口依赖后台 Ticker 服务，服务启动后自动开始工作。盘中（9:15-15:05）每 3 秒更新一次全市场行情并聚合板块排名，非盘中返回最后一次采集的快照数据。
+
+### 35. 板块涨幅排名
+
+**接口**: `GET /api/block/ranking`
+
+**描述**: 获取板块实时排名，支持按涨幅、成交额、涨停数等多维度排序。核心用途：发现资金正在进攻的板块。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| type | string | 否 | 板块类型筛选：`industry` / `concept` / `style` / `index_block`，默认全部 |
+| sort_by | string | 否 | 排序字段：`pct_change`（涨幅，默认）/ `amount`（成交额）/ `limit_up`（涨停数）/ `rise_count`（上涨家数） |
+| order | string | 否 | 排序方向：`desc`（降序，默认）/ `asc`（升序） |
+| limit | int | 否 | 返回条数限制 |
+
+**请求示例**:
+```
+GET /api/block/ranking?type=concept&sort_by=pct_change&limit=20
+GET /api/block/ranking?type=industry&sort_by=amount&order=desc
+```
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "count": 20,
+    "status": "live",
+    "updated_at": "2026-04-08T14:30:03+08:00",
+    "list": [
+      {
+        "name": "半导体",
+        "block_type": "concept",
+        "pct_change": 3.85,
+        "amount": 18530000000,
+        "leading_stock_code": "sh600460",
+        "leading_stock_name": "士兰微",
+        "leading_stock_pct": 9.98,
+        "rise_count": 65,
+        "fall_count": 12,
+        "flat_count": 8,
+        "limit_up_count": 3,
+        "limit_down_count": 0,
+        "member_count": 85,
+        "available_count": 82
+      }
+    ]
+  }
+}
+```
+
+**字段说明**:
+| 字段 | 说明 |
+|------|------|
+| pct_change | 板块平均涨跌幅（%），成员简单平均 |
+| amount | 板块总成交额（元） |
+| leading_stock_code/name/pct | 领涨股代码、名称、涨幅 |
+| rise_count / fall_count / flat_count | 上涨/下跌/平盘家数 |
+| limit_up_count / limit_down_count | 涨停/跌停家数 |
+| member_count | 板块总成员数 |
+| available_count | 本次有行情数据的成员数 |
+| status | 数据状态：`live`（实时）/ `stale`（过期）/ `waiting`（等待盘中）/ `not_started`（未启动） |
+| status_hint | 当 status 非 live 时，提供具体原因说明 |
+
+---
+
+### 36. 板块内个股排名
+
+**接口**: `GET /api/block/stocks`
+
+**描述**: 获取指定板块内个股的实时排名，支持按涨幅、成交额、成交量排序。核心用途：发现板块内资金正在进攻的标的。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| name | string | 是 | 板块名称（如：半导体） |
+| sort_by | string | 否 | 排序字段：`pct_change`（涨幅，默认）/ `amount`（成交额）/ `volume`（成交量）/ `amplitude`（振幅） |
+| order | string | 否 | 排序方向：`desc`（降序，默认）/ `asc`（升序） |
+| limit | int | 否 | 返回条数限制 |
+
+**请求示例**:
+```
+GET /api/block/stocks?name=半导体&sort_by=pct_change&order=desc
+GET /api/block/stocks?name=半导体&sort_by=amount&limit=10
+```
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "block_name": "半导体",
+    "block_pct_change": 3.85,
+    "count": 82,
+    "status": "live",
+    "updated_at": "2026-04-08T14:30:03+08:00",
+    "list": [
+      {
+        "code": "sh600460",
+        "name": "士兰微",
+        "exchange": "sh",
+        "last": 38.5,
+        "pre_close": 35.0,
+        "open": 35.2,
+        "high": 38.5,
+        "low": 35.0,
+        "pct_change": 9.98,
+        "price_change": 3.5,
+        "volume": 12500000,
+        "amount": 4560000000,
+        "amplitude": 10.0,
+        "is_limit_up": true,
+        "is_limit_down": false
+      }
+    ]
+  }
+}
+```
+
+**字段说明**:
+| 字段 | 说明 |
+|------|------|
+| last / pre_close / open / high / low | 最新价 / 昨收 / 今开 / 最高 / 最低（元） |
+| pct_change | 涨跌幅（%） |
+| price_change | 涨跌额（元） |
+| volume | 成交量（手） |
+| amount | 成交额（元） |
+| amplitude | 振幅（%） |
+| is_limit_up / is_limit_down | 是否涨停/跌停（科创板/创业板 ±20%，其余 ±10%） |
+
+---
+
+### 37. Ticker 服务状态
+
+**接口**: `GET /api/ticker/status`
+
+**描述**: 查询实时行情轮询服务的运行状态。
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "running": true,
+    "status": "live",
+    "updated_at": "2026-04-08T14:30:03+08:00"
+  }
+}
+```
+
+**status 状态说明**:
+| 值 | 含义 |
+|---|---|
+| `live` | 实时更新中（最近 10 秒内有更新） |
+| `stale` | 数据已过期（非盘中时段，`status_hint` 包含过期时长） |
+| `waiting` | Ticker 已启动，等待盘中时段开始采集 |
+| `not_started` | Ticker 尚未启动，服务可能仍在初始化 |
+
+---
+
 ## 💡 使用示例
 
 ### Python示例
@@ -1383,11 +1665,15 @@ curl -X POST http://localhost:8080/api/batch-quote \
 - ✅ 统一响应格式
 - ✅ 完整文档和示例
 
-### v1.1.0 (计划中)
-- 🔄 批量查询接口
-- 🔄 历史K线范围查询
-- 🔄 指数数据接口
-- 🔄 WebSocket实时推送
+### v1.1.0 (2026-04)
+- 板块数据接口：板块列表、成份股、个股所属板块
+- 实时板块排名：盘中 3 秒刷新，按涨幅/成交额/涨停数排序
+- 板块内个股排名：支持涨幅/成交额/成交量/振幅排序
+- Ticker 服务状态查询
+
+### v1.2.0 (计划中)
+- 🔄 WebSocket 实时推送
+- 🔄 板块资金流向
 
 ---
 

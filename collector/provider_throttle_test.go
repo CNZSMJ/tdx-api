@@ -69,9 +69,14 @@ func (p *throttleTestProvider) F10Content(ctx context.Context, query F10ContentQ
 	return nil, nil
 }
 
+func (p *throttleTestProvider) BlockGroups(ctx context.Context, filename string) ([]BlockInfo, error) {
+	p.record()
+	return nil, nil
+}
+
 func TestThrottledProviderSpacesRequests(t *testing.T) {
 	upstream := &throttleTestProvider{}
-	provider := newThrottledProvider(upstream, 20*time.Millisecond)
+	provider := newThrottledProvider(upstream, 20*time.Millisecond, 1)
 
 	if _, err := provider.Instruments(context.Background(), InstrumentQuery{}); err != nil {
 		t.Fatalf("first instruments call: %v", err)
@@ -85,5 +90,30 @@ func TestThrottledProviderSpacesRequests(t *testing.T) {
 	}
 	if delay := upstream.callTimes[1].Sub(upstream.callTimes[0]); delay < 18*time.Millisecond {
 		t.Fatalf("expected throttled provider delay >= 18ms, got %s", delay)
+	}
+}
+
+func TestThrottledProviderConcurrentSlots(t *testing.T) {
+	upstream := &throttleTestProvider{}
+	provider := newThrottledProvider(upstream, 50*time.Millisecond, 4)
+
+	done := make(chan struct{}, 4)
+	start := time.Now()
+	for i := 0; i < 4; i++ {
+		go func() {
+			defer func() { done <- struct{}{} }()
+			provider.Instruments(context.Background(), InstrumentQuery{})
+		}()
+	}
+	for i := 0; i < 4; i++ {
+		<-done
+	}
+	elapsed := time.Since(start)
+
+	if len(upstream.callTimes) != 4 {
+		t.Fatalf("expected 4 provider calls, got %d", len(upstream.callTimes))
+	}
+	if elapsed > 40*time.Millisecond {
+		t.Fatalf("expected 4 concurrent calls to complete within ~0ms (first batch), took %s", elapsed)
 	}
 }

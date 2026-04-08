@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	tdx "github.com/injoyai/tdx"
@@ -12,6 +13,12 @@ import (
 )
 
 var _ Provider = (*TDXProvider)(nil)
+
+const (
+	tdxProviderMaxAttempts = 5
+	tdxProviderRetryDelay  = 800 * time.Millisecond
+	tdxClientTimeout       = 30 * time.Second
+)
 
 type TDXProvider struct {
 	manage *tdx.Manage
@@ -28,8 +35,19 @@ func NewTDXProvider(manage *tdx.Manage, client *tdx.Client) *TDXProvider {
 func (p *TDXProvider) Instruments(ctx context.Context, query InstrumentQuery) ([]Instrument, error) {
 	_ = ctx
 	if query.Refresh {
-		return p.refreshInstruments()
+		items, err := p.refreshInstruments()
+		if err == nil {
+			return items, nil
+		}
+		if cached, cachedErr := p.cachedInstruments(query); cachedErr == nil && len(cached) > 0 {
+			return cached, nil
+		}
+		return nil, err
 	}
+	return p.cachedInstruments(query)
+}
+
+func (p *TDXProvider) cachedInstruments(query InstrumentQuery) ([]Instrument, error) {
 	if p.manage == nil || p.manage.Codes == nil {
 		return nil, errors.New("tdx provider requires manage.Codes for cached instruments")
 	}
@@ -86,20 +104,35 @@ func (p *TDXProvider) Instruments(ctx context.Context, query InstrumentQuery) ([
 func (p *TDXProvider) TradingDays(ctx context.Context, query TradingDayQuery) ([]TradingDay, error) {
 	_ = ctx
 	if query.Refresh {
-		return p.refreshTradingDays(ctx, query)
+		items, err := p.refreshTradingDays(ctx, query)
+		if err == nil {
+			return items, nil
+		}
+		if cached, cachedErr := p.cachedTradingDays(query); cachedErr == nil && len(cached) > 0 {
+			return cached, nil
+		}
+		return nil, err
 	}
+	return p.cachedTradingDays(query)
+}
 
+func (p *TDXProvider) cachedTradingDays(query TradingDayQuery) ([]TradingDay, error) {
 	if p.manage == nil || p.manage.Workday == nil {
 		return nil, errors.New("tdx provider requires manage.Workday for cached trading days")
 	}
-	if query.Start.IsZero() || query.End.IsZero() {
-		return nil, errors.New("trading day query requires start and end")
-	}
-	if !query.Start.Before(query.End) {
+	if !query.Start.IsZero() && !query.End.IsZero() && !query.Start.Before(query.End) {
 		return nil, errors.New("trading day query requires start before end")
 	}
 	items := make([]TradingDay, 0, 256)
-	p.manage.Workday.Range(query.Start, query.End, func(t time.Time) bool {
+	start := query.Start
+	if start.IsZero() {
+		start = time.Date(1990, 12, 19, 0, 0, 0, 0, time.Local)
+	}
+	end := query.End
+	if end.IsZero() {
+		end = time.Date(2100, 1, 1, 0, 0, 0, 0, time.Local)
+	}
+	p.manage.Workday.Range(start, end, func(t time.Time) bool {
 		items = append(items, TradingDay{
 			Date: t.Format("20060102"),
 			Time: t,
@@ -324,6 +357,8 @@ func (p *TDXProvider) Finance(ctx context.Context, code string) (*FinanceSnapsho
 	return &FinanceSnapshot{
 		Code:               protocol.AddPrefix(resp.Code),
 		Market:             resp.Market.String(),
+		Province:           resp.Province,
+		Industry:           resp.Industry,
 		UpdatedDate:        fmt.Sprintf("%08d", resp.UpdatedDate),
 		IPODate:            fmt.Sprintf("%08d", resp.IpoDate),
 		Liutongguben:       resp.Liutongguben,
@@ -418,13 +453,66 @@ func (p *TDXProvider) withClient(ctx context.Context, fn func(client *tdx.Client
 		default:
 		}
 	}
-	if p.client != nil {
-		return fn(p.client)
+
+	var lastErr error
+	for attempt := 1; attempt <= tdxProviderMaxAttempts; attempt++ {
+		if ctx != nil {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+		}
+
+		var err error
+		switch {
+		case p.manage != nil:
+			err = p.manage.Do(func(client *tdx.Client) error {
+				client.SetTimeout(tdxClientTimeout)
+				return fn(client)
+			})
+		case p.client != nil:
+			p.client.SetTimeout(tdxClientTimeout)
+			err = fn(p.client)
+		default:
+			return errors.New("tdx provider requires manage or client")
+		}
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !isRetryableTDXError(err) || attempt == tdxProviderMaxAttempts {
+			return err
+		}
+		timer := time.NewTimer(time.Duration(attempt) * tdxProviderRetryDelay)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		}
 	}
-	if p.manage == nil {
-		return errors.New("tdx provider requires manage or client")
+	return lastErr
+}
+
+func isRetryableTDXError(err error) bool {
+	if err == nil {
+		return false
 	}
-	return p.manage.Do(fn)
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return false
+	}
+	message := err.Error()
+	messageLower := strings.ToLower(message)
+	return strings.Contains(message, "数据长度不足") ||
+		strings.Contains(messageLower, "超时") ||
+		strings.Contains(messageLower, "timeout") ||
+		strings.Contains(messageLower, "broken pipe") ||
+		strings.Contains(messageLower, "connection reset") ||
+		strings.Contains(messageLower, "use of closed network connection") ||
+		strings.Contains(messageLower, "eof") ||
+		strings.Contains(messageLower, "i/o timeout") ||
+		strings.Contains(messageLower, "connection refused")
 }
 
 func (p *TDXProvider) lookupName(code string) string {
@@ -687,6 +775,50 @@ func (p *TDXProvider) refreshInstruments() ([]Instrument, error) {
 		return items[i].Code < items[j].Code
 	})
 	return items, nil
+}
+
+func (p *TDXProvider) BlockGroups(ctx context.Context, filename string) ([]BlockInfo, error) {
+	if filename == "" {
+		return nil, errors.New("block groups requires filename")
+	}
+
+	var data []byte
+	if err := p.withClient(ctx, func(client *tdx.Client) error {
+		var err error
+		data, err = client.DownloadBlockFile(filename)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+
+	groups, err := protocol.ParseBlockFile(data)
+	if err != nil {
+		return nil, err
+	}
+
+	items := make([]BlockInfo, 0, len(groups))
+	for _, g := range groups {
+		items = append(items, BlockInfo{
+			Name:      g.Name,
+			BlockType: mapBlockType(g.BlockType),
+			Source:    filename,
+			Codes:     g.Codes,
+		})
+	}
+	return items, nil
+}
+
+func mapBlockType(raw uint16) BlockType {
+	switch raw {
+	case 0:
+		return BlockTypeIndustry
+	case 3:
+		return BlockTypeConcept
+	case 4:
+		return BlockTypeStyle
+	default:
+		return BlockTypeIndexBlock
+	}
 }
 
 func (p *TDXProvider) refreshTradingDays(ctx context.Context, query TradingDayQuery) ([]TradingDay, error) {

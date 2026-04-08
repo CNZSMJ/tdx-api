@@ -6,9 +6,18 @@ services:
     container_name: tdx-stock-web
     ports:
       - "8080:8080"
+    volumes:
+      - ./data/database:/app/data/database
     restart: unless-stopped
     environment:
       - TZ=Asia/Shanghai
+      # 与 TDX 连接池同宽；补采吞吐约与并发数成正比，过大可能被服务端限流（上限见 web/server.go collectorMaxCatchupWorkers）
+      - COLLECTOR_CATCHUP_WORKERS=12
+      - COLLECTOR_REQUEST_MIN_INTERVAL=150ms
+      # 启动全量补采默认不设整体 deadline；若需上限可取消注释，例如 168h
+      # - COLLECTOR_STARTUP_CATCHUP_TIMEOUT=168h
+      # 每日全量同步与对账默认 6h 上限；全市场数据量大时可加大，例如 24h
+      # - COLLECTOR_RUN_TIMEOUT=24h
     networks:
       - stock-network
     healthcheck:
@@ -24,4 +33,3 @@ services:
 networks:
   stock-network:
     driver: bridge
-

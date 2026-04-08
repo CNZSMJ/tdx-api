@@ -130,6 +130,8 @@ type OrderHistorySnapshot struct {
 type FinanceSnapshot struct {
 	Code               string
 	Market             string
+	Province           uint16
+	Industry           uint16
 	UpdatedDate        string
 	IPODate            string
 	Liutongguben       float64
@@ -179,6 +181,22 @@ type F10Content struct {
 	Start    uint32
 	Length   uint32
 	Content  string
+}
+
+type BlockType string
+
+const (
+	BlockTypeIndustry   BlockType = "industry"
+	BlockTypeConcept    BlockType = "concept"
+	BlockTypeStyle      BlockType = "style"
+	BlockTypeIndexBlock BlockType = "index_block"
+)
+
+type BlockInfo struct {
+	Name      string
+	BlockType BlockType
+	Source    string
+	Codes     []string
 }
 
 type InstrumentQuery struct {

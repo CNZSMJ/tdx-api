@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"xorm.io/xorm"
@@ -20,9 +21,11 @@ type FundamentalsConfig struct {
 }
 
 type FundamentalsService struct {
-	store    *Store
-	provider Provider
-	cfg      FundamentalsConfig
+	store     *Store
+	provider  Provider
+	cfg       FundamentalsConfig
+	financeMu sync.Mutex
+	f10Mu     sync.Mutex
 }
 
 type FinanceRecord struct {
@@ -81,6 +84,9 @@ func (s *FundamentalsService) RefreshFinance(ctx context.Context, code string) e
 		return errors.New("finance payload is nil")
 	}
 
+	s.financeMu.Lock()
+	defer s.financeMu.Unlock()
+
 	engine, err := s.openFundamentalsEngine("finance.db")
 	if err != nil {
 		return err
@@ -134,6 +140,9 @@ func (s *FundamentalsService) SyncF10(ctx context.Context, code string) error {
 	if err != nil {
 		return err
 	}
+
+	s.f10Mu.Lock()
+	defer s.f10Mu.Unlock()
 
 	engine, err := s.openFundamentalsEngine("f10.db")
 	if err != nil {

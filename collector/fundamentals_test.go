@@ -64,6 +64,10 @@ func (s *fundamentalsStubProvider) F10Content(ctx context.Context, query F10Cont
 	}, nil
 }
 
+func (s *fundamentalsStubProvider) BlockGroups(ctx context.Context, filename string) ([]BlockInfo, error) {
+	return nil, errors.New("not implemented")
+}
+
 func TestFundamentalsRefreshFinanceAndF10AreReplaySafe(t *testing.T) {
 	tmp := t.TempDir()
 	store, err := OpenStore(filepath.Join(tmp, "collector.db"))

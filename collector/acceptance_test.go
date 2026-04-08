@@ -119,6 +119,10 @@ func (p *acceptanceProvider) F10Content(ctx context.Context, query F10ContentQue
 	}, nil
 }
 
+func (p *acceptanceProvider) BlockGroups(ctx context.Context, filename string) ([]BlockInfo, error) {
+	return nil, nil
+}
+
 func TestCollectorFinalAcceptanceEndToEndCatchUp(t *testing.T) {
 	tmp := t.TempDir()
 	collectorDB := filepath.Join(tmp, "collector.db")

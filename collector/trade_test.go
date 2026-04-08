@@ -63,6 +63,10 @@ func (s *tradeStubProvider) F10Content(ctx context.Context, query F10ContentQuer
 	return nil, errors.New("not implemented")
 }
 
+func (s *tradeStubProvider) BlockGroups(ctx context.Context, filename string) ([]BlockInfo, error) {
+	return nil, errors.New("not implemented")
+}
+
 func TestTradeRefreshPublishesDBFirstAndPersistsCursor(t *testing.T) {
 	tmp := t.TempDir()
 	store, err := OpenStore(filepath.Join(tmp, "collector.db"))

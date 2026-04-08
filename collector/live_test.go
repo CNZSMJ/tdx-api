@@ -58,6 +58,10 @@ func (s *liveStubProvider) F10Content(ctx context.Context, query F10ContentQuery
 	return nil, errors.New("not implemented")
 }
 
+func (s *liveStubProvider) BlockGroups(ctx context.Context, filename string) ([]BlockInfo, error) {
+	return nil, errors.New("not implemented")
+}
+
 func TestLiveCaptureStoresQuotesAndSessionData(t *testing.T) {
 	tmp := t.TempDir()
 	store, err := OpenStore(filepath.Join(tmp, "collector.db"))

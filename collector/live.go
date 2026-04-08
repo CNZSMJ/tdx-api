@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -85,6 +86,8 @@ func NewLiveCaptureService(store *Store, provider Provider, cfg LiveCaptureConfi
 	}, nil
 }
 
+const quoteBatchSize = 80
+
 func (s *LiveCaptureService) CaptureQuotes(ctx context.Context, query QuoteCaptureQuery) error {
 	if len(query.Codes) == 0 {
 		return nil
@@ -93,9 +96,18 @@ func (s *LiveCaptureService) CaptureQuotes(ctx context.Context, query QuoteCaptu
 		query.CaptureTime = s.cfg.Now()
 	}
 
-	items, err := s.provider.Quotes(ctx, query.Codes)
-	if err != nil {
-		return err
+	var items []QuoteSnapshot
+	for start := 0; start < len(query.Codes); start += quoteBatchSize {
+		end := start + quoteBatchSize
+		if end > len(query.Codes) {
+			end = len(query.Codes)
+		}
+		batch, err := s.provider.Quotes(ctx, query.Codes[start:end])
+		if err != nil {
+			log.Printf("quote snapshot batch %d-%d/%d failed: %v", start, end, len(query.Codes), err)
+			continue
+		}
+		items = append(items, batch...)
 	}
 	if len(items) == 0 {
 		return nil
@@ -126,14 +138,27 @@ func (s *LiveCaptureService) CaptureQuotes(ctx context.Context, query QuoteCaptu
 		})
 	}
 
+	const insertBatchSize = 500
 	if _, err := engine.Transaction(func(session *xorm.Session) (interface{}, error) {
-		for _, code := range query.Codes {
-			if _, err := session.Table("QuoteSnapshot").Where("Code = ? AND CaptureTime = ?", code, captureUnix).Delete(new(QuoteSnapshotRow)); err != nil {
-				return nil, err
+		for batchStart := 0; batchStart < len(query.Codes); batchStart += insertBatchSize {
+			batchEnd := batchStart + insertBatchSize
+			if batchEnd > len(query.Codes) {
+				batchEnd = len(query.Codes)
+			}
+			for _, code := range query.Codes[batchStart:batchEnd] {
+				if _, err := session.Table("QuoteSnapshot").Where("Code = ? AND CaptureTime = ?", code, captureUnix).Delete(new(QuoteSnapshotRow)); err != nil {
+					return nil, err
+				}
 			}
 		}
-		if _, err := session.Table("QuoteSnapshot").Insert(rows...); err != nil {
-			return nil, err
+		for batchStart := 0; batchStart < len(rows); batchStart += insertBatchSize {
+			batchEnd := batchStart + insertBatchSize
+			if batchEnd > len(rows) {
+				batchEnd = len(rows)
+			}
+			if _, err := session.Table("QuoteSnapshot").Insert(rows[batchStart:batchEnd]...); err != nil {
+				return nil, err
+			}
 		}
 		return nil, nil
 	}); err != nil {

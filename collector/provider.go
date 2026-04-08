@@ -43,6 +43,10 @@ type F10Provider interface {
 	F10Content(ctx context.Context, query F10ContentQuery) (*F10Content, error)
 }
 
+type BlockProvider interface {
+	BlockGroups(ctx context.Context, filename string) ([]BlockInfo, error)
+}
+
 type Provider interface {
 	UniverseProvider
 	CalendarProvider
@@ -53,4 +57,5 @@ type Provider interface {
 	OrderHistoryProvider
 	FinanceProvider
 	F10Provider
+	BlockProvider
 }

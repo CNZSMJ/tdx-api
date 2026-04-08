@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -165,43 +168,65 @@ func (r *Runtime) reconcileDate(ctx context.Context, date, trigger string) (_ *R
 		report.applyObservation(index, quoteBefore, quoteBefore)
 	}
 
-	klineItems := 0
+	var klineItemsAtomic atomic.Int64
+	var klineErrMu sync.Mutex
 	klineErrors := make([]string, 0)
-	for _, instrument := range instruments {
+	if fatalErr := r.reconcileParallel(ctx, instruments, func(ctx context.Context, idx int, instrument Instrument) error {
+		if idx > 0 && idx%200 == 0 {
+			log.Printf("reconcile progress: phase=kline instrument=%d/%d date=%s items=%d errors=%d", idx, len(instruments), target, klineItemsAtomic.Load(), len(klineErrors))
+		}
 		for _, period := range r.cfg.KlinePeriods {
 			if domainErr := r.kline.ReconcileDate(ctx, KlineCollectQuery{
 				Code:      instrument.Code,
 				AssetType: instrument.AssetType,
 				Period:    period,
 			}, target); domainErr != nil {
+				if isFatalCtxError(domainErr) {
+					return domainErr
+				}
+				klineErrMu.Lock()
 				klineErrors = append(klineErrors, fmt.Sprintf("%s/%s: %v", instrument.Code, period, domainErr))
+				klineErrMu.Unlock()
 				continue
 			}
-			klineItems++
+			klineItemsAtomic.Add(1)
 		}
+		return nil
+	}); fatalErr != nil {
+		return nil, fatalErr
 	}
+	klineItems := int(klineItemsAtomic.Load())
+	log.Printf("reconcile progress: phase=kline done date=%s items=%d errors=%d", target, klineItems, len(klineErrors))
 	klineIndex := report.addDomainWithErrors("kline", true, klineItems, "republished requested date window and later rows for configured periods", klineErrors)
 	klineAfter, _ := r.observeKline(target, instruments)
 	report.applyObservation(klineIndex, klineBefore, klineAfter)
 
 	if trading {
-		tradeItems := 0
+		var tradeItemsAtomic, liveItemsAtomic, orderItemsAtomic atomic.Int64
+		var tloErrMu sync.Mutex
 		tradeErrors := make([]string, 0)
-		liveItems := 0
 		liveErrors := make([]string, 0)
-		orderItems := 0
 		orderErrors := make([]string, 0)
 
-		for _, instrument := range instruments {
+		if fatalErr := r.reconcileParallel(ctx, instruments, func(ctx context.Context, idx int, instrument Instrument) error {
+			if idx > 0 && idx%200 == 0 {
+				log.Printf("reconcile progress: phase=trade_history+live+order instrument=%d/%d date=%s trade=%d live=%d order=%d",
+					idx, len(instruments), target, tradeItemsAtomic.Load(), liveItemsAtomic.Load(), orderItemsAtomic.Load())
+			}
 			if instrument.AssetType == AssetTypeStock || instrument.AssetType == AssetTypeETF {
 				if domainErr := r.trade.RefreshDay(ctx, TradeCollectQuery{
 					Code:      instrument.Code,
 					AssetType: instrument.AssetType,
 					Date:      target,
 				}); domainErr != nil {
+					if isFatalCtxError(domainErr) {
+						return domainErr
+					}
+					tloErrMu.Lock()
 					tradeErrors = append(tradeErrors, fmt.Sprintf("%s: %v", instrument.Code, domainErr))
+					tloErrMu.Unlock()
 				} else {
-					tradeItems++
+					tradeItemsAtomic.Add(1)
 				}
 
 				if domainErr := r.live.ReconcileDay(ctx, SessionCaptureQuery{
@@ -209,9 +234,14 @@ func (r *Runtime) reconcileDate(ctx context.Context, date, trigger string) (_ *R
 					AssetType: instrument.AssetType,
 					Date:      target,
 				}); domainErr != nil {
+					if isFatalCtxError(domainErr) {
+						return domainErr
+					}
+					tloErrMu.Lock()
 					liveErrors = append(liveErrors, fmt.Sprintf("%s: %v", instrument.Code, domainErr))
+					tloErrMu.Unlock()
 				} else {
-					liveItems++
+					liveItemsAtomic.Add(1)
 				}
 			}
 
@@ -221,12 +251,26 @@ func (r *Runtime) reconcileDate(ctx context.Context, date, trigger string) (_ *R
 					AssetType: instrument.AssetType,
 					Date:      target,
 				}); domainErr != nil {
+					if isFatalCtxError(domainErr) {
+						return domainErr
+					}
+					tloErrMu.Lock()
 					orderErrors = append(orderErrors, fmt.Sprintf("%s: %v", instrument.Code, domainErr))
+					tloErrMu.Unlock()
 				} else {
-					orderItems++
+					orderItemsAtomic.Add(1)
 				}
 			}
+			return nil
+		}); fatalErr != nil {
+			return nil, fatalErr
 		}
+
+		tradeItems := int(tradeItemsAtomic.Load())
+		liveItems := int(liveItemsAtomic.Load())
+		orderItems := int(orderItemsAtomic.Load())
+		log.Printf("reconcile progress: phase=trade_history+live+order done date=%s trade=%d live=%d order=%d errors=%d",
+			target, tradeItems, liveItems, orderItems, len(tradeErrors)+len(liveErrors)+len(orderErrors))
 
 		tradeIndex := report.addDomainWithErrors("trade_history", true, tradeItems, "republished requested trade day from provider source", tradeErrors)
 		tradeAfter, _ := r.observeTradeHistory(target, instruments)
@@ -248,25 +292,49 @@ func (r *Runtime) reconcileDate(ctx context.Context, date, trigger string) (_ *R
 		report.applyObservation(liveIndex, liveBefore, liveBefore)
 	}
 
-	financeItems := 0
-	financeErrors := make([]string, 0)
-	f10Items := 0
-	f10Errors := make([]string, 0)
-	for _, instrument := range instruments {
-		if instrument.AssetType != AssetTypeStock {
-			continue
-		}
-		if domainErr := r.fundamentals.RefreshFinance(ctx, instrument.Code); domainErr != nil {
-			financeErrors = append(financeErrors, fmt.Sprintf("%s: %v", instrument.Code, domainErr))
-		} else {
-			financeItems++
-		}
-		if domainErr := r.fundamentals.SyncF10(ctx, instrument.Code); domainErr != nil {
-			f10Errors = append(f10Errors, fmt.Sprintf("%s: %v", instrument.Code, domainErr))
-		} else {
-			f10Items++
+	stockInstruments := make([]Instrument, 0, len(instruments)/2)
+	for _, inst := range instruments {
+		if inst.AssetType == AssetTypeStock {
+			stockInstruments = append(stockInstruments, inst)
 		}
 	}
+	var financeItemsAtomic, f10ItemsAtomic atomic.Int64
+	var ffErrMu sync.Mutex
+	financeErrors := make([]string, 0)
+	f10Errors := make([]string, 0)
+	if fatalErr := r.reconcileParallel(ctx, stockInstruments, func(ctx context.Context, idx int, instrument Instrument) error {
+		if idx > 0 && idx%200 == 0 {
+			log.Printf("reconcile progress: phase=finance+f10 stock=%d/%d date=%s finance=%d f10=%d",
+				idx, len(stockInstruments), target, financeItemsAtomic.Load(), f10ItemsAtomic.Load())
+		}
+		if domainErr := r.fundamentals.RefreshFinance(ctx, instrument.Code); domainErr != nil {
+			if isFatalCtxError(domainErr) {
+				return domainErr
+			}
+			ffErrMu.Lock()
+			financeErrors = append(financeErrors, fmt.Sprintf("%s: %v", instrument.Code, domainErr))
+			ffErrMu.Unlock()
+		} else {
+			financeItemsAtomic.Add(1)
+		}
+		if domainErr := r.fundamentals.SyncF10(ctx, instrument.Code); domainErr != nil {
+			if isFatalCtxError(domainErr) {
+				return domainErr
+			}
+			ffErrMu.Lock()
+			f10Errors = append(f10Errors, fmt.Sprintf("%s: %v", instrument.Code, domainErr))
+			ffErrMu.Unlock()
+		} else {
+			f10ItemsAtomic.Add(1)
+		}
+		return nil
+	}); fatalErr != nil {
+		return nil, fatalErr
+	}
+	financeItems := int(financeItemsAtomic.Load())
+	f10Items := int(f10ItemsAtomic.Load())
+	log.Printf("reconcile progress: phase=finance+f10 done date=%s finance=%d f10=%d errors=%d",
+		target, financeItems, f10Items, len(financeErrors)+len(f10Errors))
 	financeIndex := report.addDomainWithErrors("finance", true, financeItems, "refreshed current finance snapshots; provider state is date-agnostic at reconcile time", financeErrors)
 	financeAfter, _ := r.observeFinance(target, instruments)
 	report.applyObservation(financeIndex, financeBefore, financeAfter)
@@ -298,6 +366,73 @@ func (r *Runtime) reconcileDate(ctx context.Context, date, trigger string) (_ *R
 	}
 
 	return report, nil
+}
+
+func (r *Runtime) reconcileParallel(ctx context.Context, instruments []Instrument, fn func(ctx context.Context, idx int, instrument Instrument) error) error {
+	workers := r.cfg.CatchUpWorkers
+	if workers <= 1 || len(instruments) <= 1 {
+		for idx, inst := range instruments {
+			if err := fn(ctx, idx, inst); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if workers > len(instruments) {
+		workers = len(instruments)
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	type job struct {
+		index      int
+		instrument Instrument
+	}
+	jobs := make(chan job)
+	errCh := make(chan error, 1)
+	var wg sync.WaitGroup
+
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range jobs {
+				if err := fn(ctx, j.index, j.instrument); err != nil {
+					select {
+					case errCh <- err:
+					default:
+					}
+					cancel()
+					return
+				}
+			}
+		}()
+	}
+
+	for idx, inst := range instruments {
+		select {
+		case <-ctx.Done():
+			close(jobs)
+			wg.Wait()
+			select {
+			case err := <-errCh:
+				return err
+			default:
+				return ctx.Err()
+			}
+		case jobs <- job{index: idx, instrument: inst}:
+		}
+	}
+	close(jobs)
+	wg.Wait()
+
+	select {
+	case err := <-errCh:
+		return err
+	default:
+		return nil
+	}
 }
 
 func normalizeReconcileDate(date string, now func() time.Time) (string, error) {
