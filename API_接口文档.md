@@ -265,21 +265,25 @@ GET /api/trade?code=000001&date=20241103
 
 ---
 
-### 5. 搜索股票代码
+### 5. 跨资产证券搜索
 
 **接口**: `GET /api/search`
 
-**描述**: 根据关键词搜索股票代码和名称
+**描述**: 根据关键词在全市场（股票、ETF、指数）中搜索证券代码和名称，返回丰富的元数据。
 
 **请求参数**:
 | 参数 | 类型 | 必填 | 说明 |
 |-----|------|------|------|
-| keyword | string | 是 | 搜索关键词（代码或名称） |
+| keyword | string | 是 | 搜索关键词（代码或名称，模糊匹配） |
+| asset_type | string | 否 | `stock`、`etf`、`index`、`all`（默认 `all`）。兼容旧参数名 `type` |
+| limit | int | 否 | 返回条数上限，默认 50 |
 
 **请求示例**:
 ```
 GET /api/search?keyword=平安
-GET /api/search?keyword=000001
+GET /api/search?keyword=000001&asset_type=stock
+GET /api/search?keyword=沪深300&asset_type=index
+GET /api/search?keyword=510&asset_type=etf&limit=10
 ```
 
 **响应示例**:
@@ -287,24 +291,96 @@ GET /api/search?keyword=000001
 {
   "code": 0,
   "message": "success",
-  "data": [
-    {
-      "code": "000001",
-      "name": "平安银行"
-    },
-    {
-      "code": "601318",
-      "name": "中国平安"
-    }
-    // ... 最多50条结果
-  ]
+  "data": {
+    "count": 3,
+    "list": [
+      {
+        "code": "000001",
+        "full_code": "sz000001",
+        "name": "平安银行",
+        "exchange": "sz",
+        "asset_type": "stock",
+        "decimal": 2,
+        "multiple": 100,
+        "last_price": 11.05
+      },
+      {
+        "code": "601318",
+        "full_code": "sh601318",
+        "name": "中国平安",
+        "exchange": "sh",
+        "asset_type": "stock",
+        "decimal": 2,
+        "multiple": 100,
+        "last_price": 48.50
+      }
+    ]
+  }
 }
 ```
 
-**数据说明**:
-- 支持代码和名称模糊搜索
-- 最多返回50条结果
-- 仅返回A股（过滤指数等）
+**出参字段说明**:
+| 字段 | 说明 |
+|------|------|
+| `code` | 6 位证券代码 |
+| `full_code` | 含交易所前缀的 8 位全码（如 `sz000001`） |
+| `name` | 证券名称 |
+| `exchange` | 交易所（`sh` / `sz` / `bj`） |
+| `asset_type` | `stock` / `etf` / `index` / `other` |
+| `decimal` | 价格精度（小数位数） |
+| `multiple` | 乘数 |
+| `last_price` | 昨收价 |
+
+---
+
+### 5a. 证券可交易状态
+
+**接口**: `GET /api/security/status`
+
+**描述**: 查询单只证券的可交易性状态，包括是否停牌、是否 ST、是否有退市风险等。判断逻辑基于证券名称模式匹配和盘中行情推断。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| code | string | 是 | 证券代码（6 位或 8 位含前缀） |
+
+**请求示例**:
+```
+GET /api/security/status?code=000001
+GET /api/security/status?code=sh600519
+```
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "code": "000001",
+    "full_code": "sz000001",
+    "name": "平安银行",
+    "asset_type": "stock",
+    "is_trading": true,
+    "is_suspended": false,
+    "is_st": false,
+    "is_delisting_risk": false,
+    "quote_time": "15:00:03",
+    "updated_at": "2026-04-09T10:30:00+08:00",
+    "note": "is_suspended 基于盘中 volume==0 推断，非交易时段可能不准确；is_st/is_delisting_risk 基于证券名称模式匹配"
+  }
+}
+```
+
+**字段说明**:
+| 字段 | 说明 |
+|------|------|
+| `is_trading` | 综合判断：非停牌且无退市风险则为 `true` |
+| `is_suspended` | 盘中 volume=0 且开盘价=0 判定为停牌（非交易时段可能不准确） |
+| `is_st` | 名称含 `ST`（含 `*ST`） |
+| `is_delisting_risk` | 名称含 `*ST` |
+| `note` | 数据来源与精度说明 |
+
+> **局限性**：TDX 协议不提供显式的停牌/ST 标记，上述字段均为推断值。`is_suspended` 在非交易时段由于无行情数据而可能误判。建议在盘中使用以获得最佳准确性。
 
 ---
 
@@ -406,7 +482,7 @@ GET /api/codes?exchange=sh
 
 **接口**: `POST /api/batch-quote`
 
-**描述**: 批量获取多只股票的实时行情
+**描述**: 批量获取多只标的的实时行情。`codes` 中除 A 股、ETF 六位或八位全码外，亦可传入**指数全码**（如 `sh000001`、`sz399001`、`sz399006`），与 `/api/quote` 使用同一行情通道，便于一次拉取多只指数的盘中快照（单次仍受 50 只上限约束）。
 
 **请求参数** (JSON Body):
 ```json
@@ -928,6 +1004,75 @@ curl -X POST http://localhost:8080/api/tasks/pull-trade \
 
 ---
 
+### 全市场宽度与异动接口（补充）
+
+以下接口依赖本服务内的 **Ticker 实时聚合**；部分能力还依赖本地 **日 K 线 SQLite 库**（`Kline.BaseDir` 下 `{code}.db`）。未就绪时返回明确 `status`，避免使用陈旧或误导性数据。
+
+#### `GET /api/market-stats` — 全市场宽度统计
+
+**描述**: 按交易所与资产类型汇总涨跌家数、涨跌停家数、成交额与成交量等；数据来自 Ticker 每轮轮询后的预计算缓存。
+
+**未就绪时的 `data` 形态**（仍为标准 `code:0` 成功包装，字段在 `data` 内）:
+
+| status | 含义 |
+|--------|------|
+| `not_started` | Ticker 服务未初始化 |
+| `warming_up` | Ticker 已启动，尚未完成首次行情写入 |
+| `out_of_session` | 非交易时段或 Ticker 未运行，且无有效 `updated_at` |
+
+**就绪时的 `data` 主要字段**:
+
+| 字段 | 说明 |
+|------|------|
+| `sh` / `sz` / `bj` | 各交易所：`total`、`up`、`down`、`flat`、`up_ratio`、`limit_up`、`limit_down`、`total_amount`、`total_volume` |
+| `summary` | `stock`、`etf` 两组，字段同上 |
+| `updated_at` | Ticker 缓存更新时间（RFC3339） |
+| `status` | `live`（约 10 秒内更新）或 `stale` |
+| `status_hint` | 仅在 `stale` 等需要说明时给出 |
+
+---
+
+#### `GET /api/market/screen` — 排行与涨跌停池
+
+**描述**: 在 Ticker 缓存上按条件筛选、排序，返回列表；涨跌停筛选**仅股票**有效。
+
+**请求参数**:
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| sort | string | 否 | 排序字段：`change_pct`（默认）、`amount`、`volume`、`amplitude` |
+| order | string | 否 | `desc`（默认）或 `asc` |
+| filter | string | 否 | 空：不过滤；`limit_up`：涨停池；`limit_down`：跌停池（强制 `asset_type=stock`） |
+| asset_type | string | 否 | `stock`（默认）、`etf`、`all` |
+| limit | int | 否 | 返回条数，默认 50，最大 200 |
+
+**响应**: `count`、`list`（元素含 `code`、`name`、`exchange`、`asset_type`、`price`、`change_pct`、`volume`、`amount`、`amplitude`、`is_limit_up`、`is_limit_down` 等）。涨跌停池项可含 `limit_first_seen`、`limit_last_seen`、`limit_break_count`、`bid1_volume`（涨停）或 `ask1_volume`（跌停）。若使用涨跌停筛选，可能附带 `filter_note`。另含 `updated_at` 与 `status`（`live` / `stale` / `waiting` / `not_started`，与 Ticker 元数据一致）。
+
+---
+
+#### `GET /api/market/signal` — K 线扫描异动
+
+**描述**: 后台按配置间隔扫描各股日 K 表，与当前 Ticker 快照对比，产出**阶段新高**、**阶段新低**、**放量异动**三类列表；扫描进行中仍返回**上一轮完整结果**。
+
+**请求参数**:
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| type | string | 否 | `all`（默认，不返回合并 `list`，仅各数组与总 `count`）、`new_high`、`new_low`、`volume_spike` |
+
+**响应**（`data` 内）:
+
+| 字段 | 说明 |
+|------|------|
+| `status` | `not_ready`（尚无首轮结果）、`scanning`、`ready`、`stale`（超过新鲜度阈值，默认 15 分钟） |
+| `status_hint` | 人类可读说明 |
+| `updated_at` | 上一轮扫描完成时间 |
+| `scan_duration_ms` | 上一轮扫描耗时 |
+| `new_high` / `new_low` / `volume_spike` | 信号数组；单项含 `code`、`name`、`signal_type`、`window`、`price`、`ref_high`/`ref_low`、`volume`、`avg_volume`、`volume_ratio`、`change_pct` 等（按类型取舍） |
+| `list` / `count` | 当 `type` 为某一类时，返回该类列表与条数 |
+
+---
+
 ### 24. 获取股票代码列表
 
 **接口**: `GET /api/stock-codes`
@@ -1389,6 +1534,104 @@ GET /api/block/stocks?name=半导体&sort_by=amount&limit=10
 | `stale` | 数据已过期（非盘中时段，`status_hint` 包含过期时长） |
 | `waiting` | Ticker 已启动，等待盘中时段开始采集 |
 | `not_started` | Ticker 尚未启动，服务可能仍在初始化 |
+
+---
+
+### 38. 证券基本属性
+
+**接口**: `GET /api/profile`
+
+**描述**: 根据证券代码（6 位或含交易所前缀的 8 位）查找其名称、交易所、精度、乘数、最新价。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| code | string | 是 | 证券代码（如 `000001` 或 `sz000001`） |
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "code": "000001",
+    "name": "平安银行",
+    "exchange": "sz",
+    "decimal": 2,
+    "multiple": 100,
+    "last_price": 11.05
+  }
+}
+```
+
+---
+
+### 39. Collector 运行状态
+
+**接口**: `GET /api/collector/status`
+
+**描述**: 查看数据采集器（Collector）的运行时状态，包括最近一次启动追赶、每日全量同步、每日对账的执行记录，以及调度表达式和待处理的数据缺口数。
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "runtime": {
+      "now": "2026-04-09T10:30:00+08:00",
+      "open_gap_count": 0,
+      "last_startup_run": { "schedule_name": "collector_startup_catchup", "status": "passed", "started_at": "...", "ended_at": "..." },
+      "last_full_sync": { "schedule_name": "collector_daily_full_sync", "status": "passed", "started_at": "...", "ended_at": "..." },
+      "last_reconcile": { "schedule_name": "collector_daily_reconcile", "status": "passed", "started_at": "...", "ended_at": "..." },
+      "recent_runs": [],
+      "next_actions": []
+    },
+    "jobs": {},
+    "schedule": {
+      "daily_full_sync": "0 0 18 * * *",
+      "daily_reconcile": "0 0 19 * * *"
+    }
+  }
+}
+```
+
+---
+
+### 40. 执行 / 查看对账报告
+
+**接口**: `GET/POST /api/collector/reconcile`
+
+**描述**:
+- **POST**: 手动触发一次数据对账，可指定日期。对账会检查 K 线、分时成交、委托分布等各域数据的完整性，并尝试修复缺失。
+- **GET**: 查看已生成的对账报告（JSON 文件），按日期检索。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| date | string | 否 | 对账日期（YYYYMMDD 或 YYYY-MM-DD）；POST 时可通过 query 或 JSON body 传入，GET 时通过 query 传入。默认使用最近交易日 |
+
+**POST 响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "date": "20260408",
+    "trigger": "manual",
+    "status": "reconciled",
+    "is_trading_day": true,
+    "open_gap_count": 0,
+    "started_at": "2026-04-09T10:35:00+08:00",
+    "completed_at": "2026-04-09T10:35:12+08:00",
+    "report_path": "/data/collector_reports/reconcile-20260408.json",
+    "domains": [
+      { "domain": "kline", "status": "reconciled", "items": 5200 },
+      { "domain": "trade_history", "status": "reconciled", "items": 5200 }
+    ]
+  }
+}
+```
 
 ---
 

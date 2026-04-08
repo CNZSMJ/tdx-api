@@ -9,51 +9,59 @@
 2. **GET /api/kline** - K线数据
 3. **GET /api/minute** - 分时数据
 4. **GET /api/trade** - 分时成交
-5. **GET /api/search** - 搜索股票
+5. **GET /api/search** - 跨资产证券搜索（stock/etf/index/all）
 6. **GET /api/stock-info** - 综合信息
 
-### ✅ 扩展接口（7个）
+### ✅ 扩展接口（9个）
 7. **GET /api/codes** - 股票代码列表
 8. **POST /api/batch-quote** - 批量获取行情
 9. **GET /api/kline-history** - 历史K线范围查询
 10. **GET /api/index** - 指数数据
-11. **GET /api/market-stats** - 市场统计
-12. **GET /api/server-status** - 服务状态
-13. **GET /api/health** - 健康检查
+11. **GET /api/market-stats** - 全市场宽度统计（Ticker 预聚合）
+12. **GET /api/market/screen** - 全市场排行 / 涨跌停池
+13. **GET /api/market/signal** - K 线库扫描异动（新高/新低/放量）
+14. **GET /api/server-status** - 服务状态
+15. **GET /api/health** - 健康检查
 
 ### ✅ 数据入库任务接口（5个）
-14. **POST /api/tasks/pull-kline** - 批量K线入库任务
-15. **POST /api/tasks/pull-trade** - 分时成交入库任务
-16. **GET /api/tasks** - 查询任务列表
-17. **GET /api/tasks/{id}** - 查询任务详情
-18. **POST /api/tasks/{id}/cancel** - 取消任务
+16. **POST /api/tasks/pull-kline** - 批量K线入库任务
+17. **POST /api/tasks/pull-trade** - 分时成交入库任务
+18. **GET /api/tasks** - 查询任务列表
+19. **GET /api/tasks/{id}** - 查询任务详情
+20. **POST /api/tasks/{id}/cancel** - 取消任务
 
 ### ✅ 新增数据服务接口（17个）
-19. **GET /api/etf** - ETF基金列表
-20. **GET /api/finance** - 财务数据
-21. **GET /api/f10/categories** - F10目录
-22. **GET /api/f10/content** - F10正文
-23. **GET /api/trade-history** - 历史分时成交分页
-24. **GET /api/order-history** - 历史委托分布
-25. **GET /api/minute-trade-all** - 全天分时成交汇总
-26. **GET /api/workday** - 交易日信息查询
-27. **GET /api/market-count** - 各交易所证券数量
-28. **GET /api/stock-codes** - 全部股票代码
-29. **GET /api/etf-codes** - 全部ETF代码
-30. **GET /api/index-codes** - 核心指数代码
-31. **GET /api/kline-all** - 股票历史K线全集
-32. **GET /api/index/all** - 指数历史K线全集
-33. **GET /api/trade-history/full** - 上市以来分时成交
-34. **GET /api/workday/range** - 交易日范围列表
-35. **GET /api/income** - 收益区间分析
+21. **GET /api/etf** - ETF基金列表
+22. **GET /api/finance** - 财务数据
+23. **GET /api/f10/categories** - F10目录
+24. **GET /api/f10/content** - F10正文
+25. **GET /api/trade-history** - 历史分时成交分页
+26. **GET /api/order-history** - 历史委托分布
+27. **GET /api/minute-trade-all** - 全天分时成交汇总
+28. **GET /api/workday** - 交易日信息查询
+29. **GET /api/market-count** - 各交易所证券数量
+30. **GET /api/stock-codes** - 全部股票代码
+31. **GET /api/etf-codes** - 全部ETF代码
+32. **GET /api/index-codes** - 核心指数代码
+33. **GET /api/kline-all** - 股票历史K线全集
+34. **GET /api/index/all** - 指数历史K线全集
+35. **GET /api/trade-history/full** - 上市以来分时成交
+36. **GET /api/workday/range** - 交易日范围列表
+37. **GET /api/income** - 收益区间分析
 
 ### ✅ 板块数据与实时排名接口（6个）
-36. **GET /api/blocks** - 板块列表（行业/概念/风格，支持关键词搜索）
-37. **GET /api/block/members** - 板块成份股代码列表
-38. **GET /api/stock/blocks** - 个股所属板块查询
-39. **GET /api/block/ranking** - 板块实时涨幅排名（盘中3秒刷新，支持涨幅/成交额/涨停数排序）
-40. **GET /api/block/stocks** - 板块内个股实时排名（支持涨幅/成交额/成交量/振幅排序）
-41. **GET /api/ticker/status** - 实时行情轮询服务状态
+38. **GET /api/blocks** - 板块列表（行业/概念/风格，支持关键词搜索）
+39. **GET /api/block/members** - 板块成份股代码列表
+40. **GET /api/stock/blocks** - 个股所属板块查询
+41. **GET /api/block/ranking** - 板块实时涨幅排名（盘中3秒刷新，支持涨幅/成交额/涨停数排序）
+42. **GET /api/block/stocks** - 板块内个股实时排名（支持涨幅/成交额/成交量/振幅排序）
+43. **GET /api/ticker/status** - 实时行情轮询服务状态
+
+### ✅ 运维 / 辅助接口（3个）
+44. **GET /api/profile** - 证券基本属性（名称/交易所/精度/乘数/最新价）
+45. **GET /api/security/status** - 证券可交易状态（停牌/ST/退市风险）
+46. **GET /api/collector/status** - 数据采集器运行状态
+47. **GET/POST /api/collector/reconcile** - 查看/触发数据对账
 
 ---
 
@@ -76,6 +84,7 @@ func main() {
 	http.HandleFunc("/api/minute", handleGetMinute)
 	http.HandleFunc("/api/trade", handleGetTrade)
 	http.HandleFunc("/api/search", handleSearchCode)
+	http.HandleFunc("/api/profile", handleGetProfile)
 	http.HandleFunc("/api/stock-info", handleGetStockInfo)
 
 	// === 扩展API路由 ===
@@ -85,6 +94,8 @@ func main() {
 	http.HandleFunc("/api/index", handleGetIndex)
 	http.HandleFunc("/api/index/all", handleGetIndexAll)
 	http.HandleFunc("/api/market-stats", handleGetMarketStats)
+	http.HandleFunc("/api/market/screen", handleMarketScreen)
+	http.HandleFunc("/api/market/signal", handleMarketSignal)
 	http.HandleFunc("/api/market-count", handleGetMarketCount)
 	http.HandleFunc("/api/stock-codes", handleGetStockCodes)
 	http.HandleFunc("/api/etf-codes", handleGetETFCodes)
@@ -113,6 +124,10 @@ func main() {
 	http.HandleFunc("/api/block/ranking", handleBlockRanking)
 	http.HandleFunc("/api/block/stocks", handleBlockStocks)
 	http.HandleFunc("/api/ticker/status", handleTickerStatus)
+
+	// === 运维路由 ===
+	http.HandleFunc("/api/collector/status", handleCollectorStatus)
+	http.HandleFunc("/api/collector/reconcile", handleCollectorReconcile)
 
 	// === 任务调度路由 ===
 	http.HandleFunc("/api/tasks/pull-kline", handleCreatePullKlineTask)
@@ -373,7 +388,9 @@ curl "http://localhost:8080/api/health"
 | /api/kline | GET | K线数据（含日/周/月前复权） |
 | /api/minute | GET | 分时数据（自动回退至最近交易日） |
 | /api/trade | GET | 分时成交 |
-| /api/search | GET | 搜索股票（支持代码/名称模糊匹配） |
+| /api/search | GET | 跨资产证券搜索（支持 asset_type 筛选） |
+| /api/profile | GET | 证券基本属性（名称/交易所/精度/乘数/最新价） |
+| /api/security/status | GET | 证券可交易状态（停牌/ST/退市风险） |
 | /api/stock-info | GET | 综合信息汇总 |
 
 ### 扩展功能接口
@@ -384,7 +401,9 @@ curl "http://localhost:8080/api/health"
 | /api/batch-quote | POST | 批量行情 |
 | /api/kline-history | GET | 历史K线（limit ≤ 800） |
 | /api/index | GET | 指数数据 |
-| /api/market-stats | GET | 市场统计 |
+| /api/market-stats | GET | 全市场宽度统计（Ticker 预聚合） |
+| /api/market/screen | GET | 全市场排行 / 涨跌停池 |
+| /api/market/signal | GET | K 线扫描异动（新高/新低/放量） |
 | /api/server-status | GET | 服务状态 |
 | /api/health | GET | 健康检查 |
 
@@ -398,6 +417,13 @@ curl "http://localhost:8080/api/health"
 | /api/block/ranking | GET | 板块实时涨幅排名（盘中3秒刷新） |
 | /api/block/stocks | GET | 板块内个股实时排名 |
 | /api/ticker/status | GET | 实时行情轮询状态 |
+
+### 运维 / 辅助接口
+
+| 接口 | 方法 | 说明 |
+|-----|------|------|
+| /api/collector/status | GET | 数据采集器运行状态 |
+| /api/collector/reconcile | GET/POST | 查看/触发数据对账 |
 
 ### 静态文件
 

@@ -46,6 +46,7 @@ type Runtime struct {
 	fundamentals *FundamentalsService
 	block        *BlockService
 	ticker       *TickerService
+	signal       *SignalService
 }
 
 func NewRuntime(store *Store, provider Provider, cfg RuntimeConfig) (*Runtime, error) {
@@ -114,6 +115,11 @@ func NewRuntime(store *Store, provider Provider, cfg RuntimeConfig) (*Runtime, e
 	// and must not compete with catch-up for throttle slots.
 	ticker := NewTickerService(rawProvider, block, cfg.Ticker)
 
+	signal := NewSignalService(SignalConfig{
+		Now:          cfg.Now,
+		KlineBaseDir: cfg.Kline.BaseDir,
+	})
+
 	return &Runtime{
 		store:        store,
 		provider:     provider,
@@ -126,6 +132,7 @@ func NewRuntime(store *Store, provider Provider, cfg RuntimeConfig) (*Runtime, e
 		fundamentals: fundamentals,
 		block:        block,
 		ticker:       ticker,
+		signal:       signal,
 	}, nil
 }
 
@@ -135,6 +142,10 @@ func (r *Runtime) BlockService() *BlockService {
 
 func (r *Runtime) TickerService() *TickerService {
 	return r.ticker
+}
+
+func (r *Runtime) SignalService() *SignalService {
+	return r.signal
 }
 
 // ensureTickerStarted launches the ticker if not already running.
@@ -158,10 +169,31 @@ func (r *Runtime) ensureTickerStarted(instruments []Instrument) {
 	log.Printf("ticker: launched with %d codes (early start during catch-up)", len(codes))
 }
 
+// ensureSignalStarted launches the K-line signal scanner (stocks only).
+func (r *Runtime) ensureSignalStarted(instruments []Instrument) {
+	if r.signal == nil || r.ticker == nil || r.signal.Running() {
+		return
+	}
+	stockCodes := make([]string, 0, len(instruments))
+	for _, inst := range instruments {
+		if inst.AssetType == AssetTypeStock {
+			stockCodes = append(stockCodes, inst.Code)
+		}
+	}
+	if len(stockCodes) == 0 {
+		return
+	}
+	r.signal.Start(context.Background(), stockCodes, r.ticker)
+	log.Printf("signal: launched with %d stock codes (K-line scan)", len(stockCodes))
+}
+
 // StopTicker stops the background real-time quote polling.
 func (r *Runtime) StopTicker() {
 	if r.ticker != nil {
 		r.ticker.Stop()
+	}
+	if r.signal != nil {
+		r.signal.Stop()
 	}
 }
 
@@ -224,6 +256,8 @@ func (r *Runtime) runCatchUp(ctx context.Context, scheduleName, suiteName string
 	// Start the real-time ticker as early as possible (metadata + block + instruments are ready).
 	// This is idempotent — subsequent calls are no-ops if already running.
 	r.ensureTickerStarted(instruments)
+	// NOTE: signal scanner is started AFTER catch-up completes (see below) so that
+	// K-line DBs are up-to-date and the ticker has published its first snapshot.
 
 	tradingDays, err := r.loadTradingDays(ctx, instruments)
 	if err != nil {
@@ -253,6 +287,11 @@ func (r *Runtime) runCatchUp(ctx context.Context, scheduleName, suiteName string
 	if err := r.runCatchUpInstruments(ctx, instruments, tradingDays, progress, counters); err != nil {
 		return err
 	}
+
+	// K-line catch-up is done for all instruments; start the signal scanner now
+	// so that its first scan has complete K-line data and the ticker has had time
+	// to publish at least one snapshot.
+	r.ensureSignalStarted(instruments)
 
 	skipped := counters.skipped.Load()
 	details = fmt.Sprintf(

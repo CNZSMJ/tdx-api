@@ -896,7 +896,15 @@ func handleSearchCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	typeFilter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("type")))
+	// Accept both "asset_type" and legacy "type" param
+	typeFilter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("asset_type")))
+	if typeFilter == "" {
+		typeFilter = strings.ToLower(strings.TrimSpace(r.URL.Query().Get("type")))
+	}
+	if typeFilter == "" {
+		typeFilter = "all"
+	}
+
 	limit := parsePositiveInt(r.URL.Query().Get("limit"))
 	if limit <= 0 {
 		limit = 50
@@ -906,8 +914,10 @@ func handleSearchCode(w http.ResponseWriter, r *http.Request) {
 
 	type SearchResult struct {
 		Code      string  `json:"code"`
+		FullCode  string  `json:"full_code"`
 		Name      string  `json:"name"`
 		Exchange  string  `json:"exchange"`
+		AssetType string  `json:"asset_type"`
 		Decimal   int8    `json:"decimal"`
 		Multiple  uint16  `json:"multiple"`
 		LastPrice float64 `json:"last_price"`
@@ -924,21 +934,11 @@ func handleSearchCode(w http.ResponseWriter, r *http.Request) {
 
 	for _, model := range codeModels {
 		fullCode := model.FullCode()
+		at := classifyAssetType(fullCode)
 
-		if typeFilter != "" && typeFilter != "all" {
-			switch typeFilter {
-			case "stock":
-				if !protocol.IsStock(fullCode) {
-					continue
-				}
-			case "etf":
-				if !protocol.IsETF(fullCode) {
-					continue
-				}
-			case "index":
-				if !protocol.IsIndex(fullCode) {
-					continue
-				}
+		if typeFilter != "all" {
+			if at != typeFilter {
+				continue
 			}
 		}
 
@@ -951,8 +951,10 @@ func handleSearchCode(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(codeUpper, keywordUpper) || strings.Contains(nameUpper, keywordUpper) {
 			results = append(results, SearchResult{
 				Code:      model.Code,
+				FullCode:  fullCode,
 				Name:      model.Name,
 				Exchange:  strings.ToLower(model.Exchange),
+				AssetType: at,
 				Decimal:   model.Decimal,
 				Multiple:  model.Multiple,
 				LastPrice: model.LastPrice,
@@ -965,7 +967,24 @@ func handleSearchCode(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	successResponse(w, results)
+	successResponse(w, map[string]interface{}{
+		"count": len(results),
+		"list":  results,
+	})
+}
+
+// classifyAssetType returns "stock", "etf", "index", or "other" for a full code.
+func classifyAssetType(fullCode string) string {
+	switch {
+	case protocol.IsStock(fullCode):
+		return "stock"
+	case protocol.IsETF(fullCode):
+		return "etf"
+	case protocol.IsIndex(fullCode):
+		return "index"
+	default:
+		return "other"
+	}
 }
 
 // 获取股票基本信息（整合多个接口）
@@ -1409,6 +1428,7 @@ func main() {
 	http.HandleFunc("/api/trade", handleGetTrade)
 	http.HandleFunc("/api/search", handleSearchCode)
 	http.HandleFunc("/api/profile", handleGetProfile)
+	http.HandleFunc("/api/security/status", handleSecurityStatus)
 	http.HandleFunc("/api/stock-info", handleGetStockInfo)
 	http.HandleFunc("/api/finance", handleGetFinance)
 	http.HandleFunc("/api/f10/categories", handleGetF10Categories)
@@ -1419,6 +1439,8 @@ func main() {
 	http.HandleFunc("/api/index", handleGetIndex)
 	http.HandleFunc("/api/index/all", handleGetIndexAll)
 	http.HandleFunc("/api/market-stats", handleGetMarketStats)
+	http.HandleFunc("/api/market/screen", handleMarketScreen)
+	http.HandleFunc("/api/market/signal", handleMarketSignal)
 	http.HandleFunc("/api/market-count", handleGetMarketCount)
 	http.HandleFunc("/api/stock-codes", handleGetStockCodes)
 	http.HandleFunc("/api/etf-codes", handleGetETFCodes)

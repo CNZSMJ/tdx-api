@@ -45,7 +45,7 @@
 | 2 | /api/kline | GET | K线数据 | ✅ 运行中 |
 | 3 | /api/minute | GET | 分时数据 | ✅ 运行中 |
 | 4 | /api/trade | GET | 分时成交 | ✅ 运行中 |
-| 5 | /api/search | GET | 搜索股票 | ✅ 运行中 |
+| 5 | /api/search | GET | 跨资产证券搜索（stock/etf/index） | ✅ 运行中 |
 | 6 | /api/stock-info | GET | 综合信息 | ✅ 运行中 |
 
 ### 第二组：扩展功能接口（已集成）
@@ -56,7 +56,9 @@
 | 8 | /api/batch-quote | POST | 批量行情 | ✅ 运行中 |
 | 9 | /api/kline-history | GET | 历史K线（limit≤800） | ✅ 运行中 |
 | 10 | /api/index | GET | 指数数据 | ✅ 运行中 |
-| 11 | /api/market-stats | GET | 市场统计 | ✅ 运行中 |
+| 11 | /api/market-stats | GET | 全市场宽度统计（Ticker 预聚合） | ✅ 运行中 |
+| 11a | /api/market/screen | GET | 全市场排行 / 涨跌停池 | ✅ 运行中 |
+| 11b | /api/market/signal | GET | K 线扫描异动（新高/新低/放量） | ✅ 运行中 |
 | 12 | /api/server-status | GET | 服务状态 | ✅ 运行中 |
 | 13 | /api/health | GET | 健康检查 | ✅ 运行中 |
 
@@ -93,6 +95,15 @@
 | 30 | /api/block/ranking | GET | 板块实时涨幅排名 | ✅ 运行中 |
 | 31 | /api/block/stocks | GET | 板块内个股实时排名 | ✅ 运行中 |
 | 32 | /api/ticker/status | GET | 实时行情轮询状态 | ✅ 运行中 |
+
+### 第六组：运维 / 辅助接口
+
+| # | 接口 | 方法 | 功能 | 状态 |
+|---|-----|------|------|------|
+| 33 | /api/profile | GET | 证券基本属性（名称/交易所/精度/乘数/最新价） | ✅ 运行中 |
+| 34 | /api/security/status | GET | 证券可交易状态（停牌/ST/退市风险） | ✅ 运行中 |
+| 35 | /api/collector/status | GET | 数据采集器运行状态 | ✅ 运行中 |
+| 36 | /api/collector/reconcile | GET/POST | 查看/触发数据对账 | ✅ 运行中 |
 
 ---
 
@@ -162,7 +173,7 @@ curl "http://localhost:8080/api/search?keyword=平安"
 当前仓库已集成所有扩展API；若需要迁移到其他工程，可参考：
 
 1. **复制代码**：将 `web/server_api_extended.go` 中的函数与辅助方法拷贝到目标服务。  
-2. **注册路由**：在 `main()` 中添加 `/api/codes`、`/api/batch-quote`、`/api/kline-history`、`/api/index`、`/api/market-stats`、`/api/server-status`、`/api/health` 等路由。  
+2. **注册路由**：在 `main()` 中添加 `/api/codes`、`/api/batch-quote`、`/api/kline-history`、`/api/index`、`/api/market-stats`、`/api/market/screen`、`/api/market/signal`、`/api/server-status`、`/api/health` 等路由。  
 3. **重建部署**：重新编译或重启服务。详细说明见 `API_集成指南.md`。
 
 ---

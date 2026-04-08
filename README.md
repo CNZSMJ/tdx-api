@@ -69,7 +69,9 @@ go run .
 | `/api/kline` | K线数据 | `?code=000001&type=day` |
 | `/api/minute` | 分时数据 | `?code=000001` |
 | `/api/trade` | 分时成交 | `?code=000001` |
-| `/api/search` | 搜索股票 | `?keyword=平安` |
+| `/api/search` | 跨资产证券搜索 | `?keyword=平安&asset_type=all` |
+| `/api/security/status` | 证券可交易状态 | `?code=000001` |
+| `/api/profile` | 证券基本属性 | `?code=000001` |
 | `/api/stock-info` | 综合信息 | `?code=000001` |
 
 ### 扩展接口
@@ -84,7 +86,9 @@ go run .
 | `/api/kline-all/ths` | 同花顺源K线数据（含前复权） |
 | `/api/index` | 指数数据 |
 | `/api/index/all` | 全部指数数据 |
-| `/api/market-stats` | 市场统计 |
+| `/api/market-stats` | 全市场宽度统计 |
+| `/api/market/screen` | 全市场排行 / 涨跌停池 |
+| `/api/market/signal` | K 线扫描异动 |
 | `/api/market-count` | 市场数量统计 |
 | `/api/stock-codes` | 股票代码 |
 | `/api/etf-codes` | ETF代码 |
@@ -105,6 +109,8 @@ go run .
 | `/api/tasks` | 任务列表 |
 | `/api/server-status` | 服务器状态 |
 | `/api/health` | 健康检查 |
+| `/api/collector/status` | 数据采集器运行状态 |
+| `/api/collector/reconcile` | 查看/触发数据对账 |
 
 **完整API文档**: [API_接口文档.md](API_接口文档.md)
 

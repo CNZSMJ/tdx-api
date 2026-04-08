@@ -18,6 +18,91 @@ import (
 
 // 扩展API接口
 
+func handleSecurityStatus(w http.ResponseWriter, r *http.Request) {
+	rawCode := strings.TrimSpace(r.URL.Query().Get("code"))
+	if rawCode == "" {
+		errorResponse(w, "code 为必填参数")
+		return
+	}
+
+	// Resolve code → full code + name from code cache
+	models, err := getAllCodeModels()
+	if err != nil {
+		errorResponse(w, "获取证券信息失败: "+err.Error())
+		return
+	}
+
+	codeUpper := strings.ToUpper(rawCode)
+	var matched *tdx.CodeModel
+	for _, m := range models {
+		if strings.ToUpper(m.Code) == codeUpper || strings.ToUpper(m.FullCode()) == codeUpper {
+			matched = m
+			break
+		}
+	}
+	if matched == nil {
+		errorResponse(w, fmt.Sprintf("证券未找到: %s", rawCode))
+		return
+	}
+
+	fullCode := matched.FullCode()
+	name := matched.Name
+	at := classifySecurityAssetType(fullCode)
+
+	nameUpper := strings.ToUpper(name)
+	isST := strings.Contains(nameUpper, "ST")
+	isDelistingRisk := strings.Contains(nameUpper, "*ST")
+
+	// Determine suspension from real-time quote; if volume==0 and the market
+	// is in session, the stock is very likely suspended. Outside trading hours
+	// we can only report based on name patterns.
+	isSuspended := false
+	var quoteTime string
+	quotes, qErr := client.GetQuote(rawCode)
+	if qErr == nil && len(quotes) > 0 {
+		q := quotes[0]
+		quoteTime = q.ServerTime
+		// During trading hours, a stock with zero total volume is suspended
+		if q.TotalHand == 0 && q.K.Open.Float64() == 0 && q.K.Close.Float64() == 0 {
+			isSuspended = true
+		}
+	}
+
+	isTrading := !isSuspended && !isDelistingRisk
+
+	resp := map[string]interface{}{
+		"code":              matched.Code,
+		"full_code":         fullCode,
+		"name":              name,
+		"asset_type":        at,
+		"is_trading":        isTrading,
+		"is_suspended":      isSuspended,
+		"is_st":             isST,
+		"is_delisting_risk": isDelistingRisk,
+	}
+	if quoteTime != "" {
+		resp["quote_time"] = quoteTime
+	}
+	resp["updated_at"] = time.Now().Format(time.RFC3339)
+	resp["note"] = "is_suspended 基于盘中 volume==0 推断，非交易时段可能不准确；is_st/is_delisting_risk 基于证券名称模式匹配"
+
+	successResponse(w, resp)
+}
+
+// classifySecurityAssetType mirrors classifyAssetType in server.go for the extended package.
+func classifySecurityAssetType(fullCode string) string {
+	switch {
+	case protocol.IsStock(fullCode):
+		return "stock"
+	case protocol.IsETF(fullCode):
+		return "etf"
+	case protocol.IsIndex(fullCode):
+		return "index"
+	default:
+		return "other"
+	}
+}
+
 func handleGetProfile(w http.ResponseWriter, r *http.Request) {
 	code := strings.TrimSpace(r.URL.Query().Get("code"))
 	if code == "" {
@@ -306,57 +391,66 @@ func handleGetIndexAll(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// 获取市场统计
+// 获取市场统计（宽度指标来自 Ticker 预聚合；未就绪时不返回误导性的旧逻辑数据）
 func handleGetMarketStats(w http.ResponseWriter, r *http.Request) {
-	type MarketStats struct {
-		SH struct {
-			Total int `json:"total"`
-			Up    int `json:"up"`
-			Down  int `json:"down"`
-			Flat  int `json:"flat"`
-		} `json:"sh"`
-		SZ struct {
-			Total int `json:"total"`
-			Up    int `json:"up"`
-			Down  int `json:"down"`
-			Flat  int `json:"flat"`
-		} `json:"sz"`
-		BJ struct {
-			Total int `json:"total"`
-			Up    int `json:"up"`
-			Down  int `json:"down"`
-			Flat  int `json:"flat"`
-		} `json:"bj"`
-		UpdateTime string `json:"update_time"`
+	ts := getTickerService()
+	if ts == nil {
+		successResponse(w, map[string]interface{}{
+			"status":      "not_started",
+			"status_hint": "Ticker 服务未初始化，系统可能仍在启动中",
+		})
+		return
 	}
-
-	stats := &MarketStats{}
-	allCodes, err := getAllCodeModels()
-	if err != nil {
-		errorResponse(w, "获取市场统计失败: "+err.Error())
+	if ts.UpdatedAt().IsZero() {
+		if ts.Running() {
+			successResponse(w, map[string]interface{}{
+				"status":      "warming_up",
+				"status_hint": "Ticker 已启动，正在等待首次行情数据采集完成",
+			})
+		} else {
+			successResponse(w, map[string]interface{}{
+				"status":      "out_of_session",
+				"status_hint": "当前处于非交易时段或 Ticker 尚未启动",
+			})
+		}
 		return
 	}
 
-	for _, model := range allCodes {
-		fullCode := model.FullCode()
-		if !protocol.IsStock(fullCode) {
-			continue
+	ov := ts.GetOverview()
+	ex := func(key string) map[string]interface{} {
+		b, ok := ov.ByExchange[key]
+		if !ok {
+			b = collectorpkg.AssetOverview{}
 		}
-		lastPrice := model.LastPrice
-		switch strings.ToLower(model.Exchange) {
-		case "sh":
-			stats.SH.Total++
-			classifyPrice(lastPrice, &stats.SH.Up, &stats.SH.Down, &stats.SH.Flat)
-		case "sz":
-			stats.SZ.Total++
-			classifyPrice(lastPrice, &stats.SZ.Up, &stats.SZ.Down, &stats.SZ.Flat)
-		case "bj":
-			stats.BJ.Total++
-			classifyPrice(lastPrice, &stats.BJ.Up, &stats.BJ.Down, &stats.BJ.Flat)
+		return map[string]interface{}{
+			"total": b.Total, "up": b.Up, "down": b.Down, "flat": b.Flat,
+			"up_ratio": b.UpRatio, "limit_up": b.LimitUp, "limit_down": b.LimitDown,
+			"total_amount": b.TotalAmount, "total_volume": b.TotalVolume,
+		}
+	}
+	sum := func(a collectorpkg.AssetOverview) map[string]interface{} {
+		return map[string]interface{}{
+			"total": a.Total, "up": a.Up, "down": a.Down, "flat": a.Flat,
+			"up_ratio": a.UpRatio, "limit_up": a.LimitUp, "limit_down": a.LimitDown,
+			"total_amount": a.TotalAmount, "total_volume": a.TotalVolume,
 		}
 	}
 
-	successResponse(w, stats)
+	resp := map[string]interface{}{
+		"sh":      ex("sh"),
+		"sz":      ex("sz"),
+		"bj":      ex("bj"),
+		"summary": map[string]interface{}{"stock": sum(ov.Stock), "etf": sum(ov.ETF)},
+	}
+	updatedAt := ts.UpdatedAt()
+	resp["updated_at"] = updatedAt.Format(time.RFC3339)
+	if age := time.Since(updatedAt); age < 10*time.Second {
+		resp["status"] = "live"
+	} else {
+		resp["status"] = "stale"
+		resp["status_hint"] = fmt.Sprintf("数据已过期 %s，当前可能处于非交易时段", age.Truncate(time.Second))
+	}
+	successResponse(w, resp)
 }
 
 // 获取各交易所证券数量
@@ -1105,17 +1199,6 @@ func getAllCodeModels() ([]*tdx.CodeModel, error) {
 	return aggregate, nil
 }
 
-func classifyPrice(price float64, up, down, flat *int) {
-	switch {
-	case price > 0:
-		*up = *up + 1
-	case price < 0:
-		*down = *down + 1
-	default:
-		*flat = *flat + 1
-	}
-}
-
 func parseWorkdayDate(value string) (time.Time, error) {
 	layouts := []string{"20060102", "2006-01-02"}
 	for _, layout := range layouts {
@@ -1523,6 +1606,167 @@ func getTickerService() *collectorpkg.TickerService {
 		return nil
 	}
 	return collectorRuntime.TickerService()
+}
+
+func getSignalService() *collectorpkg.SignalService {
+	if collectorRuntime == nil {
+		return nil
+	}
+	return collectorRuntime.SignalService()
+}
+
+func handleMarketScreen(w http.ResponseWriter, r *http.Request) {
+	ts := getTickerService()
+	if ts == nil {
+		successResponse(w, map[string]interface{}{
+			"status": "not_started", "status_hint": "Ticker 服务未初始化",
+			"count": 0, "list": []interface{}{},
+		})
+		return
+	}
+	if ts.UpdatedAt().IsZero() {
+		if ts.Running() {
+			successResponse(w, map[string]interface{}{
+				"status": "warming_up", "status_hint": "等待首次行情数据",
+				"count": 0, "list": []interface{}{},
+			})
+		} else {
+			successResponse(w, map[string]interface{}{
+				"status": "out_of_session", "status_hint": "Ticker 尚未启动或无数据",
+				"count": 0, "list": []interface{}{},
+			})
+		}
+		return
+	}
+
+	sortBy := strings.TrimSpace(r.URL.Query().Get("sort"))
+	if sortBy == "" {
+		sortBy = "change_pct"
+	}
+	order := strings.TrimSpace(r.URL.Query().Get("order"))
+	if order == "" {
+		order = "desc"
+	}
+	filter := strings.TrimSpace(r.URL.Query().Get("filter"))
+	assetType := strings.TrimSpace(r.URL.Query().Get("asset_type"))
+	if assetType == "" {
+		assetType = "stock"
+	}
+	limit := 50
+	if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+
+	ticks, filterNote := ts.MarketScreen(sortBy, order, filter, assetType, limit)
+	list := make([]map[string]interface{}, 0, len(ticks))
+	for i := range ticks {
+		item := stockTickToScreenMap(&ticks[i])
+		switch filter {
+		case "limit_up":
+			if p := ts.GetLimitUpPublic(ticks[i].Code); p != nil {
+				mergeLimitPublic(item, p, true)
+			}
+		case "limit_down":
+			if p := ts.GetLimitDownPublic(ticks[i].Code); p != nil {
+				mergeLimitPublic(item, p, false)
+			}
+		}
+		list = append(list, item)
+	}
+
+	resp := map[string]interface{}{
+		"count": len(list),
+		"list":  list,
+	}
+	if filterNote != "" {
+		resp["filter_note"] = filterNote
+	}
+	addTickerMeta(resp, ts)
+	successResponse(w, resp)
+}
+
+func stockTickToScreenMap(t *collectorpkg.StockTick) map[string]interface{} {
+	return map[string]interface{}{
+		"code": t.Code, "name": t.Name, "exchange": t.Exchange, "asset_type": t.AssetType,
+		"price": t.Last, "change_pct": t.PctChange, "price_change": t.PriceChange,
+		"volume": t.Volume, "amount": t.Amount, "amplitude": t.Amplitude,
+		"is_limit_up": t.IsLimitUp, "is_limit_down": t.IsLimitDown,
+	}
+}
+
+func mergeLimitPublic(item map[string]interface{}, p *collectorpkg.LimitSidePublic, isUp bool) {
+	if p == nil {
+		return
+	}
+	if p.FirstSeen != "" {
+		item["limit_first_seen"] = p.FirstSeen
+		if p.FirstSeenApprox {
+			item["limit_first_seen_approx"] = true
+		}
+	}
+	if p.LastSeen != "" {
+		item["limit_last_seen"] = p.LastSeen
+	}
+	item["limit_break_count"] = p.BreakCount
+	if isUp && p.Bid1Volume > 0 {
+		item["bid1_volume"] = p.Bid1Volume
+	}
+	if !isUp && p.Ask1Volume > 0 {
+		item["ask1_volume"] = p.Ask1Volume
+	}
+}
+
+func handleMarketSignal(w http.ResponseWriter, r *http.Request) {
+	ss := getSignalService()
+	if ss == nil {
+		errorResponse(w, "Signal 服务未初始化")
+		return
+	}
+	snap, apiStatus := ss.Snapshot()
+	typeFilter := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("type")))
+	if typeFilter == "" {
+		typeFilter = "all"
+	}
+
+	resp := map[string]interface{}{
+		"status":           apiStatus,
+		"updated_at":       nil,
+		"scan_duration_ms": snap.ScanDurationMs,
+		"new_high":         snap.NewHigh,
+		"new_low":          snap.NewLow,
+		"volume_spike":     snap.VolumeSpike,
+	}
+	if !snap.UpdatedAt.IsZero() {
+		resp["updated_at"] = snap.UpdatedAt.Format(time.RFC3339)
+	}
+	switch typeFilter {
+	case "new_high":
+		resp["list"] = snap.NewHigh
+		resp["count"] = len(snap.NewHigh)
+	case "new_low":
+		resp["list"] = snap.NewLow
+		resp["count"] = len(snap.NewLow)
+	case "volume_spike":
+		resp["list"] = snap.VolumeSpike
+		resp["count"] = len(snap.VolumeSpike)
+	case "all":
+		resp["count"] = len(snap.NewHigh) + len(snap.NewLow) + len(snap.VolumeSpike)
+	default:
+		errorResponse(w, "type 参数无效，支持 all|new_high|new_low|volume_spike")
+		return
+	}
+	if apiStatus == "not_ready" {
+		resp["status_hint"] = "首轮 K 线扫描尚未完成，请稍后重试"
+	}
+	if apiStatus == "scanning" {
+		resp["status_hint"] = "正在扫描中，以下为上一轮完整结果"
+	}
+	if apiStatus == "stale" {
+		resp["status_hint"] = "结果已超过新鲜度阈值，可能过期"
+	}
+	successResponse(w, resp)
 }
 
 func handleBlockRanking(w http.ResponseWriter, r *http.Request) {
