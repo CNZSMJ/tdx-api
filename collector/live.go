@@ -13,8 +13,9 @@ import (
 )
 
 type LiveCaptureConfig struct {
-	BaseDir string
-	Now     func() time.Time
+	BaseDir            string
+	BootstrapStartDate string
+	Now                func() time.Time
 }
 
 type LiveCaptureService struct {
@@ -65,6 +66,11 @@ type TradeLiveRow struct {
 	StatusCode int        `xorm:"notnull"`
 	Side       string     `xorm:"varchar(16)"`
 }
+
+const (
+	liveCaptureDomain              = "live_capture"
+	liveCaptureCoverageStartDomain = "live_capture_coverage_start"
+)
 
 func NewLiveCaptureService(store *Store, provider Provider, cfg LiveCaptureConfig) (*LiveCaptureService, error) {
 	if store == nil {
@@ -280,12 +286,7 @@ func (s *LiveCaptureService) publishLiveDay(query SessionCaptureQuery, minutes [
 		return err
 	}
 
-	if err := s.store.UpsertCollectCursor(&CollectCursorRecord{
-		Domain:     "live_capture",
-		AssetType:  string(query.AssetType),
-		Instrument: query.Code,
-		Cursor:     query.Date,
-	}); err != nil {
+	if err := s.updateCoverageCursors(query); err != nil {
 		return err
 	}
 	return s.store.AddValidationRun(&ValidationRunRecord{
@@ -296,6 +297,51 @@ func (s *LiveCaptureService) publishLiveDay(query SessionCaptureQuery, minutes [
 		Blocking:    true,
 		CommandText: suite,
 		OutputText:  fmt.Sprintf("code=%s date=%s minutes=%d trades=%d", query.Code, query.Date, len(minutes), len(trades)),
+	})
+}
+
+func (s *LiveCaptureService) updateCoverageCursors(query SessionCaptureQuery) error {
+	if err := s.upsertLatestCursor(query); err != nil {
+		return err
+	}
+	return s.upsertCoverageStartCursor(query)
+}
+
+func (s *LiveCaptureService) upsertLatestCursor(query SessionCaptureQuery) error {
+	cursorValue := query.Date
+	current, err := s.store.GetCollectCursor(liveCaptureDomain, string(query.AssetType), query.Code, "")
+	if err != nil {
+		return err
+	}
+	if current != nil && current.Cursor != "" && tradeDateAfter(current.Cursor, cursorValue) {
+		cursorValue = current.Cursor
+	}
+	return s.store.UpsertCollectCursor(&CollectCursorRecord{
+		Domain:     liveCaptureDomain,
+		AssetType:  string(query.AssetType),
+		Instrument: query.Code,
+		Cursor:     cursorValue,
+	})
+}
+
+func (s *LiveCaptureService) upsertCoverageStartCursor(query SessionCaptureQuery) error {
+	cursorValue := query.Date
+	current, err := s.store.GetCollectCursor(liveCaptureCoverageStartDomain, string(query.AssetType), query.Code, "")
+	if err != nil {
+		return err
+	}
+	if current == nil || current.Cursor == "" {
+		if seeded := seedTradeCoverageStart(s.cfg.BootstrapStartDate, query.Date); seeded != "" {
+			cursorValue = seeded
+		}
+	} else if tradeDateAfter(cursorValue, current.Cursor) {
+		cursorValue = current.Cursor
+	}
+	return s.store.UpsertCollectCursor(&CollectCursorRecord{
+		Domain:     liveCaptureCoverageStartDomain,
+		AssetType:  string(query.AssetType),
+		Instrument: query.Code,
+		Cursor:     cursorValue,
 	})
 }
 

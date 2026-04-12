@@ -75,6 +75,12 @@ func (r *Runtime) reconcileDate(ctx context.Context, date, trigger string) (_ *R
 		Domains:   make([]ReconcileDomainReport, 0, 8),
 	}
 
+	if count, interruptErr := r.store.InterruptRunningScheduleRuns(r.cfg.ReconcileScheduleName, "superseded by newer reconcile run", report.StartedAt); interruptErr != nil {
+		return nil, interruptErr
+	} else if count > 0 {
+		log.Printf("collector: interrupted %d stale %s runs before starting reconcile", count, r.cfg.ReconcileScheduleName)
+	}
+
 	run := &ScheduleRunRecord{
 		ScheduleName: r.cfg.ReconcileScheduleName,
 		Status:       "running",

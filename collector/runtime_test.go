@@ -250,3 +250,123 @@ func TestCollectorRuntimeDailyFullSyncUsesDistinctScheduleName(t *testing.T) {
 		t.Fatalf("expected passed collector_daily_full_sync run, got %+v", run)
 	}
 }
+
+func TestCollectorRuntimeTradePendingDatesCanBackfillBeforeBootstrapStart(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := OpenStore(filepath.Join(tmp, "collector.db"))
+	if err != nil {
+		t.Fatalf("open collector store: %v", err)
+	}
+	defer store.Close()
+
+	runtime, err := NewRuntime(store, &acceptanceProvider{}, RuntimeConfig{
+		Now:                     func() time.Time { return time.Date(2026, 4, 11, 12, 0, 0, 0, time.Local) },
+		TradeBootstrapStartDate: "20190101",
+		KlinePeriods:            []KlinePeriod{PeriodDay},
+		Metadata: MetadataConfig{
+			CodesDBPath:   filepath.Join(tmp, "codes.db"),
+			WorkdayDBPath: filepath.Join(tmp, "workday.db"),
+		},
+		Kline:        KlineConfig{BaseDir: filepath.Join(tmp, "kline")},
+		Trade:        TradeConfig{BaseDir: filepath.Join(tmp, "trade")},
+		OrderHistory: OrderHistoryConfig{BaseDir: filepath.Join(tmp, "order_history")},
+		Live:         LiveCaptureConfig{BaseDir: filepath.Join(tmp, "live")},
+		Fundamentals: FundamentalsConfig{BaseDir: filepath.Join(tmp, "fundamentals")},
+	})
+	if err != nil {
+		t.Fatalf("new collector runtime: %v", err)
+	}
+
+	if err := store.UpsertCollectCursor(&CollectCursorRecord{
+		Domain:     tradeHistoryDomain,
+		AssetType:  string(AssetTypeStock),
+		Instrument: "sh600000",
+		Cursor:     "20200103",
+	}); err != nil {
+		t.Fatalf("seed latest trade cursor: %v", err)
+	}
+	if _, err := store.SeedTradeHistoryCoverageStarts("20190101"); err != nil {
+		t.Fatalf("seed trade coverage-start cursor: %v", err)
+	}
+
+	runtime.cfg.TradeBootstrapStartDate = "20180101"
+	dates, err := runtime.pendingTradingDates(tradeHistoryDomain, AssetTypeStock, "sh600000", []TradingDay{
+		{Date: "20180102", Time: time.Date(2018, 1, 2, 15, 0, 0, 0, time.Local)},
+		{Date: "20181228", Time: time.Date(2018, 12, 28, 15, 0, 0, 0, time.Local)},
+		{Date: "20190102", Time: time.Date(2019, 1, 2, 15, 0, 0, 0, time.Local)},
+		{Date: "20200106", Time: time.Date(2020, 1, 6, 15, 0, 0, 0, time.Local)},
+	})
+	if err != nil {
+		t.Fatalf("pending trade dates: %v", err)
+	}
+
+	expected := []string{"20180102", "20181228", "20200106"}
+	if len(dates) != len(expected) {
+		t.Fatalf("unexpected pending trade date count: got %v want %v", dates, expected)
+	}
+	for i := range expected {
+		if dates[i] != expected[i] {
+			t.Fatalf("unexpected pending trade dates: got %v want %v", dates, expected)
+		}
+	}
+}
+
+func TestCollectorRuntimeLivePendingDatesCanBackfillBeforeBootstrapStart(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := OpenStore(filepath.Join(tmp, "collector.db"))
+	if err != nil {
+		t.Fatalf("open collector store: %v", err)
+	}
+	defer store.Close()
+
+	runtime, err := NewRuntime(store, &acceptanceProvider{}, RuntimeConfig{
+		Now:                    func() time.Time { return time.Date(2026, 4, 11, 12, 0, 0, 0, time.Local) },
+		LiveBootstrapStartDate: "20190101",
+		KlinePeriods:           []KlinePeriod{PeriodDay},
+		Metadata: MetadataConfig{
+			CodesDBPath:   filepath.Join(tmp, "codes.db"),
+			WorkdayDBPath: filepath.Join(tmp, "workday.db"),
+		},
+		Kline:        KlineConfig{BaseDir: filepath.Join(tmp, "kline")},
+		Trade:        TradeConfig{BaseDir: filepath.Join(tmp, "trade")},
+		OrderHistory: OrderHistoryConfig{BaseDir: filepath.Join(tmp, "order_history")},
+		Live:         LiveCaptureConfig{BaseDir: filepath.Join(tmp, "live")},
+		Fundamentals: FundamentalsConfig{BaseDir: filepath.Join(tmp, "fundamentals")},
+	})
+	if err != nil {
+		t.Fatalf("new collector runtime: %v", err)
+	}
+
+	if err := store.UpsertCollectCursor(&CollectCursorRecord{
+		Domain:     liveCaptureDomain,
+		AssetType:  string(AssetTypeStock),
+		Instrument: "sh600000",
+		Cursor:     "20200103",
+	}); err != nil {
+		t.Fatalf("seed latest live cursor: %v", err)
+	}
+	if _, err := store.SeedLiveCaptureCoverageStarts("20190101"); err != nil {
+		t.Fatalf("seed live coverage-start cursor: %v", err)
+	}
+
+	runtime.cfg.LiveBootstrapStartDate = "20180101"
+	dates, err := runtime.pendingTradingDates(liveCaptureDomain, AssetTypeStock, "sh600000", []TradingDay{
+		{Date: "20180102", Time: time.Date(2018, 1, 2, 15, 0, 0, 0, time.Local)},
+		{Date: "20181228", Time: time.Date(2018, 12, 28, 15, 0, 0, 0, time.Local)},
+		{Date: "20190102", Time: time.Date(2019, 1, 2, 15, 0, 0, 0, time.Local)},
+		{Date: "20200106", Time: time.Date(2020, 1, 6, 15, 0, 0, 0, time.Local)},
+	})
+	if err != nil {
+		t.Fatalf("pending live dates: %v", err)
+	}
+
+	expected := []string{"20180102", "20181228", "20200106"}
+	if len(dates) != len(expected) {
+		t.Fatalf("unexpected pending live date count: got %v want %v", dates, expected)
+	}
+	for i := range expected {
+		if dates[i] != expected[i] {
+			t.Fatalf("unexpected pending live dates: got %v want %v", dates, expected)
+		}
+	}
+}

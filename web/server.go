@@ -19,6 +19,7 @@ import (
 	"github.com/injoyai/tdx"
 	collectorpkg "github.com/injoyai/tdx/collector"
 	"github.com/injoyai/tdx/extend"
+	"github.com/injoyai/tdx/profinance"
 	"github.com/injoyai/tdx/protocol"
 )
 
@@ -28,6 +29,7 @@ var (
 	taskManager        = NewTaskManager()
 	databaseDir        string
 	collectorRuntime   *collectorpkg.Runtime
+	proFinanceService  *profinance.Service
 	collectorRunActive atomic.Bool
 	collectorJobState  = newCollectorExecutionState()
 )
@@ -155,6 +157,34 @@ func (s *collectorExecutionState) snapshot() map[string]any {
 }
 
 func configureDatabaseDir() {
+	if exe, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exe)
+		targetDir := filepath.Join(exeDir, "data", "database")
+		legacyDir := filepath.Join(exeDir, "web", "data", "database")
+		databaseDir = targetDir
+
+		if _, err := os.Stat(targetDir); err == nil {
+			return
+		}
+		if _, err := os.Stat(legacyDir); err == nil {
+			_ = os.MkdirAll(targetDir, 0755)
+			for _, name := range []string{"codes.db", "workday.db"} {
+				src := filepath.Join(legacyDir, name)
+				dst := filepath.Join(targetDir, name)
+				if _, err := os.Stat(src); err != nil {
+					continue
+				}
+				if _, err := os.Stat(dst); err == nil {
+					continue
+				}
+				if err := copyFile(src, dst); err == nil {
+					log.Printf("已迁移数据库: %s -> %s", src, dst)
+				}
+			}
+			return
+		}
+	}
+
 	_, sourceFile, _, ok := runtime.Caller(0)
 	if !ok {
 		return
@@ -219,6 +249,10 @@ func copyFile(src, dst string) error {
 }
 
 func init() {
+	if strings.TrimSpace(os.Getenv("TDX_WEB_SKIP_INIT")) == "1" {
+		return
+	}
+
 	var err error
 	configureDatabaseDir()
 	// 连接通达信服务器
@@ -232,6 +266,7 @@ func init() {
 	if err = os.MkdirAll(databaseDir, 0755); err != nil {
 		log.Printf("创建数据目录失败: %v", err)
 	}
+	proFinanceService = profinance.NewService(filepath.Join(databaseDir, "fundamentals", "professional_finance"), profinance.Config{})
 	if codes, err := tdx.NewCodesSqlite(client, filepath.Join(databaseDir, "codes.db")); err != nil {
 		log.Printf("初始化代码库失败: %v", err)
 	} else {
@@ -272,14 +307,16 @@ func initCollectorRuntime() {
 		store,
 		collectorpkg.NewTDXProvider(manager, client),
 		collectorpkg.RuntimeConfig{
-			ScheduleName:          "collector_startup_catchup",
-			DailySyncScheduleName: "collector_daily_full_sync",
-			ReconcileScheduleName: "collector_daily_reconcile",
-			ReportDir:             filepath.Join(databaseDir, "collector_reports"),
-			BootstrapStartDate:    strings.TrimSpace(os.Getenv("COLLECTOR_BOOTSTRAP_START")),
-			RequestMinInterval:    collectorRequestMinInterval(),
-			CatchUpWorkers:        collectorCatchUpWorkers(),
-			KlinePeriods:          collectorKlinePeriods(),
+			ScheduleName:            "collector_startup_catchup",
+			DailySyncScheduleName:   "collector_daily_full_sync",
+			ReconcileScheduleName:   "collector_daily_reconcile",
+			ReportDir:               filepath.Join(databaseDir, "collector_reports"),
+			BootstrapStartDate:      strings.TrimSpace(os.Getenv("COLLECTOR_BOOTSTRAP_START")),
+			TradeBootstrapStartDate: strings.TrimSpace(os.Getenv("COLLECTOR_TRADE_BOOTSTRAP_START")),
+			LiveBootstrapStartDate:  strings.TrimSpace(os.Getenv("COLLECTOR_LIVE_BOOTSTRAP_START")),
+			RequestMinInterval:      collectorRequestMinInterval(),
+			CatchUpWorkers:          collectorCatchUpWorkers(),
+			KlinePeriods:            collectorKlinePeriods(),
 			Metadata: collectorpkg.MetadataConfig{
 				CodesDBPath:   filepath.Join(databaseDir, "codes.db"),
 				WorkdayDBPath: filepath.Join(databaseDir, "workday.db"),
@@ -297,6 +334,15 @@ func initCollectorRuntime() {
 		return
 	}
 	collectorRuntime = runtime
+	if err := collectorRuntime.RecoverInterruptedRuns(); err != nil {
+		log.Printf("collector 运行记录恢复失败: %v", err)
+	}
+	if err := collectorRuntime.SeedTradeHistoryCoverageStarts(); err != nil {
+		log.Printf("collector trade 覆盖起点恢复失败: %v", err)
+	}
+	if err := collectorRuntime.SeedLiveCaptureCoverageStarts(); err != nil {
+		log.Printf("collector live 覆盖起点恢复失败: %v", err)
+	}
 
 	if _, err := manager.Cron.AddFunc(collectorDailySyncSpec, func() {
 		go runCollectorCatchUp("daily-18:00")
@@ -1044,6 +1090,77 @@ func handleGetFinance(w http.ResponseWriter, r *http.Request) {
 	successResponse(w, resp)
 }
 
+func handleGetFinancialReports(w http.ResponseWriter, r *http.Request) {
+	code := strings.TrimSpace(r.URL.Query().Get("code"))
+	if code == "" {
+		errorResponse(w, "股票代码不能为空")
+		return
+	}
+	if proFinanceService == nil {
+		errorResponse(w, "专业财报服务不可用")
+		return
+	}
+
+	limit := 8
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value <= 0 {
+			errorResponse(w, "limit 参数无效")
+			return
+		}
+		if value > 40 {
+			value = 40
+		}
+		limit = value
+	}
+
+	startDate := normalizeDateString(r.URL.Query().Get("start_date"))
+	if strings.TrimSpace(r.URL.Query().Get("start_date")) != "" && startDate == "" {
+		errorResponse(w, "start_date 参数无效")
+		return
+	}
+	endDate := normalizeDateString(r.URL.Query().Get("end_date"))
+	if strings.TrimSpace(r.URL.Query().Get("end_date")) != "" && endDate == "" {
+		errorResponse(w, "end_date 参数无效")
+		return
+	}
+	if startDate != "" && endDate != "" && startDate > endDate {
+		errorResponse(w, "start_date 不能晚于 end_date")
+		return
+	}
+
+	items, err := proFinanceService.ListForCode(r.Context(), code, limit, startDate, endDate)
+	if err != nil {
+		errorResponse(w, fmt.Sprintf("获取多期财报失败: %v", err))
+		return
+	}
+
+	list := make([]map[string]interface{}, 0, len(items))
+	for _, item := range items {
+		list = append(list, map[string]interface{}{
+			"code":                 item.Code,
+			"report_date":          item.ReportDate,
+			"book_value_per_share": item.BookValuePerShare,
+			"total_shares":         item.TotalShares,
+			"float_a_shares":       item.FloatAShares,
+			"net_profit_ttm":       item.NetProfitTTM,
+			"revenue_ttm_yuan":     item.RevenueTTMYuan,
+			"weighted_roe":         item.WeightedROE,
+			"source_report_file":   item.SourceReportFile,
+		})
+	}
+
+	successResponse(w, map[string]interface{}{
+		"code":       normalizeSecurityCode(code),
+		"count":      len(list),
+		"limit":      limit,
+		"start_date": startDate,
+		"end_date":   endDate,
+		"list":       list,
+		"source":     "tdx_professional_finance",
+	})
+}
+
 func handleGetF10Categories(w http.ResponseWriter, r *http.Request) {
 	code := r.URL.Query().Get("code")
 	if code == "" {
@@ -1370,51 +1487,98 @@ func splitCodes(param string) []string {
 	return result
 }
 
+func normalizeDateString(raw string) string {
+	text := strings.TrimSpace(raw)
+	if text == "" {
+		return ""
+	}
+	text = strings.ReplaceAll(text, "-", "")
+	if len(text) != 8 {
+		return ""
+	}
+	for _, ch := range text {
+		if ch < '0' || ch > '9' {
+			return ""
+		}
+	}
+	return text
+}
+
+func normalizeSecurityCode(raw string) string {
+	text := strings.TrimSpace(strings.ToLower(raw))
+	for _, prefix := range []string{"sh", "sz", "bj"} {
+		if strings.HasPrefix(text, prefix) && len(text) > 2 {
+			return text[2:]
+		}
+	}
+	return text
+}
+
 func getMinuteWithFallback(code, date string) (*protocol.MinuteResp, string, error) {
+	baseDate := time.Now()
 	target := strings.TrimSpace(date)
-	if target == "" {
-		target = time.Now().Format("20060102")
-		resp, err := client.GetMinute(code)
-		return resp, target, err
+	if target != "" {
+		parsed, err := parseWorkdayDate(target)
+		if err != nil {
+			return nil, "", err
+		}
+		baseDate = parsed
+		target = parsed.Format("20060102")
+	} else {
+		target = baseDate.Format("20060102")
 	}
 
-	resp, err := client.GetHistoryMinute(target, code)
-	return resp, target, err
-	if date != "" {
-		resp, err := client.GetHistoryMinute(date, code)
-		return resp, date, err
-	}
-
-	today := time.Now()
+	candidates := []string{target}
 	const maxLookback = 10
 
-	var lastResp *protocol.MinuteResp
-	var lastDate string
+	if manager != nil && manager.Workday != nil {
+		for _, item := range collectNeighborWorkdays(baseDate, maxLookback, -1) {
+			if numeric := strings.TrimSpace(item["numeric"]); numeric != "" && numeric != target {
+				candidates = append(candidates, numeric)
+			}
+		}
+	} else {
+		for i := 1; i <= maxLookback; i++ {
+			candidates = append(candidates, baseDate.AddDate(0, 0, -i).Format("20060102"))
+		}
+	}
+
+	var lastEmptyResp *protocol.MinuteResp
+	var lastEmptyDate string
 	var lastErr error
 
-	for i := 0; i < maxLookback; i++ {
-		currentDate := today.AddDate(0, 0, -i).Format("20060102")
+	for _, currentDate := range candidates {
 		resp, err := client.GetHistoryMinute(currentDate, code)
 		if err != nil {
 			lastErr = err
 			continue
 		}
-		if resp != nil {
-			if len(resp.List) > 0 && resp.Count > 0 {
-				return resp, currentDate, nil
+		if resp == nil {
+			continue
+		}
+		if resp.List == nil {
+			resp.List = []protocol.PriceNumber{}
+		}
+		if len(resp.List) > 0 {
+			if resp.Count == 0 {
+				resp.Count = uint16(len(resp.List))
 			}
-			if lastResp == nil {
-				lastResp = resp
-				lastDate = currentDate
-			}
+			return resp, currentDate, nil
+		}
+		resp.Count = 0
+		if lastEmptyResp == nil {
+			lastEmptyResp = resp
+			lastEmptyDate = currentDate
 		}
 	}
 
-	if lastResp != nil {
-		return lastResp, lastDate, nil
+	if lastEmptyResp != nil {
+		return lastEmptyResp, lastEmptyDate, nil
 	}
-
-	return nil, "", lastErr
+	if lastErr != nil {
+		return nil, "", lastErr
+	}
+	return &protocol.MinuteResp{Count: 0, List: []protocol.PriceNumber{}}, target, nil
 }
 
 func main() {
@@ -1431,6 +1595,7 @@ func main() {
 	http.HandleFunc("/api/security/status", handleSecurityStatus)
 	http.HandleFunc("/api/stock-info", handleGetStockInfo)
 	http.HandleFunc("/api/finance", handleGetFinance)
+	http.HandleFunc("/api/financial-reports", handleGetFinancialReports)
 	http.HandleFunc("/api/f10/categories", handleGetF10Categories)
 	http.HandleFunc("/api/f10/content", handleGetF10Content)
 	http.HandleFunc("/api/codes", handleGetCodes)

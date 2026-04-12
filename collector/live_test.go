@@ -188,3 +188,60 @@ func TestLiveCaptureReplayAndReconcileAreSafe(t *testing.T) {
 		t.Fatalf("expected reconciled live trade rows, got %+v", tradeRows)
 	}
 }
+
+func TestLiveCaptureKeepsLatestCursorAndTracksCoverageStart(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := OpenStore(filepath.Join(tmp, "collector.db"))
+	if err != nil {
+		t.Fatalf("open collector store: %v", err)
+	}
+	defer store.Close()
+
+	service, err := NewLiveCaptureService(store, &liveStubProvider{
+		minutes: []MinutePoint{
+			{Code: "sh600000", Date: "20200102", Clock: "09:30", Price: 12300, Number: 10},
+			{Code: "sh600000", Date: "20181228", Clock: "09:30", Price: 12200, Number: 8},
+		},
+		trades: []TradeTick{
+			newTradeTick("sh600000", "20200102", "09:30", 12300, 10, 0),
+			newTradeTick("sh600000", "20181228", "09:30", 12200, 8, 0),
+		},
+	}, LiveCaptureConfig{
+		BaseDir:            filepath.Join(tmp, "live"),
+		BootstrapStartDate: "20190101",
+	})
+	if err != nil {
+		t.Fatalf("new live capture service: %v", err)
+	}
+
+	if err := service.CaptureSession(context.Background(), SessionCaptureQuery{
+		Code:      "sh600000",
+		AssetType: AssetTypeStock,
+		Date:      "20200102",
+	}); err != nil {
+		t.Fatalf("capture 20200102: %v", err)
+	}
+	if err := service.CaptureSession(context.Background(), SessionCaptureQuery{
+		Code:      "sh600000",
+		AssetType: AssetTypeStock,
+		Date:      "20181228",
+	}); err != nil {
+		t.Fatalf("capture 20181228: %v", err)
+	}
+
+	latest, err := store.GetCollectCursor(liveCaptureDomain, string(AssetTypeStock), "sh600000", "")
+	if err != nil {
+		t.Fatalf("load latest live cursor: %v", err)
+	}
+	if latest == nil || latest.Cursor != "20200102" {
+		t.Fatalf("unexpected latest live cursor: %#v", latest)
+	}
+
+	coverageStart, err := store.GetCollectCursor(liveCaptureCoverageStartDomain, string(AssetTypeStock), "sh600000", "")
+	if err != nil {
+		t.Fatalf("load live coverage-start cursor: %v", err)
+	}
+	if coverageStart == nil || coverageStart.Cursor != "20181228" {
+		t.Fatalf("unexpected live coverage-start cursor: %#v", coverageStart)
+	}
+}

@@ -13,8 +13,9 @@ import (
 )
 
 type TradeConfig struct {
-	BaseDir string
-	Now     func() time.Time
+	BaseDir            string
+	BootstrapStartDate string
+	Now                func() time.Time
 }
 
 type TradeService struct {
@@ -54,6 +55,11 @@ type TradeBarRow struct {
 	Amount     PriceMilli `xorm:"notnull"`
 	InDate     int64      `xorm:"created"`
 }
+
+const (
+	tradeHistoryDomain              = "trade_history"
+	tradeHistoryCoverageStartDomain = "trade_history_coverage_start"
+)
 
 func NewTradeService(store *Store, provider Provider, cfg TradeConfig) (*TradeService, error) {
 	if store == nil {
@@ -183,12 +189,7 @@ func (s *TradeService) RefreshDay(ctx context.Context, query TradeCollectQuery) 
 		return err
 	}
 
-	if err := s.store.UpsertCollectCursor(&CollectCursorRecord{
-		Domain:     "trade_history",
-		AssetType:  string(query.AssetType),
-		Instrument: query.Code,
-		Cursor:     query.Date,
-	}); err != nil {
+	if err := s.updateCoverageCursors(query); err != nil {
 		return err
 	}
 	return s.store.AddValidationRun(&ValidationRunRecord{
@@ -200,6 +201,63 @@ func (s *TradeService) RefreshDay(ctx context.Context, query TradeCollectQuery) 
 		CommandText: "trade publish transaction",
 		OutputText:  fmt.Sprintf("code=%s date=%s rows=%d", query.Code, query.Date, len(staged)),
 	})
+}
+
+func (s *TradeService) updateCoverageCursors(query TradeCollectQuery) error {
+	if err := s.upsertLatestCursor(query); err != nil {
+		return err
+	}
+	return s.upsertCoverageStartCursor(query)
+}
+
+func (s *TradeService) upsertLatestCursor(query TradeCollectQuery) error {
+	cursorValue := query.Date
+	current, err := s.store.GetCollectCursor(tradeHistoryDomain, string(query.AssetType), query.Code, "")
+	if err != nil {
+		return err
+	}
+	if current != nil && current.Cursor != "" && tradeDateAfter(current.Cursor, cursorValue) {
+		cursorValue = current.Cursor
+	}
+	return s.store.UpsertCollectCursor(&CollectCursorRecord{
+		Domain:     tradeHistoryDomain,
+		AssetType:  string(query.AssetType),
+		Instrument: query.Code,
+		Cursor:     cursorValue,
+	})
+}
+
+func (s *TradeService) upsertCoverageStartCursor(query TradeCollectQuery) error {
+	cursorValue := query.Date
+	current, err := s.store.GetCollectCursor(tradeHistoryCoverageStartDomain, string(query.AssetType), query.Code, "")
+	if err != nil {
+		return err
+	}
+	if current == nil || current.Cursor == "" {
+		if seeded := seedTradeCoverageStart(s.cfg.BootstrapStartDate, query.Date); seeded != "" {
+			cursorValue = seeded
+		}
+	} else if tradeDateAfter(cursorValue, current.Cursor) {
+		cursorValue = current.Cursor
+	}
+	return s.store.UpsertCollectCursor(&CollectCursorRecord{
+		Domain:     tradeHistoryCoverageStartDomain,
+		AssetType:  string(query.AssetType),
+		Instrument: query.Code,
+		Cursor:     cursorValue,
+	})
+}
+
+func seedTradeCoverageStart(configuredStart, collectedDate string) string {
+	start := parseBootstrapStartDate(configuredStart)
+	if start.IsZero() {
+		return ""
+	}
+	startText := start.Format("20060102")
+	if tradeDateAfter(startText, collectedDate) {
+		return ""
+	}
+	return startText
 }
 
 func validateTradeRows(query TradeCollectQuery, items []TradeTick) ([]*TradeHistoryRow, error) {

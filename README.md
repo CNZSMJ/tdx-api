@@ -30,8 +30,14 @@
 git clone https://github.com/oficcejo/tdx-api.git
 cd tdx-api
 
-# 启动服务（已配置国内镜像加速）
-docker-compose up -d
+# 可选：复制部署变量模板
+cp .env.example .env
+
+# 首次在本机上构建最终镜像
+./scripts/build_local_image.sh
+
+# 启动服务
+docker compose up -d
 
 # 访问 http://localhost:8080
 ```
@@ -71,7 +77,7 @@ go run .
 | `/api/trade` | 分时成交 | `?code=000001` |
 | `/api/search` | 跨资产证券搜索 | `?keyword=平安&asset_type=all` |
 | `/api/security/status` | 证券可交易状态 | `?code=000001` |
-| `/api/profile` | 证券基本属性 | `?code=000001` |
+| `/api/profile` | 证券轻量快照（基础属性 + 当前行情 + 常用估值字段） | `?code=000001` |
 | `/api/stock-info` | 综合信息 | `?code=000001` |
 
 ### 扩展接口
@@ -95,6 +101,7 @@ go run .
 | `/api/index-codes` | 指数代码 |
 | `/api/etf` | ETF列表 |
 | `/api/finance` | 财务数据 |
+| `/api/financial-reports` | 多期财报摘要 |
 | `/api/f10/categories` | F10目录 |
 | `/api/f10/content` | F10正文 |
 | `/api/trade-history` | 历史成交 |
@@ -207,28 +214,30 @@ kline, _ := c.GetKlineDayAll("000001")
 
 ## � Docker配置说明
 
-### 国内镜像加速
+### 当前推荐流程
 
-Docker配置已使用国内镜像源，加速构建：
-
-| 组件 | 镜像源 |
-|-----|-------|
-| Go基础镜像 | `registry.cn-hangzhou.aliyuncs.com/library/golang` |
-| Alpine镜像 | `registry.cn-hangzhou.aliyuncs.com/library/alpine` |
-| Alpine APK | `mirrors.aliyun.com` |
-| Go Proxy | `goproxy.cn` + `mirrors.aliyun.com/goproxy` |
+- **构建**：用 [`scripts/build_local_image.sh`](scripts/build_local_image.sh) 生成最终应用镜像
+- **部署**：用 [`docker-compose.yml`](docker-compose.yml) 直接启动该镜像
+- **数据**：宿主机目录挂载到容器，不会被打进镜像
 
 ### 常用命令
 
 ```bash
-docker-compose up -d       # 启动服务
-docker-compose logs -f     # 查看日志
-docker-compose stop        # 停止服务
-docker-compose restart     # 重启服务
-docker-compose down        # 完全清理
+./scripts/build_local_image.sh      # 本机构建最终镜像
+docker compose up -d                # 启动服务
+docker compose logs -f              # 查看日志
+docker compose stop                 # 停止服务
+docker compose restart              # 重启服务
+docker compose down                 # 停止并删除容器
+./scripts/save_image.sh             # 导出镜像，便于迁移到VPS
 ```
 
-**详细部署文档**: [DOCKER_DEPLOY.md](DOCKER_DEPLOY.md)
+`.env.example` 中提供了两个常用变量：
+
+- `TDX_STOCK_WEB_IMAGE`：部署时使用的镜像名
+- `TDX_DATA_DIR`：宿主机数据目录，默认 `./data/database`
+
+**唯一 Docker 文档入口**: [DOCKER_DEPLOY.md](DOCKER_DEPLOY.md)
 
 ---
 

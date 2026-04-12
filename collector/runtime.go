@@ -14,24 +14,26 @@ import (
 )
 
 type RuntimeConfig struct {
-	ScheduleName          string
-	DailySyncScheduleName string
-	ReconcileScheduleName string
-	ReportDir             string
-	Now                   func() time.Time
-	CalendarLookback      int
-	BootstrapStartDate    string
-	RequestMinInterval    time.Duration
-	CatchUpWorkers        int
-	KlinePeriods          []KlinePeriod
-	Metadata              MetadataConfig
-	Kline                 KlineConfig
-	Trade                 TradeConfig
-	OrderHistory          OrderHistoryConfig
-	Live                  LiveCaptureConfig
-	Fundamentals          FundamentalsConfig
-	Block                 BlockConfig
-	Ticker                TickerConfig
+	ScheduleName            string
+	DailySyncScheduleName   string
+	ReconcileScheduleName   string
+	ReportDir               string
+	Now                     func() time.Time
+	CalendarLookback        int
+	BootstrapStartDate      string
+	TradeBootstrapStartDate string
+	LiveBootstrapStartDate  string
+	RequestMinInterval      time.Duration
+	CatchUpWorkers          int
+	KlinePeriods            []KlinePeriod
+	Metadata                MetadataConfig
+	Kline                   KlineConfig
+	Trade                   TradeConfig
+	OrderHistory            OrderHistoryConfig
+	Live                    LiveCaptureConfig
+	Fundamentals            FundamentalsConfig
+	Block                   BlockConfig
+	Ticker                  TickerConfig
 }
 
 type Runtime struct {
@@ -90,7 +92,9 @@ func NewRuntime(store *Store, provider Provider, cfg RuntimeConfig) (*Runtime, e
 	if err != nil {
 		return nil, err
 	}
-	trade, err := NewTradeService(store, provider, cfg.Trade)
+	tradeCfg := cfg.Trade
+	tradeCfg.BootstrapStartDate = cfg.TradeBootstrapStartDate
+	trade, err := NewTradeService(store, provider, tradeCfg)
 	if err != nil {
 		return nil, err
 	}
@@ -98,7 +102,9 @@ func NewRuntime(store *Store, provider Provider, cfg RuntimeConfig) (*Runtime, e
 	if err != nil {
 		return nil, err
 	}
-	live, err := NewLiveCaptureService(store, provider, cfg.Live)
+	liveCfg := cfg.Live
+	liveCfg.BootstrapStartDate = cfg.LiveBootstrapStartDate
+	live, err := NewLiveCaptureService(store, provider, liveCfg)
 	if err != nil {
 		return nil, err
 	}
@@ -205,11 +211,60 @@ func (r *Runtime) RunDailyFullSync(ctx context.Context) error {
 	return r.runCatchUp(ctx, r.cfg.DailySyncScheduleName, "collector_daily_full_sync")
 }
 
+func (r *Runtime) RecoverInterruptedRuns() error {
+	if r == nil || r.store == nil {
+		return nil
+	}
+	count, err := r.store.InterruptRunningScheduleRuns("", "collector process restarted before run finished", r.cfg.Now())
+	if err != nil {
+		return err
+	}
+	if count > 0 {
+		log.Printf("collector: marked %d stale running schedule runs as interrupted", count)
+	}
+	return nil
+}
+
+func (r *Runtime) SeedTradeHistoryCoverageStarts() error {
+	if r == nil || r.store == nil {
+		return nil
+	}
+	count, err := r.store.SeedTradeHistoryCoverageStarts(r.cfg.TradeBootstrapStartDate)
+	if err != nil {
+		return err
+	}
+	if count > 0 {
+		log.Printf("collector: seeded %d trade history coverage-start cursors", count)
+	}
+	return nil
+}
+
+func (r *Runtime) SeedLiveCaptureCoverageStarts() error {
+	if r == nil || r.store == nil {
+		return nil
+	}
+	count, err := r.store.SeedLiveCaptureCoverageStarts(r.cfg.LiveBootstrapStartDate)
+	if err != nil {
+		return err
+	}
+	if count > 0 {
+		log.Printf("collector: seeded %d live capture coverage-start cursors", count)
+	}
+	return nil
+}
+
 func (r *Runtime) runCatchUp(ctx context.Context, scheduleName, suiteName string) (err error) {
+	startedAt := r.cfg.Now()
+	if count, interruptErr := r.store.InterruptRunningScheduleRuns(scheduleName, "superseded by newer run", startedAt); interruptErr != nil {
+		return interruptErr
+	} else if count > 0 {
+		log.Printf("collector: interrupted %d stale %s runs before starting a new one", count, scheduleName)
+	}
+
 	run := &ScheduleRunRecord{
 		ScheduleName: scheduleName,
 		Status:       "running",
-		StartedAt:    r.cfg.Now(),
+		StartedAt:    startedAt,
 	}
 	if err := r.store.AddScheduleRun(run); err != nil {
 		return err
@@ -749,6 +804,23 @@ func (r *Runtime) pendingTradingDates(domain string, assetType AssetType, code s
 	if len(tradingDays) == 0 {
 		return nil, nil
 	}
+	floor := r.bootstrapStartForDomain(domain)
+	filterByFloor := func(date string) bool {
+		if floor.IsZero() {
+			return true
+		}
+		parsed, err := parseTradeCursor(date)
+		if err != nil {
+			return date >= floor.Format("20060102")
+		}
+		return !parsed.Before(floor)
+	}
+	switch domain {
+	case tradeHistoryDomain:
+		return r.pendingCoverageDates(domain, tradeHistoryCoverageStartDomain, assetType, code, tradingDays, filterByFloor)
+	case liveCaptureDomain:
+		return r.pendingCoverageDates(domain, liveCaptureCoverageStartDomain, assetType, code, tradingDays, filterByFloor)
+	}
 	cursor, err := r.store.GetCollectCursor(domain, string(assetType), code, "")
 	if err != nil {
 		return nil, err
@@ -756,18 +828,60 @@ func (r *Runtime) pendingTradingDates(domain string, assetType AssetType, code s
 	if cursor == nil || cursor.Cursor == "" {
 		out := make([]string, 0, len(tradingDays))
 		for _, day := range tradingDays {
-			out = append(out, day.Date)
+			if filterByFloor(day.Date) {
+				out = append(out, day.Date)
+			}
 		}
 		return out, nil
 	}
 
 	out := make([]string, 0, len(tradingDays))
 	for _, day := range tradingDays {
-		if tradeDateAfter(day.Date, cursor.Cursor) {
+		if tradeDateAfter(day.Date, cursor.Cursor) && filterByFloor(day.Date) {
 			out = append(out, day.Date)
 		}
 	}
 	return out, nil
+}
+
+func (r *Runtime) pendingCoverageDates(domain, coverageDomain string, assetType AssetType, code string, tradingDays []TradingDay, filterByFloor func(string) bool) ([]string, error) {
+	latest, err := r.store.GetCollectCursor(domain, string(assetType), code, "")
+	if err != nil {
+		return nil, err
+	}
+	coverageStart, err := r.store.GetCollectCursor(coverageDomain, string(assetType), code, "")
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]string, 0, len(tradingDays))
+	for _, day := range tradingDays {
+		if !filterByFloor(day.Date) {
+			continue
+		}
+		if coverageStart != nil && coverageStart.Cursor != "" && tradeDateAfter(coverageStart.Cursor, day.Date) {
+			out = append(out, day.Date)
+			continue
+		}
+		if latest == nil || latest.Cursor == "" || tradeDateAfter(day.Date, latest.Cursor) {
+			out = append(out, day.Date)
+		}
+	}
+	return out, nil
+}
+
+func (r *Runtime) bootstrapStartForDomain(domain string) time.Time {
+	if domain == tradeHistoryDomain {
+		if start := parseBootstrapStartDate(r.cfg.TradeBootstrapStartDate); !start.IsZero() {
+			return start
+		}
+	}
+	if domain == liveCaptureDomain {
+		if start := parseBootstrapStartDate(r.cfg.LiveBootstrapStartDate); !start.IsZero() {
+			return start
+		}
+	}
+	return parseBootstrapStartDate(r.cfg.BootstrapStartDate)
 }
 
 func parseBootstrapStartDate(value string) time.Time {

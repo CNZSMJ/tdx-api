@@ -100,7 +100,7 @@
 
 | # | 接口 | 方法 | 功能 | 状态 |
 |---|-----|------|------|------|
-| 33 | /api/profile | GET | 证券基本属性（名称/交易所/精度/乘数/最新价） | ✅ 运行中 |
+| 33 | /api/profile | GET | 证券轻量快照（基础属性 + 当前行情 + 常用估值字段） | ✅ 运行中 |
 | 34 | /api/security/status | GET | 证券可交易状态（停牌/ST/退市风险） | ✅ 运行中 |
 | 35 | /api/collector/status | GET | 数据采集器运行状态 | ✅ 运行中 |
 | 36 | /api/collector/reconcile | GET/POST | 查看/触发数据对账 | ✅ 运行中 |
@@ -126,7 +126,8 @@ print(f"获取{len(kline['data']['List'])}条K线")
 
 # 搜索股票
 stocks = requests.get(f"{BASE_URL}/api/search?keyword=平安").json()
-print(f"找到{len(stocks['data'])}只股票")
+print(f"找到{stocks['data']['count']}只股票")
+# 或者: len(stocks['data']['list'])
 ```
 
 ### JavaScript示例
@@ -366,7 +367,7 @@ python API_使用示例.py
 
 ```bash
 # 1. 确保服务运行
-docker-compose ps
+docker compose ps
 
 # 2. 测试API
 curl "http://localhost:8080/api/quote?code=000001"
@@ -389,4 +390,3 @@ python API_使用示例.py
 - 💻 web/server.go / web/server_api_extended.go（核心服务实现）
 
 **现在就可以通过API接口访问所有股票数据功能！**
-

@@ -22,7 +22,7 @@ Run these for every code-changing phase unless a phase entry explicitly says oth
 
 If startup, routing, or Docker behavior is affected, also run:
 
-1. `docker compose build`
+1. `./scripts/build_local_image.sh`
 2. `docker compose up -d`
 3. `docker compose ps`
 4. health endpoint verification

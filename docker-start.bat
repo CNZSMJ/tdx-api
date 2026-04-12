@@ -31,25 +31,41 @@ if errorlevel 1 (
 echo [√] Docker正在运行
 echo.
 
-REM 检查docker-compose是否可用
-docker-compose --version >nul 2>&1
+REM 检查docker compose是否可用
+docker compose version >nul 2>&1
 if errorlevel 1 (
-    echo [错误] docker-compose不可用
+    echo [错误] docker compose不可用，请安装Docker Compose插件
     echo.
     pause
     exit /b 1
 )
 
-echo [√] docker-compose可用
+echo [√] docker compose可用
 echo.
 
 echo ----------------------------------------
-echo 正在构建并启动服务...
+echo 准备启动服务...
 echo ----------------------------------------
 echo.
+
+set IMAGE_NAME=tdx-api-stock-web:invest-grade-fixed
+
+docker image inspect %IMAGE_NAME% >nul 2>&1
+if errorlevel 1 (
+    echo [信息] 未检测到本地镜像 %IMAGE_NAME%
+    echo [信息] 先执行 docker build -t %IMAGE_NAME% .
+    docker build -t %IMAGE_NAME% .
+    if errorlevel 1 (
+        echo.
+        echo [错误] 镜像构建失败，请查看上面的错误信息
+        echo.
+        pause
+        exit /b 1
+    )
+)
 
 REM 启动服务
-docker-compose up -d
+docker compose up -d
 
 if errorlevel 1 (
     echo.
@@ -67,10 +83,10 @@ echo.
 echo 访问地址: http://localhost:8080
 echo.
 echo 常用命令:
-echo   查看日志: docker-compose logs -f
-echo   停止服务: docker-compose stop
-echo   重启服务: docker-compose restart
-echo   完全清理: docker-compose down
+echo   查看日志: docker compose logs -f
+echo   停止服务: docker compose stop
+echo   重启服务: docker compose restart
+echo   完全清理: docker compose down
 echo.
 echo ----------------------------------------
 
@@ -84,4 +100,3 @@ echo.
 echo 浏览器已打开，请稍候...
 echo.
 pause
-

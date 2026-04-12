@@ -190,6 +190,59 @@ func TestTradeRefreshIsReplaySafeAndDerivedBarsAreReproducible(t *testing.T) {
 	}
 }
 
+func TestTradeRefreshKeepsLatestCursorAndTracksCoverageStart(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := OpenStore(filepath.Join(tmp, "collector.db"))
+	if err != nil {
+		t.Fatalf("open collector store: %v", err)
+	}
+	defer store.Close()
+
+	service, err := NewTradeService(store, &tradeStubProvider{
+		items: []TradeTick{
+			newTradeTick("sh600000", "20200102", "09:30", 12000, 10, 0),
+			newTradeTick("sh600000", "20181228", "09:30", 11900, 8, 0),
+		},
+	}, TradeConfig{
+		BaseDir:            filepath.Join(tmp, "trade"),
+		BootstrapStartDate: "20190101",
+	})
+	if err != nil {
+		t.Fatalf("new trade service: %v", err)
+	}
+
+	if err := service.RefreshDay(context.Background(), TradeCollectQuery{
+		Code:      "sh600000",
+		AssetType: AssetTypeStock,
+		Date:      "20200102",
+	}); err != nil {
+		t.Fatalf("refresh 20200102: %v", err)
+	}
+	if err := service.RefreshDay(context.Background(), TradeCollectQuery{
+		Code:      "sh600000",
+		AssetType: AssetTypeStock,
+		Date:      "20181228",
+	}); err != nil {
+		t.Fatalf("refresh 20181228: %v", err)
+	}
+
+	latest, err := store.GetCollectCursor(tradeHistoryDomain, string(AssetTypeStock), "sh600000", "")
+	if err != nil {
+		t.Fatalf("load latest trade cursor: %v", err)
+	}
+	if latest == nil || latest.Cursor != "20200102" {
+		t.Fatalf("unexpected latest trade cursor: %#v", latest)
+	}
+
+	coverageStart, err := store.GetCollectCursor(tradeHistoryCoverageStartDomain, string(AssetTypeStock), "sh600000", "")
+	if err != nil {
+		t.Fatalf("load trade coverage-start cursor: %v", err)
+	}
+	if coverageStart == nil || coverageStart.Cursor != "20181228" {
+		t.Fatalf("unexpected trade coverage-start cursor: %#v", coverageStart)
+	}
+}
+
 func newTradeTick(code, date, clock string, price PriceMilli, volume int, status int) TradeTick {
 	tm, _ := time.ParseInLocation("20060102 15:04", date+" "+clock, time.Local)
 	return TradeTick{

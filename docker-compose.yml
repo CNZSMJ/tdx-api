@@ -1,19 +1,23 @@
 services:
   stock-web:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ${TDX_STOCK_WEB_IMAGE:-tdx-api-stock-web:invest-grade-fixed}
+    pull_policy: never
     container_name: tdx-stock-web
     ports:
       - "8080:8080"
     volumes:
-      - ./data/database:/app/data/database
+      - ${TDX_DATA_DIR:-./data/database}:/app/data/database
     restart: unless-stopped
     environment:
       - TZ=Asia/Shanghai
       # 与 TDX 连接池同宽；补采吞吐约与并发数成正比，过大可能被服务端限流（上限见 web/server.go collectorMaxCatchupWorkers）
-      - COLLECTOR_CATCHUP_WORKERS=12
+      - COLLECTOR_CATCHUP_WORKERS=32
       - COLLECTOR_REQUEST_MIN_INTERVAL=150ms
+      # 仅限制逐笔成交 trade_history 的自动历史补采起点；K线/live/order_history 保持原策略
+      # 以后若需补 2019 年前数据，可改早该值或清空后配合定向回填
+      - COLLECTOR_TRADE_BOOTSTRAP_START=${COLLECTOR_TRADE_BOOTSTRAP_START:-20190101}
+      # 限制分时历史 live_capture 的自动历史补采起点；以后若需补更早分时，可改早该值
+      - COLLECTOR_LIVE_BOOTSTRAP_START=${COLLECTOR_LIVE_BOOTSTRAP_START:-20190101}
       # 启动全量补采默认不设整体 deadline；若需上限可取消注释，例如 168h
       # - COLLECTOR_STARTUP_CATCHUP_TIMEOUT=168h
       # 每日全量同步与对账默认 6h 上限；全市场数据量大时可加大，例如 24h
@@ -21,7 +25,7 @@ services:
     networks:
       - stock-network
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/health"]
       interval: 30s
       timeout: 3s
       retries: 3

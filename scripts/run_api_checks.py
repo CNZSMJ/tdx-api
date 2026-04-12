@@ -18,7 +18,7 @@ ENDPOINTS = [
     ("stock_info", "GET", "/api/stock-info?code=000001"),
     ("codes_sz", "GET", "/api/codes?exchange=sz"),
     ("batch_quote", "POST", "/api/batch-quote", {"json": {"codes": ["000001", "600519", "601318"]}}),
-    ("kline_history", "GET", "/api/kline-history?code=000001&type=day&start_date=20241011&end_date=20241108"),
+    ("kline_history", "GET", "/api/kline-history?code=000001&type=day&limit=30"),
     ("index_day", "GET", "/api/index?code=sh000001&type=day"),
     ("index_all_day", "GET", "/api/index/all?code=sh000001&type=day"),
     ("market_stats", "GET", "/api/market-stats"),

@@ -13,6 +13,7 @@ import (
 	"github.com/injoyai/tdx"
 	collectorpkg "github.com/injoyai/tdx/collector"
 	"github.com/injoyai/tdx/extend"
+	"github.com/injoyai/tdx/profinance"
 	"github.com/injoyai/tdx/protocol"
 )
 
@@ -119,19 +120,345 @@ func handleGetProfile(w http.ResponseWriter, r *http.Request) {
 	codeUpper := strings.ToUpper(code)
 	for _, model := range models {
 		if strings.ToUpper(model.Code) == codeUpper || strings.ToUpper(model.FullCode()) == codeUpper {
-			successResponse(w, map[string]interface{}{
-				"code":       model.Code,
-				"name":       model.Name,
-				"exchange":   strings.ToLower(model.Exchange),
-				"decimal":    model.Decimal,
-				"multiple":   model.Multiple,
-				"last_price": model.LastPrice,
-			})
+			fullCode := model.FullCode()
+			result := map[string]interface{}{
+				"security": map[string]interface{}{
+					"code":       model.Code,
+					"full_code":  fullCode,
+					"name":       model.Name,
+					"exchange":   strings.ToLower(model.Exchange),
+					"asset_type": classifySecurityAssetType(fullCode),
+					"decimal":    model.Decimal,
+					"multiple":   model.Multiple,
+				},
+			}
+
+			quote := map[string]interface{}{
+				"available":   false,
+				"source":      "realtime_quote",
+				"is_realtime": false,
+				"reason":      "realtime_quote_unavailable",
+			}
+			priceForValuation := 0.0
+			priceSource := "unavailable"
+
+			quotes, quoteErr := client.GetQuote(code)
+			if quoteErr == nil && len(quotes) > 0 && quotes[0] != nil {
+				quote := quotes[0]
+				price := quote.K.Close.Float64()
+				prevClose := quote.K.Last.Float64()
+				open := quote.K.Open.Float64()
+				high := quote.K.High.Float64()
+				low := quote.K.Low.Float64()
+				change := price - prevClose
+				changePct := 0.0
+				if prevClose != 0 {
+					changePct = change / prevClose * 100
+				}
+
+				result["quote"] = map[string]interface{}{
+					"available":     true,
+					"source":        "realtime_quote",
+					"is_realtime":   true,
+					"price":         price,
+					"prev_close":    prevClose,
+					"open":          open,
+					"high":          high,
+					"low":           low,
+					"change":        change,
+					"change_pct":    changePct,
+					"volume_shares": int64(quote.TotalHand) * int64(model.Multiple),
+					"turnover_yuan": quote.Amount,
+					"quote_time":    quote.ServerTime,
+				}
+				priceForValuation = price
+				priceSource = "realtime_quote"
+			} else {
+				result["quote"] = quote
+				if quoteErr != nil {
+					log.Printf("profile realtime quote unavailable for %s: %v", code, quoteErr)
+				}
+			}
+
+			if protocol.IsStock(fullCode) {
+				var finance *protocol.FinanceInfo
+				finance, financeErr := client.GetFinanceInfo(code)
+				if financeErr != nil {
+					log.Printf("profile finance fallback for %s: %v", code, financeErr)
+				}
+				proSnapshot := loadProfessionalFinanceSnapshot(r, code)
+				fundamentals, valuation := buildStockProfileSections(priceForValuation, priceSource, finance, proSnapshot)
+				if err := validateInvestmentGradeStockSnapshot(result["quote"], valuation); err != nil {
+					errorResponse(w, err.Error())
+					return
+				}
+				result["fundamentals"] = fundamentals
+				result["valuation"] = valuation
+			} else {
+				result["fundamentals"] = unavailableProfileSection("fundamentals_not_supported_for_asset_type")
+				result["valuation"] = unavailableProfileSection("valuation_not_supported_for_asset_type")
+			}
+
+			successResponse(w, result)
 			return
 		}
 	}
 
 	errorResponse(w, fmt.Sprintf("证券未找到: %s", code))
+}
+
+func unavailableProfileSection(reason string) map[string]interface{} {
+	return map[string]interface{}{
+		"available": false,
+		"reason":    reason,
+	}
+}
+
+func loadProfessionalFinanceSnapshot(r *http.Request, code string) *profinance.Snapshot {
+	if proFinanceService == nil {
+		return nil
+	}
+	snapshot, err := proFinanceService.LatestForCode(r.Context(), code)
+	if err != nil {
+		log.Printf("profile professional finance fallback for %s: %v", code, err)
+		return nil
+	}
+	return snapshot
+}
+
+func buildStockProfileSections(price float64, priceSource string, finance *protocol.FinanceInfo, proSnapshot *profinance.Snapshot) (map[string]interface{}, map[string]interface{}) {
+	hasFinance := finance != nil
+	hasProfessional := proSnapshot != nil
+	source := profileSourceLabel(hasFinance, hasProfessional)
+	hasRealtimePrice := price > 0 && priceSource == "realtime_quote"
+
+	fundamentals := map[string]interface{}{
+		"available": hasFinance || hasProfessional,
+		"source":    source,
+	}
+	valuation := map[string]interface{}{
+		"available":    false,
+		"source":       source,
+		"price_source": priceSource,
+	}
+	if hasRealtimePrice {
+		valuation["price"] = price
+	}
+
+	if !hasFinance && !hasProfessional {
+		fundamentals["reason"] = "no_finance_snapshot"
+		valuation["reason"] = "no_finance_snapshot"
+		return fundamentals, valuation
+	}
+
+	if hasFinance {
+		if finance.UpdatedDate > 0 {
+			fundamentals["finance_updated_date"] = fmt.Sprintf("%08d", finance.UpdatedDate)
+			valuation["finance_updated_date"] = fmt.Sprintf("%08d", finance.UpdatedDate)
+		}
+		if finance.Jingzichan > 0 {
+			fundamentals["report_net_assets"] = finance.Jingzichan
+		}
+		if finance.Jinglirun != 0 {
+			fundamentals["report_net_profit"] = finance.Jinglirun
+		}
+		if finance.Zhuyingshouru != 0 {
+			fundamentals["report_revenue"] = finance.Zhuyingshouru
+		}
+	}
+	if hasProfessional {
+		if proSnapshot.ReportDate != "" {
+			fundamentals["report_date"] = proSnapshot.ReportDate
+			valuation["report_date"] = proSnapshot.ReportDate
+		}
+		if proSnapshot.SourceReportFile != "" {
+			fundamentals["source_report_file"] = proSnapshot.SourceReportFile
+		}
+		if proSnapshot.NetProfitTTM != 0 {
+			fundamentals["net_profit_ttm"] = proSnapshot.NetProfitTTM
+		}
+		if proSnapshot.RevenueTTMYuan != 0 {
+			fundamentals["revenue_ttm"] = proSnapshot.RevenueTTMYuan
+		}
+		if proSnapshot.WeightedROE != 0 {
+			fundamentals["weighted_roe"] = proSnapshot.WeightedROE
+		}
+	}
+
+	totalShares := pickPositive(
+		func() float64 {
+			if proSnapshot != nil {
+				return proSnapshot.TotalShares
+			}
+			return 0
+		}(),
+		func() float64 {
+			if finance != nil {
+				return finance.Zongguben
+			}
+			return 0
+		}(),
+	)
+	floatShares := pickPositive(
+		func() float64 {
+			if proSnapshot != nil {
+				return proSnapshot.FloatAShares
+			}
+			return 0
+		}(),
+		func() float64 {
+			if finance != nil {
+				return finance.Liutongguben
+			}
+			return 0
+		}(),
+	)
+	bookValuePerShare := pickPositive(
+		func() float64 {
+			if proSnapshot != nil {
+				return proSnapshot.BookValuePerShare
+			}
+			return 0
+		}(),
+		func() float64 {
+			if finance != nil {
+				return finance.Meigujingzichan
+			}
+			return 0
+		}(),
+	)
+	if proSnapshot != nil && proSnapshot.BookValuePerShare != 0 {
+		bookValuePerShare = proSnapshot.BookValuePerShare
+	} else if finance != nil && finance.Meigujingzichan != 0 {
+		bookValuePerShare = finance.Meigujingzichan
+	}
+	netProfitTTM := 0.0
+	revenueTTM := 0.0
+	if proSnapshot != nil {
+		netProfitTTM = proSnapshot.NetProfitTTM
+		revenueTTM = proSnapshot.RevenueTTMYuan
+	}
+
+	if totalShares > 0 {
+		fundamentals["total_shares"] = totalShares
+	}
+	if floatShares > 0 {
+		fundamentals["float_shares"] = floatShares
+	}
+	if bookValuePerShare != 0 {
+		fundamentals["book_value_per_share_mrq"] = bookValuePerShare
+		valuation["book_value_per_share_mrq"] = bookValuePerShare
+	}
+
+	missing := make([]string, 0, 4)
+	if hasRealtimePrice && totalShares > 0 {
+		marketCapTotal := price * totalShares
+		valuation["market_cap_total"] = marketCapTotal
+		valuation["available"] = true
+		if netProfitTTM != 0 {
+			valuation["eps_ttm"] = netProfitTTM / totalShares
+			valuation["pe_ttm"] = marketCapTotal / netProfitTTM
+		} else {
+			missing = append(missing, "pe_ttm")
+		}
+		if revenueTTM != 0 {
+			valuation["revenue_per_share_ttm"] = revenueTTM / totalShares
+			valuation["ps_ttm"] = marketCapTotal / revenueTTM
+		} else {
+			missing = append(missing, "ps_ttm")
+		}
+	} else {
+		missing = append(missing, "market_cap_total", "pe_ttm", "ps_ttm")
+	}
+	if hasRealtimePrice && floatShares > 0 {
+		valuation["market_cap_float"] = price * floatShares
+		valuation["available"] = true
+	}
+	if hasRealtimePrice && bookValuePerShare != 0 {
+		valuation["pb_mrq"] = price / bookValuePerShare
+		valuation["available"] = true
+	} else {
+		missing = append(missing, "pb_mrq")
+	}
+	if !hasRealtimePrice {
+		missing = append(missing, "price", "market_cap_total", "market_cap_float", "pb_mrq", "pe_ttm", "ps_ttm")
+		valuation["reason"] = "realtime_quote_required"
+	}
+	if len(missing) > 0 {
+		valuation["missing_fields"] = uniqueStrings(missing)
+	}
+	if available, _ := valuation["available"].(bool); !available {
+		if _, exists := valuation["reason"]; !exists {
+			valuation["reason"] = "insufficient_inputs"
+		}
+	}
+	return fundamentals, valuation
+}
+
+func validateInvestmentGradeStockSnapshot(quoteValue interface{}, valuation map[string]interface{}) error {
+	quote, ok := quoteValue.(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("投资级快照不可用: 缺少行情快照")
+	}
+	quoteAvailable, _ := quote["available"].(bool)
+	if !quoteAvailable {
+		reason, _ := quote["reason"].(string)
+		if reason == "" {
+			reason = "realtime_quote_unavailable"
+		}
+		return fmt.Errorf("投资级快照不可用: 实时行情缺失 (%s)", reason)
+	}
+	valuationAvailable, _ := valuation["available"].(bool)
+	if !valuationAvailable {
+		reason, _ := valuation["reason"].(string)
+		if reason == "" {
+			reason = "valuation_unavailable"
+		}
+		return fmt.Errorf("投资级快照不可用: 估值快照缺失 (%s)", reason)
+	}
+	return nil
+}
+
+func profileSourceLabel(hasFinance, hasProfessional bool) string {
+	switch {
+	case hasFinance && hasProfessional:
+		return "tdx_raw_finance+tdx_professional_finance"
+	case hasProfessional:
+		return "tdx_professional_finance"
+	case hasFinance:
+		return "tdx_raw_finance"
+	default:
+		return "unavailable"
+	}
+}
+
+func pickPositive(values ...float64) float64 {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func uniqueStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // 获取股票代码列表
@@ -1089,7 +1416,7 @@ func handleHealthCheck(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status": "healthy",
-		"time":   fmt.Sprintf("%d", 1730617200),
+		"time":   time.Now().Unix(),
 	})
 }
 

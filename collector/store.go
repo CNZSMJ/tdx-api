@@ -3,6 +3,7 @@ package collector
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "github.com/glebarez/go-sqlite"
@@ -126,6 +127,46 @@ func (s *Store) UpdateScheduleRun(record *ScheduleRunRecord) error {
 	return err
 }
 
+func appendScheduleRunDetails(existing, extra string) string {
+	existing = strings.TrimSpace(existing)
+	extra = strings.TrimSpace(extra)
+	if existing == "" {
+		return extra
+	}
+	if extra == "" {
+		return existing
+	}
+	return existing + " | " + extra
+}
+
+func (s *Store) InterruptRunningScheduleRuns(scheduleName, reason string, endedAt time.Time) (int64, error) {
+	if endedAt.IsZero() {
+		endedAt = time.Now()
+	}
+
+	records := make([]ScheduleRunRecord, 0, 8)
+	session := s.engine.Where("Status = ?", "running")
+	if strings.TrimSpace(scheduleName) != "" {
+		session = session.And("ScheduleName = ?", scheduleName)
+	}
+	if err := session.Find(&records); err != nil {
+		return 0, err
+	}
+
+	var updated int64
+	for i := range records {
+		record := records[i]
+		record.Status = "interrupted"
+		record.EndedAt = endedAt
+		record.Details = appendScheduleRunDetails(record.Details, reason)
+		if _, err := s.engine.ID(record.ID).Cols("Status", "EndedAt", "Details").Update(&record); err != nil {
+			return updated, err
+		}
+		updated++
+	}
+	return updated, nil
+}
+
 func (s *Store) LatestScheduleRun(scheduleName string, statuses ...string) (*ScheduleRunRecord, error) {
 	record := new(ScheduleRunRecord)
 	session := s.engine.Where("ScheduleName = ?", scheduleName)
@@ -195,6 +236,66 @@ func (s *Store) UpsertCollectCursor(record *CollectCursorRecord) error {
 	}
 	_, err = s.engine.Insert(record)
 	return err
+}
+
+func (s *Store) SeedTradeHistoryCoverageStarts(defaultCursor string) (int64, error) {
+	return s.seedCoverageStarts(tradeHistoryDomain, tradeHistoryCoverageStartDomain, defaultCursor)
+}
+
+func (s *Store) SeedLiveCaptureCoverageStarts(defaultCursor string) (int64, error) {
+	return s.seedCoverageStarts(liveCaptureDomain, liveCaptureCoverageStartDomain, defaultCursor)
+}
+
+func (s *Store) seedCoverageStarts(domain, coverageDomain, defaultCursor string) (int64, error) {
+	defaultCursor = strings.TrimSpace(defaultCursor)
+	if defaultCursor == "" {
+		return 0, nil
+	}
+
+	latest := make([]CollectCursorRecord, 0)
+	if err := s.engine.Where("Domain = ? AND Cursor <> ''", domain).Find(&latest); err != nil {
+		return 0, err
+	}
+	if len(latest) == 0 {
+		return 0, nil
+	}
+
+	existing := make([]CollectCursorRecord, 0)
+	if err := s.engine.Where("Domain = ? AND Cursor <> ''", coverageDomain).Find(&existing); err != nil {
+		return 0, err
+	}
+	seen := make(map[string]struct{}, len(existing))
+	for _, item := range existing {
+		seen[collectCursorKey(item.Domain, item.AssetType, item.Instrument, item.Period)] = struct{}{}
+	}
+
+	var inserted int64
+	for _, item := range latest {
+		key := collectCursorKey(coverageDomain, item.AssetType, item.Instrument, item.Period)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		cursorValue := defaultCursor
+		if tradeDateAfter(defaultCursor, item.Cursor) {
+			cursorValue = item.Cursor
+		}
+		if err := s.UpsertCollectCursor(&CollectCursorRecord{
+			Domain:     coverageDomain,
+			AssetType:  item.AssetType,
+			Instrument: item.Instrument,
+			Period:     item.Period,
+			Cursor:     cursorValue,
+		}); err != nil {
+			return inserted, err
+		}
+		seen[key] = struct{}{}
+		inserted++
+	}
+	return inserted, nil
+}
+
+func collectCursorKey(domain, assetType, instrument, period string) string {
+	return domain + "|" + assetType + "|" + instrument + "|" + period
 }
 
 func (s *Store) UpsertCollectGap(record *CollectGapRecord) error {

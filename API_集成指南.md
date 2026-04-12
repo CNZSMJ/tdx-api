@@ -15,7 +15,7 @@
 ### ✅ 扩展接口（9个）
 7. **GET /api/codes** - 股票代码列表
 8. **POST /api/batch-quote** - 批量获取行情
-9. **GET /api/kline-history** - 历史K线范围查询
+9. **GET /api/kline-history** - 最近 N 条历史K线查询
 10. **GET /api/index** - 指数数据
 11. **GET /api/market-stats** - 全市场宽度统计（Ticker 预聚合）
 12. **GET /api/market/screen** - 全市场排行 / 涨跌停池
@@ -58,7 +58,7 @@
 43. **GET /api/ticker/status** - 实时行情轮询服务状态
 
 ### ✅ 运维 / 辅助接口（3个）
-44. **GET /api/profile** - 证券基本属性（名称/交易所/精度/乘数/最新价）
+44. **GET /api/profile** - 证券轻量快照（基础属性 + 当前行情 + 常用估值字段）
 45. **GET /api/security/status** - 证券可交易状态（停牌/ST/退市风险）
 46. **GET /api/collector/status** - 数据采集器运行状态
 47. **GET/POST /api/collector/reconcile** - 查看/触发数据对账
@@ -294,18 +294,14 @@ import (
 
 ### 步骤3: 重新构建部署（如有修改）
 
+Docker 相关操作请统一以 `DOCKER_DEPLOY.md` 为准。当前正式流程不再推荐在这里单独维护一套 `docker-compose build` 命令。
+
+最常见的本机流程是：
+
 ```bash
-# 停止服务
-docker-compose down
-
-# 重新构建
-docker-compose build
-
-# 启动服务
-docker-compose up -d
-
-# 查看日志
-docker-compose logs -f
+./scripts/build_local_image.sh
+docker compose up -d
+docker compose logs -f
 ```
 
 ---
@@ -389,7 +385,7 @@ curl "http://localhost:8080/api/health"
 | /api/minute | GET | 分时数据（自动回退至最近交易日） |
 | /api/trade | GET | 分时成交 |
 | /api/search | GET | 跨资产证券搜索（支持 asset_type 筛选） |
-| /api/profile | GET | 证券基本属性（名称/交易所/精度/乘数/最新价） |
+| /api/profile | GET | 证券轻量快照（基础属性 + 当前行情 + 常用估值字段） |
 | /api/security/status | GET | 证券可交易状态（停牌/ST/退市风险） |
 | /api/stock-info | GET | 综合信息汇总 |
 

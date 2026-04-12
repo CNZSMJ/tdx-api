@@ -10,7 +10,7 @@
 
 ## 📋 响应格式
 
-所有接口统一返回格式：
+除 `/api/health` 探活接口外，其他业务接口统一返回格式：
 
 ```json
 {
@@ -98,8 +98,7 @@ GET /api/quote?code=000001,600519
 
 **接口**: `GET /api/kline`
 
-**描述**: 获取股票K线数据（OHLC + 成交量成交额）。日/周/月K线默认返回同花顺前复权数据；若第三方源不可用将直接返回错误提示，不再自动切换通达信源。需要原始数据或自行设置兜底时，可调用文末的 `/api/kline-all/tdx` 等接口。
-**描述**: 获取股票K线数据（OHLC + 成交量成交额）。日/周/月K线优先返回同花顺前复权数据，若第三方源不可用则自动回退到通达信原始数据；分钟级及小时级为原始数据。
+**描述**: 获取股票K线数据（OHLC + 成交量成交额）。日/周/月K线默认返回同花顺前复权数据；若第三方源不可用将直接返回错误提示，不再自动切换通达信源。需要原始数据或自行设置兜底时，可调用文末的 `/api/kline-all/tdx` 等接口。分钟级及小时级为原始数据。
 
 **请求参数**:
 | 参数 | 类型 | 必填 | 说明 |
@@ -161,7 +160,6 @@ GET /api/kline?code=600519&type=minute30
 
 **接口**: `GET /api/minute`
 
-**描述**: 获取股票分时走势数据。接口严格按照请求日期返回结果，不再自动回退其他交易日；若指定日期无数据，将返回空列表并保留原日期。
 **描述**: 获取股票分时走势数据；若查询日期或当日无数据，会自动回退至最近一个有交易数据的工作日，并在响应体中附加实际数据日期。
 
 **请求参数**:
@@ -182,7 +180,6 @@ GET /api/minute?code=000001&date=20241103
   "code": 0,
   "message": "success",
   "data": {
-    "date": "20251110",   // 实际数据日期，与请求日期一致
     "date": "20251107",   // 实际数据日期，可能与请求日期不同
     "Count": 240,
     "List": [
@@ -206,7 +203,8 @@ GET /api/minute?code=000001&date=20241103
 - 交易时段：9:30-11:30（120分钟）, 13:00-15:00（120分钟）
 - 共240个数据点
 - 价格单位：厘
-- 若 `List` 为空，表示该日期无分时数据，请由调用方自行选择备用日期或数据源
+- `date` 为实际返回数据所属交易日；若发生回退，可能与请求日期不同
+- 若 `List` 为空，表示回退后仍未找到可用分时数据
 
 ---
 
@@ -515,21 +513,18 @@ curl -X POST http://localhost:8080/api/batch-quote \
 
 **接口**: `GET /api/kline-history`
 
-**描述**: 获取指定时间范围的K线数据
+**描述**: 获取最近 N 条历史K线数据，优先面向低开销的最近窗口读取，不支持按日期范围筛选
 
 **请求参数**:
 | 参数 | 类型 | 必填 | 说明 |
 |-----|------|------|------|
 | code | string | 是 | 股票代码 |
 | type | string | 是 | K线类型 |
-| start_date | string | 否 | 开始日期（YYYYMMDD） |
-| end_date | string | 否 | 结束日期（YYYYMMDD） |
 | limit | int | 否 | 返回条数，默认100，最大800 |
 
 **请求示例**:
 ```
 GET /api/kline-history?code=000001&type=day&limit=30
-GET /api/kline-history?code=000001&type=day&start_date=20241001&end_date=20241101
 ```
 
 ---
@@ -576,6 +571,20 @@ GET /api/index?code=sh000001&type=day
     "version": "1.0.0",
     "uptime": "unknown"
   }
+}
+```
+
+#### 补充：健康检查（探活）
+
+**接口**: `GET /api/health`
+
+**描述**: 面向 Docker / 负载均衡探活使用，返回 HTTP 200 和轻量 JSON，不走统一响应包裹。
+
+**响应示例**:
+```json
+{
+  "status": "healthy",
+  "time": 1712800000
 }
 ```
 
@@ -744,7 +753,7 @@ curl -X POST http://localhost:8080/api/tasks/pull-trade \
 
 **接口**: `GET /api/finance`
 
-**描述**: 获取单只证券的财务摘要数据，字段为通达信原始财务口径。
+**描述**: 获取单只证券的财务摘要数据，字段为通达信原始财务口径。该接口用于返回 raw 财务快照，不承诺直接提供 PE/PB 等估值比率。
 
 **请求参数**:
 | 参数 | 类型 | 必填 | 说明 |
@@ -761,10 +770,74 @@ curl -X POST http://localhost:8080/api/tasks/pull-trade \
     "liutongguben": 2188390000,
     "zongguben": 19405918198,
     "gudongrenshu": 124352,
-    "updated_date": 20260321
+    "UpdatedDate": 20260321
   }
 }
 ```
+
+---
+
+### 16a. 获取多期财报
+
+**接口**: `GET /api/financial-reports`
+
+**描述**: 获取单只证券的多期财报摘要序列。数据源为 `professional_finance` 报告文件，按报告期倒序返回，适合做历史财报趋势分析。该接口返回的是多期“报告级”数据，不等同于 `/api/finance` 的单份 raw 快照。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| code | string | 是 | 证券代码，支持 6 位或带前缀代码 |
+| limit | int | 否 | 返回报告期数量，默认 8，最大 40 |
+| start_date | string | 否 | 起始报告期（`YYYYMMDD` 或 `YYYY-MM-DD`） |
+| end_date | string | 否 | 结束报告期（`YYYYMMDD` 或 `YYYY-MM-DD`） |
+
+**请求示例**:
+```text
+GET /api/financial-reports?code=000001
+GET /api/financial-reports?code=sz000001&limit=4
+GET /api/financial-reports?code=600000&start_date=20250101&end_date=20251231
+```
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "code": "000001",
+    "count": 3,
+    "limit": 8,
+    "start_date": "",
+    "end_date": "",
+    "source": "tdx_professional_finance",
+    "list": [
+      {
+        "code": "000001",
+        "report_date": "20260331",
+        "book_value_per_share": 23.25,
+        "total_shares": 19405918198,
+        "float_a_shares": 19405600768,
+        "net_profit_ttm": 42632998912,
+        "revenue_ttm_yuan": 1314420000000,
+        "weighted_roe": 9.15,
+        "source_report_file": "gpcw20260331.zip"
+      }
+    ]
+  }
+}
+```
+
+**字段说明**:
+| 字段 | 说明 |
+|------|------|
+| `report_date` | 报告期，`YYYYMMDD` |
+| `book_value_per_share` | 每股净资产 |
+| `total_shares` | 总股本 |
+| `float_a_shares` | 流通 A 股股本 |
+| `net_profit_ttm` | TTM 口径净利润 |
+| `revenue_ttm_yuan` | TTM 口径营收（元） |
+| `weighted_roe` | 加权 ROE |
+| `source_report_file` | 来源财报文件 |
 
 ---
 
@@ -787,7 +860,7 @@ curl -X POST http://localhost:8080/api/tasks/pull-trade \
   "data": [
     {
       "Name": "最新提示",
-      "FileName": "000001.txt",
+      "Filename": "000001.txt",
       "Start": 0,
       "Length": 1744
     }
@@ -1537,11 +1610,11 @@ GET /api/block/stocks?name=半导体&sort_by=amount&limit=10
 
 ---
 
-### 38. 证券基本属性
+### 38. 证券轻量快照
 
 **接口**: `GET /api/profile`
 
-**描述**: 根据证券代码（6 位或含交易所前缀的 8 位）查找其名称、交易所、精度、乘数、最新价。
+**描述**: 根据证券代码（6 位或含交易所前缀的 8 位）返回轻量当前快照。响应按 `security`、`quote`、`fundamentals`、`valuation` 分组，既保留静态证券属性，也返回当前行情与可直接消费的常用估值字段。
 
 **请求参数**:
 | 参数 | 类型 | 必填 | 说明 |
@@ -1554,12 +1627,61 @@ GET /api/block/stocks?name=半导体&sort_by=amount&limit=10
   "code": 0,
   "message": "success",
   "data": {
-    "code": "000001",
-    "name": "平安银行",
-    "exchange": "sz",
-    "decimal": 2,
-    "multiple": 100,
-    "last_price": 11.05
+    "security": {
+      "code": "000001",
+      "full_code": "sz000001",
+      "name": "平安银行",
+      "exchange": "sz",
+      "asset_type": "stock",
+      "decimal": 2,
+      "multiple": 100
+    },
+    "quote": {
+      "available": true,
+      "source": "realtime_quote",
+      "is_realtime": true,
+      "price": 11.08,
+      "prev_close": 11.05,
+      "open": 11.02,
+      "high": 11.12,
+      "low": 10.98,
+      "change": 0.03,
+      "change_pct": 0.27,
+      "volume_shares": 178560000,
+      "turnover_yuan": 1962048000,
+      "quote_time": "20260410150000"
+    },
+    "fundamentals": {
+      "available": true,
+      "source": "tdx_raw_finance+tdx_professional_finance",
+      "finance_updated_date": "20260403",
+      "report_date": "20251231",
+      "total_shares": 19405918198,
+      "float_shares": 2188390000,
+      "book_value_per_share_mrq": 18.42,
+      "report_net_assets": 39183347500,
+      "report_net_profit": 5192232812.5,
+      "report_revenue": 20331036250,
+      "net_profit_ttm": 5192233280,
+      "revenue_ttm": 20331036250,
+      "weighted_roe": 14.09
+    },
+    "valuation": {
+      "available": true,
+      "source": "tdx_raw_finance+tdx_professional_finance",
+      "price_source": "realtime_quote",
+      "price": 11.08,
+      "finance_updated_date": "20260403",
+      "report_date": "20251231",
+      "book_value_per_share_mrq": 18.42,
+      "market_cap_total": 215417973633.84,
+      "market_cap_float": 24287481200,
+      "pb_mrq": 0.6,
+      "pe_ttm": 8.7,
+      "ps_ttm": 2.4,
+      "eps_ttm": 1.27,
+      "revenue_per_share_ttm": 4.62
+    }
   }
 }
 ```

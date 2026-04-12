@@ -26,6 +26,9 @@ Thumbs.db
 *.dylib
 *.test
 *.out
+stock-web
+dist/
+!dist/stock-web
 
 # Go
 vendor/
@@ -41,9 +44,19 @@ temp/
 *.tmp
 *.log
 
+# Runtime data and archives
+data/
+*.db
+*.db-*
+*.db.corrupt-*
+*.rar
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+
 # Example directories (optional, if not needed in production)
 example/
 
 # Test files
 *_test.go
-
