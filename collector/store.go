@@ -12,7 +12,16 @@ import (
 )
 
 const DefaultDBName = "collector.db"
-const DefaultBaseDir = "./data/database"
+
+var DefaultBaseDir = resolveDefaultBaseDir()
+
+func resolveDefaultBaseDir() string {
+	dir := strings.TrimSpace(os.Getenv("TDX_DATA_DIR"))
+	if dir == "" {
+		return "./data/database"
+	}
+	return dir
+}
 
 func DefaultDBPath(baseDir string) string {
 	if baseDir == "" {

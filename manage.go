@@ -8,7 +8,6 @@ import (
 )
 
 const (
-	DefaultDatabaseDir   = "./data/database"
 	defaultClientTimeout = 15 * time.Second
 )
 

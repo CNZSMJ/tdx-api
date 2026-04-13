@@ -1,5 +1,6 @@
 data/
 web/data/
+.env
 *.db
 *.db-journal
 __pycache__/
