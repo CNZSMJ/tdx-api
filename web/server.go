@@ -3,17 +3,20 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/injoyai/tdx"
@@ -32,6 +35,7 @@ var (
 	proFinanceService  *profinance.Service
 	collectorRunActive atomic.Bool
 	collectorJobState  = newCollectorExecutionState()
+	collectorActiveRun = newCollectorActiveRunState()
 )
 
 const (
@@ -100,10 +104,21 @@ type collectorExecutionState struct {
 	last    map[string]collectorJobSnapshot
 }
 
+type collectorActiveRunState struct {
+	mu     sync.Mutex
+	name   string
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
 func newCollectorExecutionState() *collectorExecutionState {
 	return &collectorExecutionState{
 		last: make(map[string]collectorJobSnapshot),
 	}
+}
+
+func newCollectorActiveRunState() *collectorActiveRunState {
+	return &collectorActiveRunState{}
 }
 
 func (s *collectorExecutionState) start(name, trigger, date string) *collectorJobSnapshot {
@@ -154,6 +169,72 @@ func (s *collectorExecutionState) snapshot() map[string]any {
 		out["current"] = current
 	}
 	return out
+}
+
+func (s *collectorActiveRunState) begin(name string, cancel context.CancelFunc) func() {
+	done := make(chan struct{})
+
+	s.mu.Lock()
+	s.name = name
+	s.cancel = cancel
+	s.done = done
+	s.mu.Unlock()
+
+	return func() {
+		s.mu.Lock()
+		if s.done == done {
+			s.name = ""
+			s.cancel = nil
+			s.done = nil
+		}
+		s.mu.Unlock()
+		close(done)
+	}
+}
+
+func (s *collectorActiveRunState) cancelActive() (string, <-chan struct{}, bool) {
+	s.mu.Lock()
+	name := s.name
+	cancel := s.cancel
+	done := s.done
+	s.mu.Unlock()
+
+	if cancel == nil || done == nil {
+		return "", nil, false
+	}
+	cancel()
+	return name, done, true
+}
+
+func collectorJobFailureStatus(err error) string {
+	if errors.Is(err, context.Canceled) {
+		return "interrupted"
+	}
+	return "failed"
+}
+
+func waitForCollectorRunStop(timeout time.Duration) {
+	name, done, ok := collectorActiveRun.cancelActive()
+	if !ok {
+		return
+	}
+
+	log.Printf("collector: received shutdown, cancel active task %s", name)
+	select {
+	case <-done:
+		log.Printf("collector: active task %s stopped", name)
+	case <-time.After(timeout):
+		log.Printf("collector: timeout waiting for active task %s to stop", name)
+	}
+}
+
+func shutdownCollectorRuntime() {
+	if collectorRuntime == nil {
+		return
+	}
+	if err := collectorRuntime.Close(); err != nil {
+		log.Printf("collector: close runtime failed: %v", err)
+	}
 }
 
 func configureDatabaseDir() {
@@ -459,11 +540,15 @@ func runCollectorCatchUp(trigger string) error {
 		log.Printf("collector 全量补采开始: trigger=%s", trigger)
 	}
 	ctx, cancel := collectorCatchUpContext(trigger)
-	defer cancel()
+	endRun := collectorActiveRun.begin(jobName, cancel)
+	defer func() {
+		cancel()
+		endRun()
+	}()
 
 	started := time.Now()
 	if err := runFn(ctx); err != nil {
-		collectorJobState.finish(job, "failed", "", err)
+		collectorJobState.finish(job, collectorJobFailureStatus(err), "", err)
 		log.Printf("collector 全量补采失败: trigger=%s duration=%s err=%v", trigger, time.Since(started), err)
 		return err
 	}
@@ -488,12 +573,16 @@ func runCollectorReconcile(trigger, date string) (*collectorpkg.ReconcileReport,
 	job := collectorJobState.start(jobName, trigger, date)
 	log.Printf("collector 对账开始: trigger=%s date=%s", trigger, date)
 	ctx, cancel := context.WithTimeout(context.Background(), collectorGeneralRunTimeout())
-	defer cancel()
+	endRun := collectorActiveRun.begin(jobName, cancel)
+	defer func() {
+		cancel()
+		endRun()
+	}()
 
 	started := time.Now()
 	report, err := collectorRuntime.ReconcileDateWithTrigger(ctx, date, trigger)
 	if err != nil {
-		collectorJobState.finish(job, "failed", "", err)
+		collectorJobState.finish(job, collectorJobFailureStatus(err), "", err)
 		log.Printf("collector 对账失败: trigger=%s date=%s duration=%s err=%v", trigger, date, time.Since(started), err)
 		return nil, err
 	}
@@ -1637,6 +1726,41 @@ func main() {
 	http.HandleFunc("/api/tasks/", handleTaskOperations)
 
 	port := ":8080"
-	log.Printf("服务启动成功，访问 http://localhost%s\n", port)
-	log.Fatal(http.ListenAndServe(port, nil))
+	server := &http.Server{Addr: port, Handler: nil}
+	errCh := make(chan error, 1)
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	go func() {
+		log.Printf("服务启动成功，访问 http://localhost%s\n", port)
+		errCh <- server.ListenAndServe()
+	}()
+
+	select {
+	case err := <-errCh:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatal(err)
+		}
+	case sig := <-sigCh:
+		log.Printf("收到停服信号: %s，开始优雅关闭", sig)
+		if manager != nil && manager.Cron != nil {
+			cronCtx := manager.Cron.Stop()
+			select {
+			case <-cronCtx.Done():
+			case <-time.After(5 * time.Second):
+				log.Printf("collector: 停止 cron 超时，继续关闭流程")
+			}
+		}
+
+		waitForCollectorRunStop(30 * time.Second)
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			log.Printf("HTTP 服务优雅关闭失败: %v", err)
+		}
+		cancel()
+
+		shutdownCollectorRuntime()
+	}
 }

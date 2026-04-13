@@ -12,6 +12,68 @@ type runtimeBootstrapProvider struct {
 	orders map[string]*OrderHistorySnapshot
 }
 
+type runtimeCancelProvider struct{}
+
+func (p *runtimeCancelProvider) Instruments(ctx context.Context, query InstrumentQuery) ([]Instrument, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (p *runtimeCancelProvider) TradingDays(ctx context.Context, query TradingDayQuery) ([]TradingDay, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (p *runtimeCancelProvider) IsTradingDay(ctx context.Context, day time.Time) (bool, error) {
+	<-ctx.Done()
+	return false, ctx.Err()
+}
+
+func (p *runtimeCancelProvider) Quotes(ctx context.Context, codes []string) ([]QuoteSnapshot, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (p *runtimeCancelProvider) Minutes(ctx context.Context, query MinuteQuery) ([]MinutePoint, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (p *runtimeCancelProvider) Klines(ctx context.Context, query KlineQuery) ([]KlineBar, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (p *runtimeCancelProvider) TradeHistory(ctx context.Context, query TradeHistoryQuery) ([]TradeTick, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (p *runtimeCancelProvider) OrderHistory(ctx context.Context, query OrderHistoryQuery) (*OrderHistorySnapshot, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (p *runtimeCancelProvider) Finance(ctx context.Context, code string) (*FinanceSnapshot, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (p *runtimeCancelProvider) F10Categories(ctx context.Context, code string) ([]F10Category, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (p *runtimeCancelProvider) F10Content(ctx context.Context, query F10ContentQuery) (*F10Content, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (p *runtimeCancelProvider) BlockGroups(ctx context.Context, filename string) ([]BlockInfo, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
 func (p *runtimeBootstrapProvider) OrderHistory(ctx context.Context, query OrderHistoryQuery) (*OrderHistorySnapshot, error) {
 	if p.orders != nil {
 		if item, ok := p.orders[query.Date]; ok {
@@ -198,6 +260,50 @@ func TestCollectorRuntimeStartupCatchUpBootstrapsAllTradingDays(t *testing.T) {
 	}
 	if len(syncRuns) != 1 {
 		t.Fatalf("expected one startup schedule run, got %d", len(syncRuns))
+	}
+}
+
+func TestCollectorRuntimeStartupCatchUpCancellationMarksInterrupted(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := OpenStore(filepath.Join(tmp, "collector.db"))
+	if err != nil {
+		t.Fatalf("open collector store: %v", err)
+	}
+	defer store.Close()
+
+	runtime, err := NewRuntime(store, &runtimeCancelProvider{}, RuntimeConfig{
+		Now:          func() time.Time { return time.Date(2026, 4, 1, 20, 0, 0, 0, time.Local) },
+		KlinePeriods: []KlinePeriod{PeriodDay},
+		Metadata: MetadataConfig{
+			CodesDBPath:   filepath.Join(tmp, "codes.db"),
+			WorkdayDBPath: filepath.Join(tmp, "workday.db"),
+		},
+		Kline:        KlineConfig{BaseDir: filepath.Join(tmp, "kline")},
+		Trade:        TradeConfig{BaseDir: filepath.Join(tmp, "trade")},
+		OrderHistory: OrderHistoryConfig{BaseDir: filepath.Join(tmp, "order_history")},
+		Live:         LiveCaptureConfig{BaseDir: filepath.Join(tmp, "live")},
+		Fundamentals: FundamentalsConfig{BaseDir: filepath.Join(tmp, "fundamentals")},
+	})
+	if err != nil {
+		t.Fatalf("new collector runtime: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := runtime.RunStartupCatchUp(ctx); err == nil {
+		t.Fatalf("expected canceled startup catch-up to return an error")
+	}
+
+	run, err := store.LatestScheduleRun("collector_startup_catchup")
+	if err != nil {
+		t.Fatalf("load startup run: %v", err)
+	}
+	if run == nil {
+		t.Fatalf("expected startup run record")
+	}
+	if run.Status != "interrupted" {
+		t.Fatalf("expected interrupted startup run, got %+v", run)
 	}
 }
 

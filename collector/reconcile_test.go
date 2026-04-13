@@ -89,3 +89,49 @@ func TestCollectorReconcileDateWritesReportAndRepairsTradingDay(t *testing.T) {
 		t.Fatalf("expected trade_history domain in reconcile report")
 	}
 }
+
+func TestCollectorReconcileCancellationMarksInterrupted(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := OpenStore(filepath.Join(tmp, "collector.db"))
+	if err != nil {
+		t.Fatalf("open collector store: %v", err)
+	}
+	defer store.Close()
+
+	runtime, err := NewRuntime(store, &runtimeCancelProvider{}, RuntimeConfig{
+		Now:                   func() time.Time { return time.Date(2026, 4, 1, 19, 0, 0, 0, time.Local) },
+		ReportDir:             filepath.Join(tmp, "reports"),
+		KlinePeriods:          []KlinePeriod{PeriodDay},
+		ReconcileScheduleName: "collector_daily_reconcile",
+		Metadata: MetadataConfig{
+			CodesDBPath:   filepath.Join(tmp, "codes.db"),
+			WorkdayDBPath: filepath.Join(tmp, "workday.db"),
+		},
+		Kline:        KlineConfig{BaseDir: filepath.Join(tmp, "kline")},
+		Trade:        TradeConfig{BaseDir: filepath.Join(tmp, "trade")},
+		OrderHistory: OrderHistoryConfig{BaseDir: filepath.Join(tmp, "order_history")},
+		Live:         LiveCaptureConfig{BaseDir: filepath.Join(tmp, "live")},
+		Fundamentals: FundamentalsConfig{BaseDir: filepath.Join(tmp, "fundamentals")},
+	})
+	if err != nil {
+		t.Fatalf("new collector runtime: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := runtime.ReconcileDate(ctx, "20260401"); err == nil {
+		t.Fatalf("expected canceled reconcile to return an error")
+	}
+
+	run, err := store.LatestScheduleRun("collector_daily_reconcile")
+	if err != nil {
+		t.Fatalf("load reconcile run: %v", err)
+	}
+	if run == nil {
+		t.Fatalf("expected reconcile run record")
+	}
+	if run.Status != "interrupted" {
+		t.Fatalf("expected interrupted reconcile run, got %+v", run)
+	}
+}

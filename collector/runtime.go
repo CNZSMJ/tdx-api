@@ -203,6 +203,18 @@ func (r *Runtime) StopTicker() {
 	}
 }
 
+// Close releases runtime-owned background loops and persistent storage.
+func (r *Runtime) Close() error {
+	if r == nil {
+		return nil
+	}
+	r.StopTicker()
+	if r.store != nil {
+		return r.store.Close()
+	}
+	return nil
+}
+
 func (r *Runtime) RunStartupCatchUp(ctx context.Context) error {
 	return r.runCatchUp(ctx, r.cfg.ScheduleName, "collector_startup_catchup")
 }
@@ -277,6 +289,12 @@ func (r *Runtime) runCatchUp(ctx context.Context, scheduleName, suiteName string
 	defer func() {
 		run.EndedAt = r.cfg.Now()
 		if err != nil {
+			if isInterruptedRunError(err) {
+				run.Status = "interrupted"
+				run.Details = appendScheduleRunDetails(details, "collector run canceled")
+				_ = r.store.UpdateScheduleRun(run)
+				return
+			}
 			run.Status = "failed"
 			run.Details = err.Error()
 		} else {
@@ -480,6 +498,10 @@ func (r *Runtime) runCatchUpInstruments(ctx context.Context, instruments []Instr
 
 func isFatalCtxError(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+func isInterruptedRunError(err error) bool {
+	return errors.Is(err, context.Canceled)
 }
 
 func (r *Runtime) runCatchUpInstrument(ctx context.Context, index, total int, instrument Instrument, tradingDays []TradingDay, progress func(string, ...any), counters *catchUpCounters) error {

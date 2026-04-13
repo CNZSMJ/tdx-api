@@ -94,11 +94,19 @@ func (r *Runtime) reconcileDate(ctx context.Context, date, trigger string) (_ *R
 	defer func() {
 		report.CompletedAt = r.cfg.Now()
 		if err != nil {
-			report.Status = "failed"
-			if len(report.Errors) == 0 {
-				report.Errors = append(report.Errors, err.Error())
+			if isInterruptedRunError(err) {
+				report.Status = "interrupted"
+				if len(report.Errors) == 0 {
+					report.Errors = append(report.Errors, "collector reconcile canceled")
+				}
+				run.Status = "interrupted"
+			} else {
+				report.Status = "failed"
+				if len(report.Errors) == 0 {
+					report.Errors = append(report.Errors, err.Error())
+				}
+				run.Status = "failed"
 			}
-			run.Status = "failed"
 		} else if len(report.Errors) > 0 {
 			report.Status = "partial"
 			run.Status = "failed"
