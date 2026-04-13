@@ -30,7 +30,7 @@ RUN cd /src/web && \
 FROM ${RUNTIME_IMAGE}
 
 RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories && \
-    apk --no-cache add ca-certificates tzdata wget && \
+    apk --no-cache add ca-certificates tini tzdata wget && \
     addgroup -g 1000 appuser && \
     adduser -D -u 1000 -G appuser appuser && \
     mkdir -p /app/static /app/data/database && \
@@ -46,6 +46,8 @@ COPY --from=builder --chown=appuser:appuser /src/web/static /app/static
 USER appuser
 
 EXPOSE 8080
+
+ENTRYPOINT ["/sbin/tini", "--"]
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:8080/api/health || exit 1

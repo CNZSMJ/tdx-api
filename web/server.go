@@ -27,15 +27,16 @@ import (
 )
 
 var (
-	client             *tdx.Client
-	manager            *tdx.Manage
-	taskManager        = NewTaskManager()
-	databaseDir        string
-	collectorRuntime   *collectorpkg.Runtime
-	proFinanceService  *profinance.Service
-	collectorRunActive atomic.Bool
-	collectorJobState  = newCollectorExecutionState()
-	collectorActiveRun = newCollectorActiveRunState()
+	client              *tdx.Client
+	manager             *tdx.Manage
+	taskManager         = NewTaskManager()
+	databaseDir         string
+	collectorRuntime    *collectorpkg.Runtime
+	proFinanceService   *profinance.Service
+	collectorRunActive  atomic.Bool
+	serviceShuttingDown atomic.Bool
+	collectorJobState   = newCollectorExecutionState()
+	collectorActiveRun  = newCollectorActiveRunState()
 )
 
 const (
@@ -225,7 +226,22 @@ func waitForCollectorRunStop(timeout time.Duration) {
 		log.Printf("collector: active task %s stopped", name)
 	case <-time.After(timeout):
 		log.Printf("collector: timeout waiting for active task %s to stop", name)
+		if collectorRuntime != nil {
+			if err := collectorRuntime.InterruptRunningScheduleRuns("collector shutdown timeout"); err != nil {
+				log.Printf("collector: failed to interrupt running schedule runs after timeout: %v", err)
+			} else {
+				log.Printf("collector: marked running schedule runs interrupted after shutdown timeout")
+			}
+		}
 	}
+}
+
+func markServiceShuttingDown() bool {
+	return serviceShuttingDown.CompareAndSwap(false, true)
+}
+
+func isServiceShuttingDown() bool {
+	return serviceShuttingDown.Load()
 }
 
 func shutdownCollectorRuntime() {
@@ -507,8 +523,16 @@ func collectorKlinePeriods() []collectorpkg.KlinePeriod {
 }
 
 func runCollectorStartupSequence() {
+	if isServiceShuttingDown() {
+		log.Printf("collector: startup sequence skipped because shutdown is in progress")
+		return
+	}
 	if err := runCollectorCatchUp("startup"); err != nil {
 		log.Printf("collector startup catch-up 失败: %v", err)
+	}
+	if isServiceShuttingDown() {
+		log.Printf("collector: shutdown in progress, skip missed maintenance after startup")
+		return
 	}
 	if err := runCollectorMissedMaintenance(); err != nil {
 		log.Printf("collector 漏跑补偿失败: %v", err)
@@ -516,6 +540,9 @@ func runCollectorStartupSequence() {
 }
 
 func runCollectorCatchUp(trigger string) error {
+	if isServiceShuttingDown() {
+		return fmt.Errorf("collector shutdown in progress, skip trigger: %s", trigger)
+	}
 	if collectorRuntime == nil {
 		return fmt.Errorf("collector runtime 未初始化，跳过触发: %s", trigger)
 	}
@@ -555,6 +582,9 @@ func runCollectorCatchUp(trigger string) error {
 }
 
 func runCollectorReconcile(trigger, date string) (*collectorpkg.ReconcileReport, error) {
+	if isServiceShuttingDown() {
+		return nil, fmt.Errorf("collector shutdown in progress, skip reconcile: trigger=%s date=%s", trigger, date)
+	}
 	if collectorRuntime == nil {
 		return nil, fmt.Errorf("collector runtime 未初始化，跳过对账: trigger=%s date=%s", trigger, date)
 	}
@@ -589,6 +619,9 @@ func runCollectorReconcile(trigger, date string) (*collectorpkg.ReconcileReport,
 }
 
 func runCollectorMissedMaintenance() error {
+	if isServiceShuttingDown() {
+		return nil
+	}
 	if collectorRuntime == nil {
 		return nil
 	}
@@ -1740,6 +1773,7 @@ func main() {
 			log.Fatal(err)
 		}
 	case sig := <-sigCh:
+		markServiceShuttingDown()
 		log.Printf("收到停服信号: %s，开始优雅关闭", sig)
 		if manager != nil && manager.Cron != nil {
 			cronCtx := manager.Cron.Stop()

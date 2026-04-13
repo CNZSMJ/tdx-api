@@ -215,6 +215,16 @@ func (r *Runtime) Close() error {
 	return nil
 }
 
+func (r *Runtime) InterruptRunningScheduleRuns(reason string) error {
+	if r == nil || r.store == nil {
+		return nil
+	}
+	if _, err := r.store.InterruptRunningScheduleRuns("", reason, r.cfg.Now()); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (r *Runtime) RunStartupCatchUp(ctx context.Context) error {
 	return r.runCatchUp(ctx, r.cfg.ScheduleName, "collector_startup_catchup")
 }
@@ -309,12 +319,18 @@ func (r *Runtime) runCatchUp(ctx context.Context, scheduleName, suiteName string
 		return err
 	}
 	progress("phase=metadata status=done")
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	progress("phase=block_sync status=starting")
 	if err := r.block.SyncBlocks(ctx); err != nil {
 		progress("phase=block_sync status=SKIPPED err=%v", err)
 	} else {
 		progress("phase=block_sync status=done")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	instruments, err := r.provider.Instruments(ctx, InstrumentQuery{
@@ -325,10 +341,16 @@ func (r *Runtime) runCatchUp(ctx context.Context, scheduleName, suiteName string
 	}
 	instruments = normalizeInstruments(instruments)
 	progress("phase=instruments status=done count=%d", len(instruments))
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	// Start the real-time ticker as early as possible (metadata + block + instruments are ready).
 	// This is idempotent — subsequent calls are no-ops if already running.
 	r.ensureTickerStarted(instruments)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// NOTE: signal scanner is started AFTER catch-up completes (see below) so that
 	// K-line DBs are up-to-date and the ticker has published its first snapshot.
 
@@ -337,6 +359,9 @@ func (r *Runtime) runCatchUp(ctx context.Context, scheduleName, suiteName string
 		return err
 	}
 	progress("phase=trading_days status=done count=%d range=%s", len(tradingDays), tradingDayWindow(tradingDays))
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	quoteCodes := quoteCaptureCodes(instruments)
 	if len(quoteCodes) > 0 {
