@@ -92,12 +92,12 @@ Without these three pieces, downstream collector phases risk hard-coupling busin
 
 These controls exist to reduce agent drift and fabricated completion:
 
-- single entry file: [START_HERE.md](/Users/huangjiahao/workspace/tdx-api/docs/collector/START_HERE.md)
-- single phase source of truth: [STATE.yaml](/Users/huangjiahao/workspace/tdx-api/docs/collector/STATE.yaml)
-- single implementation roadmap: [PROGRESS.md](/Users/huangjiahao/workspace/tdx-api/docs/collector/PROGRESS.md)
-- mandatory validation rules: [TEST_MATRIX.md](/Users/huangjiahao/workspace/tdx-api/docs/collector/TEST_MATRIX.md)
-- mandatory data semantics: [DATA_CONTRACT.md](/Users/huangjiahao/workspace/tdx-api/docs/collector/DATA_CONTRACT.md)
-- mandatory work evidence: [WORK_LOG.md](/Users/huangjiahao/workspace/tdx-api/docs/collector/WORK_LOG.md)
+- single entry file: [START_HERE.md](./START_HERE.md)
+- single phase source of truth: [STATE.yaml](./STATE.yaml)
+- single implementation roadmap: [PROGRESS.md](./PROGRESS.md)
+- mandatory validation rules: [TEST_MATRIX.md](./TEST_MATRIX.md)
+- mandatory data semantics: [DATA_CONTRACT.md](./DATA_CONTRACT.md)
+- mandatory work evidence: [WORK_LOG.md](./WORK_LOG.md)
 
 ## Phase Plan
 
@@ -117,11 +117,11 @@ These controls exist to reduce agent drift and fabricated completion:
 
 A phase is complete only when all of the following are true:
 
-- all checklist items in [PROGRESS.md](/Users/huangjiahao/workspace/tdx-api/docs/collector/PROGRESS.md) are complete
-- all blocking tests in [TEST_MATRIX.md](/Users/huangjiahao/workspace/tdx-api/docs/collector/TEST_MATRIX.md) pass
-- affected contracts in [DATA_CONTRACT.md](/Users/huangjiahao/workspace/tdx-api/docs/collector/DATA_CONTRACT.md) are updated
-- [WORK_LOG.md](/Users/huangjiahao/workspace/tdx-api/docs/collector/WORK_LOG.md) contains exact evidence
-- [STATE.yaml](/Users/huangjiahao/workspace/tdx-api/docs/collector/STATE.yaml) has `allowed_to_advance: true`
+- all checklist items in [PROGRESS.md](./PROGRESS.md) are complete
+- all blocking tests in [TEST_MATRIX.md](./TEST_MATRIX.md) pass
+- affected contracts in [DATA_CONTRACT.md](./DATA_CONTRACT.md) are updated
+- [WORK_LOG.md](./WORK_LOG.md) contains exact evidence
+- [STATE.yaml](./STATE.yaml) has `allowed_to_advance: true`
 
 ## Recovery Requirement
 

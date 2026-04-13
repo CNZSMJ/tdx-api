@@ -16,18 +16,18 @@ Build the market-data collector in controlled phases until the final target is c
 
 Read these files in order before doing any work:
 
-1. [MASTER_PLAN.md](/Users/huangjiahao/workspace/tdx-api/docs/collector/MASTER_PLAN.md)
-2. [PROGRESS.md](/Users/huangjiahao/workspace/tdx-api/docs/collector/PROGRESS.md)
-3. [STATE.yaml](/Users/huangjiahao/workspace/tdx-api/docs/collector/STATE.yaml)
-4. [TEST_MATRIX.md](/Users/huangjiahao/workspace/tdx-api/docs/collector/TEST_MATRIX.md)
-5. [DATA_CONTRACT.md](/Users/huangjiahao/workspace/tdx-api/docs/collector/DATA_CONTRACT.md)
-6. [WORK_LOG.md](/Users/huangjiahao/workspace/tdx-api/docs/collector/WORK_LOG.md)
+1. [MASTER_PLAN.md](./MASTER_PLAN.md)
+2. [PROGRESS.md](./PROGRESS.md)
+3. [STATE.yaml](./STATE.yaml)
+4. [TEST_MATRIX.md](./TEST_MATRIX.md)
+5. [DATA_CONTRACT.md](./DATA_CONTRACT.md)
+6. [WORK_LOG.md](./WORK_LOG.md)
 
 Do not skip files. Do not rely on memory from previous sessions.
 
 ## Non-Negotiable Rules
 
-1. Work only on the current phase in [STATE.yaml](/Users/huangjiahao/workspace/tdx-api/docs/collector/STATE.yaml).
+1. Work only on the current phase in [STATE.yaml](./STATE.yaml).
 2. Do not start the next phase until all exit criteria for the current phase are satisfied.
 3. Do not fabricate results, data semantics, test outcomes, or completion state.
 4. If a field meaning is not proven by code, payload samples, or existing docs, record it as unresolved and stop treating it as fact.
@@ -38,9 +38,9 @@ Do not skip files. Do not rely on memory from previous sessions.
 9. Do not mark a phase complete unless:
    - all phase checklist items are complete
    - all blocking tests pass
-   - [WORK_LOG.md](/Users/huangjiahao/workspace/tdx-api/docs/collector/WORK_LOG.md) is updated
-   - [PROGRESS.md](/Users/huangjiahao/workspace/tdx-api/docs/collector/PROGRESS.md) is updated
-   - [STATE.yaml](/Users/huangjiahao/workspace/tdx-api/docs/collector/STATE.yaml) is updated
+   - [WORK_LOG.md](./WORK_LOG.md) is updated
+   - [PROGRESS.md](./PROGRESS.md) is updated
+   - [STATE.yaml](./STATE.yaml) is updated
 10. If upstream instability prevents reliable verification, stop, log the blocker, and do not advance the phase.
 11. If the worktree already contains unrelated user changes, do not revert them.
 
@@ -49,15 +49,15 @@ Do not skip files. Do not rely on memory from previous sessions.
 For every session, follow this exact loop:
 
 1. Read all mandatory files in order.
-2. Confirm the current phase and the single current task from [STATE.yaml](/Users/huangjiahao/workspace/tdx-api/docs/collector/STATE.yaml).
-3. Review the current phase section in [PROGRESS.md](/Users/huangjiahao/workspace/tdx-api/docs/collector/PROGRESS.md).
-4. Review the required validation in [TEST_MATRIX.md](/Users/huangjiahao/workspace/tdx-api/docs/collector/TEST_MATRIX.md).
-5. Review the affected data domain rules in [DATA_CONTRACT.md](/Users/huangjiahao/workspace/tdx-api/docs/collector/DATA_CONTRACT.md).
+2. Confirm the current phase and the single current task from [STATE.yaml](./STATE.yaml).
+3. Review the current phase section in [PROGRESS.md](./PROGRESS.md).
+4. Review the required validation in [TEST_MATRIX.md](./TEST_MATRIX.md).
+5. Review the affected data domain rules in [DATA_CONTRACT.md](./DATA_CONTRACT.md).
 6. Implement only the current task.
 7. Run all blocking tests for the current phase.
-8. Update [WORK_LOG.md](/Users/huangjiahao/workspace/tdx-api/docs/collector/WORK_LOG.md) with exact commands and outcomes.
-9. Update [PROGRESS.md](/Users/huangjiahao/workspace/tdx-api/docs/collector/PROGRESS.md) with completed work and next step.
-10. Update [STATE.yaml](/Users/huangjiahao/workspace/tdx-api/docs/collector/STATE.yaml) with the new machine-readable state.
+8. Update [WORK_LOG.md](./WORK_LOG.md) with exact commands and outcomes.
+9. Update [PROGRESS.md](./PROGRESS.md) with completed work and next step.
+10. Update [STATE.yaml](./STATE.yaml) with the new machine-readable state.
 11. Commit only after the above steps are complete.
 12. Advance to the next phase only if `allowed_to_advance: true` is justified by the completed checklist and passing tests.
 
@@ -78,8 +78,8 @@ Stop and record a blocker immediately if any of the following is true:
 Every work session must leave behind:
 
 - code or docs for the current task
-- exact validation evidence in [WORK_LOG.md](/Users/huangjiahao/workspace/tdx-api/docs/collector/WORK_LOG.md)
-- updated current status in [PROGRESS.md](/Users/huangjiahao/workspace/tdx-api/docs/collector/PROGRESS.md)
-- updated machine state in [STATE.yaml](/Users/huangjiahao/workspace/tdx-api/docs/collector/STATE.yaml)
+- exact validation evidence in [WORK_LOG.md](./WORK_LOG.md)
+- updated current status in [PROGRESS.md](./PROGRESS.md)
+- updated machine state in [STATE.yaml](./STATE.yaml)
 
 If any one of these is missing, the session is incomplete.

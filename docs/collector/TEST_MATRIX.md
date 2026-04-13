@@ -8,7 +8,7 @@ Rules:
 
 - A phase is not complete unless all blocking tests for that phase pass.
 - If a test cannot be run, the phase cannot be marked complete.
-- Every test run must be recorded in [WORK_LOG.md](/Users/huangjiahao/workspace/tdx-api/docs/collector/WORK_LOG.md) with the exact command and outcome.
+- Every test run must be recorded in [WORK_LOG.md](./WORK_LOG.md) with the exact command and outcome.
 - Partial testing is not enough to advance a phase.
 
 ## Global Blocking Tests

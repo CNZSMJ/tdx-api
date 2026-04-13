@@ -2,5 +2,6 @@ data/
 web/data/
 *.db
 *.db-journal
-scripts/__pycache__/
+__pycache__/
+*.py[cod]
 docs/ROADMAP.md
