@@ -7,6 +7,7 @@ import (
 	"time"
 
 	_ "github.com/glebarez/go-sqlite"
+	_ "github.com/injoyai/tdx/internal/appenv"
 	"xorm.io/core"
 	"xorm.io/xorm"
 )

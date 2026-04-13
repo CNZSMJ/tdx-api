@@ -3,6 +3,8 @@ package tdx
 import (
 	"os"
 	"strings"
+
+	_ "github.com/injoyai/tdx/internal/appenv"
 )
 
 const defaultDatabaseDirFallback = "./data/database"
