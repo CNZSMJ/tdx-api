@@ -18,6 +18,7 @@ func EnsureLoaded() {
 	loadOnce.Do(func() {
 		if envPath, ok := findDotEnv(); ok {
 			_ = godotenv.Load(envPath)
+			normalizeRelativeTDXDataDir(envPath)
 		}
 	})
 }

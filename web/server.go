@@ -238,53 +238,23 @@ func shutdownCollectorRuntime() {
 }
 
 func configureDatabaseDir() {
-	if exe, err := os.Executable(); err == nil {
-		exeDir := filepath.Dir(exe)
-		targetDir := filepath.Join(exeDir, "data", "database")
-		legacyDir := filepath.Join(exeDir, "web", "data", "database")
-		databaseDir = targetDir
-
-		if _, err := os.Stat(targetDir); err == nil {
-			return
-		}
-		if _, err := os.Stat(legacyDir); err == nil {
-			_ = os.MkdirAll(targetDir, 0755)
-			for _, name := range []string{"codes.db", "workday.db"} {
-				src := filepath.Join(legacyDir, name)
-				dst := filepath.Join(targetDir, name)
-				if _, err := os.Stat(src); err != nil {
-					continue
-				}
-				if _, err := os.Stat(dst); err == nil {
-					continue
-				}
-				if err := copyFile(src, dst); err == nil {
-					log.Printf("已迁移数据库: %s -> %s", src, dst)
-				}
-			}
-			return
-		}
+	targetDir := tdx.DefaultDatabaseDir
+	if targetDir == "" {
+		targetDir = defaultProjectDatabaseDir()
 	}
+	databaseDir = targetDir
 
-	_, sourceFile, _, ok := runtime.Caller(0)
-	if !ok {
+	if strings.TrimSpace(os.Getenv("TDX_DATA_DIR")) != "" {
 		return
 	}
 
-	webDir := filepath.Dir(sourceFile)
-	projectRoot := filepath.Dir(webDir)
-	targetDir := filepath.Join(projectRoot, "data", "database")
-	legacyDir := filepath.Join(projectRoot, "web", "data", "database")
-	databaseDir = targetDir
-
+	legacyDir := legacyProjectDatabaseDir()
 	if _, err := os.Stat(targetDir); err == nil {
 		return
 	}
-
 	if _, err := os.Stat(legacyDir); err != nil {
 		return
 	}
-
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		log.Printf("创建统一数据目录失败: %v", err)
 		return
@@ -305,6 +275,33 @@ func configureDatabaseDir() {
 		}
 		log.Printf("已迁移数据库: %s -> %s", src, dst)
 	}
+}
+
+func defaultProjectDatabaseDir() string {
+	if exe, err := os.Executable(); err == nil {
+		targetDir := filepath.Join(filepath.Dir(exe), "data", "database")
+		if _, err := os.Stat(targetDir); err == nil {
+			return targetDir
+		}
+	}
+
+	_, sourceFile, _, ok := runtime.Caller(0)
+	if ok {
+		webDir := filepath.Dir(sourceFile)
+		projectRoot := filepath.Dir(webDir)
+		return filepath.Join(projectRoot, "data", "database")
+	}
+	return "./data/database"
+}
+
+func legacyProjectDatabaseDir() string {
+	_, sourceFile, _, ok := runtime.Caller(0)
+	if !ok {
+		return "./web/data/database"
+	}
+	webDir := filepath.Dir(sourceFile)
+	projectRoot := filepath.Dir(webDir)
+	return filepath.Join(projectRoot, "web", "data", "database")
 }
 
 func copyFile(src, dst string) error {

@@ -10,6 +10,7 @@ services:
     restart: unless-stopped
     environment:
       - TZ=Asia/Shanghai
+      - TDX_DATA_DIR=/app/data/database
       # 与 TDX 连接池同宽；补采吞吐约与并发数成正比，过大可能被服务端限流（上限见 web/server.go collectorMaxCatchupWorkers）
       - COLLECTOR_CATCHUP_WORKERS=32
       - COLLECTOR_REQUEST_MIN_INTERVAL=150ms

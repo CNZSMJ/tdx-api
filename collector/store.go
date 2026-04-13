@@ -7,7 +7,7 @@ import (
 	"time"
 
 	_ "github.com/glebarez/go-sqlite"
-	_ "github.com/injoyai/tdx/internal/appenv"
+	"github.com/injoyai/tdx/internal/appenv"
 	"xorm.io/core"
 	"xorm.io/xorm"
 )
@@ -17,11 +17,7 @@ const DefaultDBName = "collector.db"
 var DefaultBaseDir = resolveDefaultBaseDir()
 
 func resolveDefaultBaseDir() string {
-	dir := strings.TrimSpace(os.Getenv("TDX_DATA_DIR"))
-	if dir == "" {
-		return "./data/database"
-	}
-	return dir
+	return appenv.ResolveTDXDataDir("./data/database")
 }
 
 func DefaultDBPath(baseDir string) string {
