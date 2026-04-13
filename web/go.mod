@@ -2,7 +2,10 @@ module web
 
 go 1.23
 
-require github.com/injoyai/tdx v0.0.0
+require (
+	github.com/google/uuid v1.5.0
+	github.com/injoyai/tdx v0.0.0
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
@@ -11,11 +14,11 @@ require (
 	github.com/go-sql-driver/mysql v1.7.0 // indirect
 	github.com/goccy/go-json v0.8.1 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
-	github.com/google/uuid v1.5.0 // indirect
 	github.com/injoyai/base v1.2.17 // indirect
 	github.com/injoyai/conv v1.2.5 // indirect
 	github.com/injoyai/ios v1.2.2 // indirect
 	github.com/injoyai/logs v1.0.12 // indirect
+	github.com/joho/godotenv v1.5.1 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
