@@ -68,20 +68,21 @@ type MarketOverview struct {
 
 // BlockRank is the aggregated ranking entry for a single block.
 type BlockRank struct {
-	Name             string  `json:"name"`
-	BlockType        string  `json:"block_type"`
-	PctChange        float64 `json:"pct_change"`
-	Amount           float64 `json:"amount"`
-	LeadingCode      string  `json:"leading_stock_code"`
-	LeadingName      string  `json:"leading_stock_name"`
-	LeadingPct       float64 `json:"leading_stock_pct"`
-	RiseCount        int     `json:"rise_count"`
-	FallCount        int     `json:"fall_count"`
-	FlatCount        int     `json:"flat_count"`
-	LimitUpCount     int     `json:"limit_up_count"`
-	LimitDownCount   int     `json:"limit_down_count"`
-	MemberCount      int     `json:"member_count"`
-	AvailableCount   int     `json:"available_count"`
+	Name           string  `json:"name"`
+	Source         string  `json:"source"`
+	BlockType      string  `json:"block_type"`
+	PctChange      float64 `json:"pct_change"`
+	Amount         float64 `json:"amount"`
+	LeadingCode    string  `json:"leading_stock_code"`
+	LeadingName    string  `json:"leading_stock_name"`
+	LeadingPct     float64 `json:"leading_stock_pct"`
+	RiseCount      int     `json:"rise_count"`
+	FallCount      int     `json:"fall_count"`
+	FlatCount      int     `json:"flat_count"`
+	LimitUpCount   int     `json:"limit_up_count"`
+	LimitDownCount int     `json:"limit_down_count"`
+	MemberCount    int     `json:"member_count"`
+	AvailableCount int     `json:"available_count"`
 }
 
 type tickerCache struct {
@@ -114,16 +115,16 @@ type LimitSidePublic struct {
 // TickerService provides near-real-time market snapshots by polling TDX
 // every N seconds during trading hours.
 type TickerService struct {
-	provider    QuoteProvider
-	block       *BlockService
-	cfg         TickerConfig
-	mu          sync.RWMutex
-	cache       tickerCache
-	cancel      context.CancelFunc
-	running     bool
-	limitUp     map[string]*limitSideState
-	limitDown   map[string]*limitSideState
-	limitDate   string
+	provider  QuoteProvider
+	block     *BlockService
+	cfg       TickerConfig
+	mu        sync.RWMutex
+	cache     tickerCache
+	cancel    context.CancelFunc
+	running   bool
+	limitUp   map[string]*limitSideState
+	limitDown map[string]*limitSideState
+	limitDate string
 }
 
 func NewTickerService(provider QuoteProvider, block *BlockService, cfg TickerConfig) *TickerService {
@@ -228,13 +229,16 @@ func limitStateToPublic(s *limitSideState, isUp bool) *LimitSidePublic {
 }
 
 // GetBlockRanking returns a sorted copy of block rankings.
-func (t *TickerService) GetBlockRanking(blockType string, sortBy string, order string, limit int) []BlockRank {
+func (t *TickerService) GetBlockRanking(source, blockType string, sortBy string, order string, limit int) []BlockRank {
 	t.mu.RLock()
 	src := t.cache.blocks
 	t.mu.RUnlock()
 
 	var filtered []BlockRank
 	for _, b := range src {
+		if source != "" && b.Source != source {
+			continue
+		}
 		if blockType != "" && b.BlockType != blockType {
 			continue
 		}
@@ -250,8 +254,8 @@ func (t *TickerService) GetBlockRanking(blockType string, sortBy string, order s
 }
 
 // GetBlockStocks returns sorted stock ticks for a given block.
-func (t *TickerService) GetBlockStocks(blockType, blockName string, sortBy string, order string, limit int) (blockPct float64, ticks []StockTick) {
-	codes := t.block.GetBlockMembers(blockType, blockName)
+func (t *TickerService) GetBlockStocks(source, blockType, blockName string, sortBy string, order string, limit int) (blockPct float64, ticks []StockTick) {
+	codes := t.block.GetBlockMembers(source, blockType, blockName)
 	if len(codes) == 0 {
 		return 0, nil
 	}
@@ -268,7 +272,7 @@ func (t *TickerService) GetBlockStocks(blockType, blockName string, sortBy strin
 	}
 
 	for _, b := range cache.blocks {
-		if b.Name == blockName && (blockType == "" || b.BlockType == blockType) {
+		if b.Name == blockName && b.Source == source && (blockType == "" || b.BlockType == blockType) {
 			blockPct = b.PctChange
 			break
 		}
@@ -630,9 +634,10 @@ func (t *TickerService) aggregateBlocks(stocks map[string]*StockTick) []BlockRan
 	ranks := make([]BlockRank, 0, len(allGroups))
 
 	for _, grp := range allGroups {
-		members := t.block.GetBlockMembers(grp.BlockType, grp.Name)
+		members := t.block.GetBlockMembers(grp.Source, grp.BlockType, grp.Name)
 		rank := BlockRank{
 			Name:        grp.Name,
+			Source:      grp.Source,
 			BlockType:   grp.BlockType,
 			MemberCount: len(members),
 		}

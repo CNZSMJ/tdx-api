@@ -513,116 +513,12 @@ func handleGetCodes(w http.ResponseWriter, r *http.Request) {
 
 // 批量获取行情
 func handleBatchQuote(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		errorResponse(w, "只支持POST请求")
-		return
-	}
-
-	var req struct {
-		Codes []string `json:"codes"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		errorResponse(w, "请求参数错误: "+err.Error())
-		return
-	}
-
-	if len(req.Codes) == 0 {
-		errorResponse(w, "股票代码列表不能为空")
-		return
-	}
-
-	// 限制最多50只
-	if len(req.Codes) > 50 {
-		errorResponse(w, "一次最多查询50只股票")
-		return
-	}
-
-	quotes, err := client.GetQuote(req.Codes...)
-	if err != nil {
-		errorResponse(w, fmt.Sprintf("获取行情失败: %v", err))
-		return
-	}
-
-	successResponse(w, quotes)
+	serveBatchQuoteSnapshots(w, r)
 }
 
 // 获取历史K线（指定范围，日/周/月K线使用前复权）
 func handleGetKlineHistory(w http.ResponseWriter, r *http.Request) {
-	code := r.URL.Query().Get("code")
-	klineType := r.URL.Query().Get("type")
-	limitStr := r.URL.Query().Get("limit")
-
-	if code == "" {
-		errorResponse(w, "股票代码不能为空")
-		return
-	}
-
-	// 解析limit，默认100，最大800
-	limit := uint16(100)
-	if limitStr != "" {
-		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
-			if l > 800 {
-				l = 800
-			}
-			limit = uint16(l)
-		}
-	}
-
-	var resp *protocol.KlineResp
-	var err error
-
-	switch klineType {
-	case "minute1":
-		resp, err = client.GetKlineMinute(code, 0, limit)
-	case "minute5":
-		resp, err = client.GetKline5Minute(code, 0, limit)
-	case "minute15":
-		resp, err = client.GetKline15Minute(code, 0, limit)
-	case "minute30":
-		resp, err = client.GetKline30Minute(code, 0, limit)
-	case "hour":
-		resp, err = client.GetKlineHour(code, 0, limit)
-	case "week":
-		// 周K线使用前复权
-		resp, err = getQfqKlineDay(code)
-		if err == nil {
-			resp = convertToWeekKline(resp)
-			// 限制返回数量
-			if len(resp.List) > int(limit) {
-				resp.List = resp.List[len(resp.List)-int(limit):]
-				resp.Count = limit
-			}
-		}
-	case "month":
-		// 月K线使用前复权
-		resp, err = getQfqKlineDay(code)
-		if err == nil {
-			resp = convertToMonthKline(resp)
-			// 限制返回数量
-			if len(resp.List) > int(limit) {
-				resp.List = resp.List[len(resp.List)-int(limit):]
-				resp.Count = limit
-			}
-		}
-	case "day":
-		fallthrough
-	default:
-		// 日K线使用前复权
-		resp, err = getQfqKlineDay(code)
-		if err == nil && len(resp.List) > int(limit) {
-			// 只返回最近limit条
-			resp.List = resp.List[len(resp.List)-int(limit):]
-			resp.Count = limit
-		}
-	}
-
-	if err != nil {
-		errorResponse(w, fmt.Sprintf("获取K线失败: %v", err))
-		return
-	}
-
-	successResponse(w, resp)
+	serveHistoricalBars(w, r)
 }
 
 // 获取指数数据
@@ -1619,116 +1515,17 @@ func buildExtendKlines(code string, list []*protocol.Kline) extend.Klines {
 
 // 获取板块列表
 func handleGetBlocks(w http.ResponseWriter, r *http.Request) {
-	if collectorRuntime == nil {
-		errorResponse(w, "collector runtime 未初始化")
-		return
-	}
-	bs := collectorRuntime.BlockService()
-	if bs == nil {
-		errorResponse(w, "板块服务未初始化")
-		return
-	}
-
-	typeFilter := strings.TrimSpace(r.URL.Query().Get("type"))
-	keyword := strings.TrimSpace(r.URL.Query().Get("keyword"))
-
-	var records []collectorpkg.BlockGroupRecord
-	if keyword != "" {
-		records = bs.SearchBlocks(keyword)
-	} else {
-		records = bs.GetBlocks(collectorpkg.BlockType(typeFilter))
-	}
-
-	type blockItem struct {
-		Name       string `json:"name"`
-		BlockType  string `json:"block_type"`
-		Source     string `json:"source"`
-		StockCount int    `json:"stock_count"`
-	}
-	items := make([]blockItem, 0, len(records))
-	for _, r := range records {
-		items = append(items, blockItem{
-			Name:       r.Name,
-			BlockType:  r.BlockType,
-			Source:     r.Source,
-			StockCount: r.StockCount,
-		})
-	}
-
-	successResponse(w, map[string]interface{}{
-		"count": len(items),
-		"list":  items,
-	})
+	serveBlocks(w, r)
 }
 
 // 获取板块成份股
 func handleGetBlockMembers(w http.ResponseWriter, r *http.Request) {
-	if collectorRuntime == nil {
-		errorResponse(w, "collector runtime 未初始化")
-		return
-	}
-	bs := collectorRuntime.BlockService()
-	if bs == nil {
-		errorResponse(w, "板块服务未初始化")
-		return
-	}
-
-	name := strings.TrimSpace(r.URL.Query().Get("name"))
-	if name == "" {
-		errorResponse(w, "name 为必填参数")
-		return
-	}
-	blockType := strings.TrimSpace(r.URL.Query().Get("type"))
-
-	codes := bs.GetBlockMembers(blockType, name)
-	successResponse(w, map[string]interface{}{
-		"block_name": name,
-		"count":      len(codes),
-		"codes":      codes,
-	})
+	serveBlockMembers(w, r)
 }
 
 // 获取个股所属板块
 func handleGetStockBlocks(w http.ResponseWriter, r *http.Request) {
-	if collectorRuntime == nil {
-		errorResponse(w, "collector runtime 未初始化")
-		return
-	}
-	bs := collectorRuntime.BlockService()
-	if bs == nil {
-		errorResponse(w, "板块服务未初始化")
-		return
-	}
-
-	code := strings.TrimSpace(r.URL.Query().Get("code"))
-	if code == "" {
-		errorResponse(w, "code 为必填参数")
-		return
-	}
-
-	groups := bs.GetStockBlocks(code)
-
-	type blockItem struct {
-		Name       string `json:"name"`
-		BlockType  string `json:"block_type"`
-		Source     string `json:"source"`
-		StockCount int    `json:"stock_count"`
-	}
-	items := make([]blockItem, 0, len(groups))
-	for _, g := range groups {
-		items = append(items, blockItem{
-			Name:       g.Name,
-			BlockType:  g.BlockType,
-			Source:     g.Source,
-			StockCount: g.StockCount,
-		})
-	}
-
-	successResponse(w, map[string]interface{}{
-		"code":  code,
-		"count": len(items),
-		"list":  items,
-	})
+	serveStockBlocks(w, r)
 }
 
 func parseBool(value string) bool {
@@ -2097,62 +1894,11 @@ func handleMarketSignal(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleBlockRanking(w http.ResponseWriter, r *http.Request) {
-	ts := getTickerService()
-	if ts == nil {
-		errorResponse(w, "实时行情服务未初始化")
-		return
-	}
-
-	blockType := strings.TrimSpace(r.URL.Query().Get("type"))
-	sortBy := strings.TrimSpace(r.URL.Query().Get("sort_by"))
-	order := strings.TrimSpace(r.URL.Query().Get("order"))
-	limit := 0
-	if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-		}
-	}
-
-	ranks := ts.GetBlockRanking(blockType, sortBy, order, limit)
-	resp := map[string]interface{}{
-		"count": len(ranks),
-		"list":  ranks,
-	}
-	addTickerMeta(resp, ts)
-	successResponse(w, resp)
+	serveBlockRanking(w, r)
 }
 
 func handleBlockStocks(w http.ResponseWriter, r *http.Request) {
-	ts := getTickerService()
-	if ts == nil {
-		errorResponse(w, "实时行情服务未初始化")
-		return
-	}
-
-	name := strings.TrimSpace(r.URL.Query().Get("name"))
-	if name == "" {
-		errorResponse(w, "name 为必填参数")
-		return
-	}
-	blockType := strings.TrimSpace(r.URL.Query().Get("type"))
-	sortBy := strings.TrimSpace(r.URL.Query().Get("sort_by"))
-	order := strings.TrimSpace(r.URL.Query().Get("order"))
-	limit := 0
-	if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-		}
-	}
-
-	blockPct, ticks := ts.GetBlockStocks(blockType, name, sortBy, order, limit)
-	resp := map[string]interface{}{
-		"block_name":       name,
-		"block_pct_change": blockPct,
-		"count":            len(ticks),
-		"list":             ticks,
-	}
-	addTickerMeta(resp, ts)
-	successResponse(w, resp)
+	serveBlockStocks(w, r)
 }
 
 func handleTickerStatus(w http.ResponseWriter, _ *http.Request) {

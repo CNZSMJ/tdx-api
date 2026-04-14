@@ -30,6 +30,7 @@ type BlockConfig struct {
 // blockCacheKey uniquely identifies a block by (blockType, name).
 // Two different block types may reuse the same name; this prevents collision.
 type blockCacheKey struct {
+	source    string
 	blockType string
 	name      string
 }
@@ -37,10 +38,10 @@ type blockCacheKey struct {
 // blockCache holds the in-memory index built from block data.
 // All query methods read from here instead of hitting SQLite.
 type blockCache struct {
-	groups       []BlockGroupRecord                    // all groups sorted by name
-	byType       map[string][]BlockGroupRecord         // blockType -> groups
-	membersByBlk map[blockCacheKey][]string            // (type,name) -> []code
-	blocksByCode map[string][]BlockGroupRecord         // code -> groups
+	groups       []BlockGroupRecord            // all groups sorted by name
+	byType       map[string][]BlockGroupRecord // blockType -> groups
+	membersByBlk map[blockCacheKey][]string    // (source,type,name) -> []code
+	blocksByCode map[string][]BlockGroupRecord // code -> groups
 	loaded       bool
 }
 
@@ -65,6 +66,7 @@ func (*BlockGroupRecord) TableName() string { return "block_group" }
 
 type BlockMemberRecord struct {
 	ID        int64     `xorm:"pk autoincr"`
+	Source    string    `xorm:"varchar(64) index notnull"`
 	BlockName string    `xorm:"varchar(64) index notnull"`
 	BlockType string    `xorm:"varchar(32) index notnull"`
 	Code      string    `xorm:"varchar(16) index notnull"`
@@ -144,6 +146,7 @@ func (s *BlockService) SyncBlocks(ctx context.Context) error {
 			})
 			for _, code := range info.Codes {
 				allMembers = append(allMembers, BlockMemberRecord{
+					Source:    info.Source,
 					BlockName: info.Name,
 					BlockType: string(info.BlockType),
 					Code:      code,
@@ -233,23 +236,11 @@ func blockSelectiveDelete(session *xorm.Session, newGroups []BlockGroupRecord) e
 		return err
 	}
 
-	namesByType := make(map[string][]string)
-	for _, g := range newGroups {
-		namesByType[g.BlockType] = append(namesByType[g.BlockType], g.Name)
-	}
-	for bt, names := range namesByType {
-		ph := make([]string, len(names))
-		exec := make([]interface{}, 0, len(names)+2)
-		exec = append(exec, "") // placeholder for the SQL string
-		exec = append(exec, bt)
-		for i, n := range names {
-			ph[i] = "?"
-			exec = append(exec, n)
-		}
-		exec[0] = "DELETE FROM block_member WHERE block_type = ? AND block_name IN (" + strings.Join(ph, ",") + ")"
-		if _, err := session.Exec(exec...); err != nil {
-			return err
-		}
+	memberExec := make([]interface{}, len(srcExec))
+	copy(memberExec, srcExec)
+	memberExec[0] = "DELETE FROM block_member WHERE source IN (" + strings.Join(srcPh, ",") + ")"
+	if _, err := session.Exec(memberExec...); err != nil {
+		return err
 	}
 	return nil
 }
@@ -270,21 +261,12 @@ func (s *BlockService) GetBlocks(blockType BlockType) []BlockGroupRecord {
 	return out
 }
 
-func (s *BlockService) GetBlockMembers(blockType, blockName string) []string {
+func (s *BlockService) GetBlockMembers(source, blockType, blockName string) []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if blockType != "" {
-		src := s.cache.membersByBlk[blockCacheKey{blockType, blockName}]
-		out := make([]string, len(src))
-		copy(out, src)
-		return out
-	}
-	var out []string
-	for k, codes := range s.cache.membersByBlk {
-		if k.name == blockName {
-			out = append(out, codes...)
-		}
-	}
+	src := s.cache.membersByBlk[blockCacheKey{source: source, blockType: blockType, name: blockName}]
+	out := make([]string, len(src))
+	copy(out, src)
 	return out
 }
 
@@ -377,7 +359,7 @@ func (s *BlockService) rebuildCache(groups []BlockGroupRecord, members []BlockMe
 	for i := range groups {
 		g := &groups[i]
 		byType[g.BlockType] = append(byType[g.BlockType], *g)
-		groupByKey[blockCacheKey{g.BlockType, g.Name}] = g
+		groupByKey[blockCacheKey{source: g.Source, blockType: g.BlockType, name: g.Name}] = g
 	}
 
 	membersByBlk := make(map[blockCacheKey][]string, len(groups))
@@ -385,7 +367,7 @@ func (s *BlockService) rebuildCache(groups []BlockGroupRecord, members []BlockMe
 
 	for i := range members {
 		m := &members[i]
-		key := blockCacheKey{m.BlockType, m.BlockName}
+		key := blockCacheKey{source: m.Source, blockType: m.BlockType, name: m.BlockName}
 		membersByBlk[key] = append(membersByBlk[key], m.Code)
 		if g, ok := groupByKey[key]; ok {
 			blocksByCode[m.Code] = append(blocksByCode[m.Code], *g)
@@ -396,7 +378,7 @@ func (s *BlockService) rebuildCache(groups []BlockGroupRecord, members []BlockMe
 		seen := make(map[blockCacheKey]struct{}, len(gs))
 		deduped := gs[:0]
 		for _, g := range gs {
-			k := blockCacheKey{g.BlockType, g.Name}
+			k := blockCacheKey{source: g.Source, blockType: g.BlockType, name: g.Name}
 			if _, ok := seen[k]; ok {
 				continue
 			}
@@ -406,6 +388,9 @@ func (s *BlockService) rebuildCache(groups []BlockGroupRecord, members []BlockMe
 		sort.Slice(deduped, func(i, j int) bool {
 			if deduped[i].BlockType != deduped[j].BlockType {
 				return deduped[i].BlockType < deduped[j].BlockType
+			}
+			if deduped[i].Source != deduped[j].Source {
+				return deduped[i].Source < deduped[j].Source
 			}
 			return deduped[i].Name < deduped[j].Name
 		})

@@ -2,9 +2,12 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,27 +27,27 @@ type SignalConfig struct {
 
 // SignalItem is one symbol flagged by the scanner.
 type SignalItem struct {
-	Code       string  `json:"code"`
-	Name       string  `json:"name"`
-	SignalType string  `json:"signal_type"` // new_high | new_low | volume_spike
-	Window     int     `json:"window,omitempty"`
-	Price      float64 `json:"price,omitempty"`
-	High       float64 `json:"ref_high,omitempty"`
-	Low        float64 `json:"ref_low,omitempty"`
-	Volume     int64   `json:"volume,omitempty"`
-	AvgVolume  float64 `json:"avg_volume,omitempty"`
+	Code        string  `json:"code"`
+	Name        string  `json:"name"`
+	SignalType  string  `json:"signal_type"` // new_high | new_low | volume_spike
+	Window      int     `json:"window,omitempty"`
+	Price       float64 `json:"price,omitempty"`
+	High        float64 `json:"ref_high,omitempty"`
+	Low         float64 `json:"ref_low,omitempty"`
+	Volume      int64   `json:"volume,omitempty"`
+	AvgVolume   float64 `json:"avg_volume,omitempty"`
 	VolumeRatio float64 `json:"volume_ratio,omitempty"`
-	ChangePct  float64 `json:"change_pct,omitempty"`
+	ChangePct   float64 `json:"change_pct,omitempty"`
 }
 
 // SignalSnapshot is the published result of one full scan (atomic swap).
 type SignalSnapshot struct {
-	Status         string        `json:"status"` // ready (internal); API may override scanning/stale/not_ready
-	UpdatedAt      time.Time     `json:"updated_at"`
-	ScanDurationMs int64         `json:"scan_duration_ms"`
-	NewHigh        []SignalItem  `json:"new_high"`
-	NewLow         []SignalItem  `json:"new_low"`
-	VolumeSpike    []SignalItem  `json:"volume_spike"`
+	Status         string       `json:"status"` // ready (internal); API may override scanning/stale/not_ready
+	UpdatedAt      time.Time    `json:"updated_at"`
+	ScanDurationMs int64        `json:"scan_duration_ms"`
+	NewHigh        []SignalItem `json:"new_high"`
+	NewLow         []SignalItem `json:"new_low"`
+	VolumeSpike    []SignalItem `json:"volume_spike"`
 }
 
 // SignalService scans per-code K-line SQLite files and compares to Ticker snapshots.
@@ -139,6 +142,68 @@ func (s *SignalService) Snapshot() (snap SignalSnapshot, apiStatus string) {
 	return snap, apiStatus
 }
 
+func (s *SignalService) CheckCodes(codes []string, signalTypes []string) ([]SignalItem, error) {
+	if s.ticker == nil {
+		return nil, errors.New("signal check requires ticker service")
+	}
+	if s.cfg.KlineBaseDir == "" {
+		return nil, errors.New("signal check requires kline base dir")
+	}
+
+	filter, err := normalizeSignalTypeFilter(signalTypes)
+	if err != nil {
+		return nil, err
+	}
+
+	now := s.cfg.Now()
+	uniq := make(map[string]struct{}, len(codes))
+	items := make([]SignalItem, 0, len(codes))
+	for _, rawCode := range codes {
+		code := strings.TrimSpace(rawCode)
+		if code == "" {
+			continue
+		}
+		if _, ok := uniq[code]; ok {
+			continue
+		}
+		uniq[code] = struct{}{}
+
+		tick := s.ticker.GetStockTick(code)
+		if tick == nil {
+			continue
+		}
+
+		dbPath := filepath.Join(s.cfg.KlineBaseDir, code+".db")
+		if _, err := os.Stat(dbPath); err != nil {
+			continue
+		}
+		engine, err := openMetadataEngine(dbPath)
+		if err != nil {
+			continue
+		}
+		var rows []KlinePublishRow
+		if err := engine.Table("DayKline").Desc("Date").Limit(s.cfg.HighLowWindow + s.cfg.VolumeLookback + 3).Find(&rows); err != nil {
+			_ = engine.Close()
+			continue
+		}
+		_ = engine.Close()
+
+		for _, item := range evaluateSignalItems(tick, rows, s.cfg.HighLowWindow, s.cfg.VolumeLookback, now, s.cfg.VolumeRatioMin) {
+			if filter[item.SignalType] {
+				items = append(items, item)
+			}
+		}
+	}
+
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Code != items[j].Code {
+			return items[i].Code < items[j].Code
+		}
+		return items[i].SignalType < items[j].SignalType
+	})
+	return items, nil
+}
+
 func (s *SignalService) loop(ctx context.Context) {
 	// Wait until the ticker has published at least one snapshot, otherwise the
 	// first scan would see nil for every GetStockTick and publish an empty
@@ -195,9 +260,9 @@ func (s *SignalService) runOneScan() {
 
 	start := s.cfg.Now()
 	next := &SignalSnapshot{
-		Status:    "ready",
-		NewHigh:   make([]SignalItem, 0, 64),
-		NewLow:    make([]SignalItem, 0, 64),
+		Status:      "ready",
+		NewHigh:     make([]SignalItem, 0, 64),
+		NewLow:      make([]SignalItem, 0, 64),
 		VolumeSpike: make([]SignalItem, 0, 64),
 	}
 
@@ -249,73 +314,113 @@ func (s *SignalService) scanCode(engine *xorm.Engine, code string, win, vlb int,
 		return
 	}
 
-	loc := s.cfg.Now().Location()
-	today0 := time.Date(s.cfg.Now().Year(), s.cfg.Now().Month(), s.cfg.Now().Day(), 0, 0, 0, 0, loc).Unix()
+	for _, item := range evaluateSignalItems(tick, rows, win, vlb, s.cfg.Now(), s.cfg.VolumeRatioMin) {
+		switch item.SignalType {
+		case "new_high":
+			next.NewHigh = append(next.NewHigh, item)
+		case "new_low":
+			next.NewLow = append(next.NewLow, item)
+		case "volume_spike":
+			next.VolumeSpike = append(next.VolumeSpike, item)
+		}
+	}
+}
 
-	i := 0
+func normalizeSignalTypeFilter(signalTypes []string) (map[string]bool, error) {
+	filter := make(map[string]bool, 3)
+	for _, raw := range signalTypes {
+		switch normalized := strings.TrimSpace(strings.ToLower(raw)); normalized {
+		case "new_high", "new_low", "volume_spike":
+			filter[normalized] = true
+		case "":
+			continue
+		default:
+			return nil, errors.New("unsupported signal type: " + normalized)
+		}
+	}
+	if len(filter) == 0 {
+		return map[string]bool{
+			"new_high":     true,
+			"new_low":      true,
+			"volume_spike": true,
+		}, nil
+	}
+	return filter, nil
+}
+
+func evaluateSignalItems(tick *StockTick, rows []KlinePublishRow, win, vlb int, now time.Time, volumeRatioMin float64) []SignalItem {
+	if tick == nil || len(rows) < win+1 {
+		return nil
+	}
+
+	loc := now.Location()
+	today0 := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc).Unix()
+
+	index := 0
 	if len(rows) > 0 && rows[0].Date >= today0 {
-		i = 1
+		index = 1
 	}
-	if i+win > len(rows) {
-		return
+	if index+win > len(rows) {
+		return nil
 	}
-	hist := rows[i : i+win]
+	hist := rows[index : index+win]
 
-	var maxH, minL PriceMilli
-	for j := range hist {
-		if j == 0 {
-			maxH = hist[j].High
-			minL = hist[j].Low
+	var maxHigh, minLow PriceMilli
+	for i := range hist {
+		if i == 0 {
+			maxHigh = hist[i].High
+			minLow = hist[i].Low
 			continue
 		}
-		if hist[j].High > maxH {
-			maxH = hist[j].High
+		if hist[i].High > maxHigh {
+			maxHigh = hist[i].High
 		}
-		if hist[j].Low < minL {
-			minL = hist[j].Low
+		if hist[i].Low < minLow {
+			minLow = hist[i].Low
 		}
 	}
 
-	th := maxH.Float64()
-	tl := minL.Float64()
-	if tick.High >= th-1e-9 {
-		next.NewHigh = append(next.NewHigh, SignalItem{
-			Code:       code,
+	items := make([]SignalItem, 0, 3)
+	refHigh := maxHigh.Float64()
+	refLow := minLow.Float64()
+	if tick.High >= refHigh-1e-9 {
+		items = append(items, SignalItem{
+			Code:       tick.Code,
 			Name:       tick.Name,
 			SignalType: "new_high",
 			Window:     win,
 			Price:      tick.Last,
-			High:       th,
+			High:       refHigh,
 			Low:        tick.Low,
 			Volume:     tick.Volume,
 			ChangePct:  tick.PctChange,
 		})
 	}
-	if tick.Low <= tl+1e-9 {
-		next.NewLow = append(next.NewLow, SignalItem{
-			Code:       code,
+	if tick.Low <= refLow+1e-9 {
+		items = append(items, SignalItem{
+			Code:       tick.Code,
 			Name:       tick.Name,
 			SignalType: "new_low",
 			Window:     win,
 			Price:      tick.Last,
-			Low:        tl,
+			Low:        refLow,
 			High:       tick.High,
 			Volume:     tick.Volume,
 			ChangePct:  tick.PctChange,
 		})
 	}
 
-	if i+win+vlb <= len(rows) {
-		volSlice := rows[i+win : i+win+vlb]
+	if index+win+vlb <= len(rows) {
+		volSlice := rows[index+win : index+win+vlb]
 		var sum int64
-		for _, r := range volSlice {
-			sum += r.Volume
+		for _, row := range volSlice {
+			sum += row.Volume
 		}
 		if len(volSlice) > 0 {
 			avg := float64(sum) / float64(len(volSlice))
-			if avg > 0 && float64(tick.Volume)/avg >= s.cfg.VolumeRatioMin {
-				next.VolumeSpike = append(next.VolumeSpike, SignalItem{
-					Code:        code,
+			if avg > 0 && float64(tick.Volume)/avg >= volumeRatioMin {
+				items = append(items, SignalItem{
+					Code:        tick.Code,
 					Name:        tick.Name,
 					SignalType:  "volume_spike",
 					Window:      vlb,
@@ -328,4 +433,6 @@ func (s *SignalService) scanCode(engine *xorm.Engine, code string, win, vlb int,
 			}
 		}
 	}
+
+	return items
 }

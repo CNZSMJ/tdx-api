@@ -759,25 +759,7 @@ func errorResponse(w http.ResponseWriter, message string) {
 
 // 获取五档行情
 func handleGetQuote(w http.ResponseWriter, r *http.Request) {
-	codeParam := r.URL.Query().Get("code")
-	if codeParam == "" {
-		errorResponse(w, "股票代码不能为空")
-		return
-	}
-
-	codes := splitCodes(codeParam)
-	if len(codes) == 0 {
-		errorResponse(w, "股票代码不能为空")
-		return
-	}
-
-	quotes, err := client.GetQuote(codes...)
-	if err != nil {
-		errorResponse(w, fmt.Sprintf("获取行情失败: %v", err))
-		return
-	}
-
-	successResponse(w, quotes)
+	serveQuoteSnapshots(w, r)
 }
 
 // 获取K线数据（日K线默认使用前复权）
@@ -996,33 +978,7 @@ func getISOWeek(t time.Time) int {
 
 // 获取分时数据
 func handleGetMinute(w http.ResponseWriter, r *http.Request) {
-	code := r.URL.Query().Get("code")
-	date := r.URL.Query().Get("date")
-	if code == "" {
-		errorResponse(w, "股票代码不能为空")
-		return
-	}
-
-	resp, usedDate, err := getMinuteWithFallback(code, date)
-	if err != nil {
-		errorResponse(w, fmt.Sprintf("获取分时数据失败: %v", err))
-		return
-	}
-
-	if resp == nil {
-		successResponse(w, map[string]interface{}{
-			"date":  usedDate,
-			"Count": 0,
-			"List":  []interface{}{},
-		})
-		return
-	}
-
-	successResponse(w, map[string]interface{}{
-		"date":  usedDate,
-		"Count": resp.Count,
-		"List":  resp.List,
-	})
+	serveIntradayBars(w, r)
 }
 
 // 获取分时成交
@@ -1647,57 +1603,18 @@ func getMinuteWithFallback(code, date string) (*protocol.MinuteResp, string, err
 		target = baseDate.Format("20060102")
 	}
 
-	candidates := []string{target}
-	const maxLookback = 10
-
-	if manager != nil && manager.Workday != nil {
-		for _, item := range collectNeighborWorkdays(baseDate, maxLookback, -1) {
-			if numeric := strings.TrimSpace(item["numeric"]); numeric != "" && numeric != target {
-				candidates = append(candidates, numeric)
-			}
-		}
-	} else {
-		for i := 1; i <= maxLookback; i++ {
-			candidates = append(candidates, baseDate.AddDate(0, 0, -i).Format("20060102"))
-		}
+	resp, err := client.GetHistoryMinute(target, code)
+	if err != nil {
+		return nil, "", err
 	}
-
-	var lastEmptyResp *protocol.MinuteResp
-	var lastEmptyDate string
-	var lastErr error
-
-	for _, currentDate := range candidates {
-		resp, err := client.GetHistoryMinute(currentDate, code)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if resp == nil {
-			continue
-		}
-		if resp.List == nil {
-			resp.List = []protocol.PriceNumber{}
-		}
-		if len(resp.List) > 0 {
-			if resp.Count == 0 {
-				resp.Count = uint16(len(resp.List))
-			}
-			return resp, currentDate, nil
-		}
-		resp.Count = 0
-		if lastEmptyResp == nil {
-			lastEmptyResp = resp
-			lastEmptyDate = currentDate
-		}
+	if resp == nil {
+		return &protocol.MinuteResp{Count: 0, List: []protocol.PriceNumber{}}, target, nil
 	}
-
-	if lastEmptyResp != nil {
-		return lastEmptyResp, lastEmptyDate, nil
+	if resp.List == nil {
+		resp.List = []protocol.PriceNumber{}
 	}
-	if lastErr != nil {
-		return nil, "", lastErr
-	}
-	return &protocol.MinuteResp{Count: 0, List: []protocol.PriceNumber{}}, target, nil
+	resp.Count = uint16(len(resp.List))
+	return resp, target, nil
 }
 
 func main() {
@@ -1711,6 +1628,7 @@ func main() {
 	http.HandleFunc("/api/trade", handleGetTrade)
 	http.HandleFunc("/api/search", handleSearchCode)
 	http.HandleFunc("/api/profile", handleGetProfile)
+	http.HandleFunc("/api/instrument", handleGetInstrument)
 	http.HandleFunc("/api/security/status", handleSecurityStatus)
 	http.HandleFunc("/api/stock-info", handleGetStockInfo)
 	http.HandleFunc("/api/finance", handleGetFinance)
@@ -1720,11 +1638,13 @@ func main() {
 	http.HandleFunc("/api/codes", handleGetCodes)
 	http.HandleFunc("/api/batch-quote", handleBatchQuote)
 	http.HandleFunc("/api/kline-history", handleGetKlineHistory)
+	http.HandleFunc("/api/adjustment-factors", handleGetAdjustmentFactors)
 	http.HandleFunc("/api/index", handleGetIndex)
 	http.HandleFunc("/api/index/all", handleGetIndexAll)
 	http.HandleFunc("/api/market-stats", handleGetMarketStats)
 	http.HandleFunc("/api/market/screen", handleMarketScreen)
 	http.HandleFunc("/api/market/signal", handleMarketSignal)
+	http.HandleFunc("/api/market/signal/check", handleMarketSignalCheck)
 	http.HandleFunc("/api/market-count", handleGetMarketCount)
 	http.HandleFunc("/api/stock-codes", handleGetStockCodes)
 	http.HandleFunc("/api/etf-codes", handleGetETFCodes)
