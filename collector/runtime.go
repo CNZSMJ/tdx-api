@@ -172,6 +172,9 @@ func (r *Runtime) ensureTickerStarted(instruments []Instrument) {
 	}
 	nameResolver := func(code string) string { return nameMap[code] }
 	r.ticker.Start(codes, nameResolver)
+	if r.signal != nil {
+		r.signal.AttachTicker(r.ticker)
+	}
 	log.Printf("ticker: launched with %d codes (early start during catch-up)", len(codes))
 }
 

@@ -110,6 +110,12 @@ type blockProviderKey struct {
 	Name      string
 }
 
+type blockProviderKeyRequirement struct {
+	RequireSource    bool
+	RequireBlockType bool
+	RequireName      bool
+}
+
 var (
 	issuerPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`(?m)(?:公司全称|公司名称|中文名称|法定中文名称|发行人名称)\s*[:：]\s*([^\n\r]+)`),
@@ -120,15 +126,30 @@ var (
 		regexp.MustCompile(`(?m)(?:主营业务|公司主营业务|主要业务|经营范围)\s+([^\n\r]+)`),
 		regexp.MustCompile(`(?m)(?:公司主要从事|公司是国内|公司是一家)\s*([^\n\r。；;]+)`),
 	}
+	f10BoxCharsPattern        = regexp.MustCompile(`[┌┐└┘├┤┬┴┼│─━┃┏┓┗┛┣┫┳┻╋═║╔╗╚╝╠╣╦╩╬╭╮╯╰]+`)
+	f10LeaderPattern          = regexp.MustCompile(`[\.．·•…]{2,}`)
+	f10LeadingMarkerPattern   = regexp.MustCompile(`^(?:[（(]?[一二三四五六七八九十0-9]+[)）]|[一二三四五六七八九十0-9]+[、.．])\s*`)
+	f10WhitespacePattern      = regexp.MustCompile(`\s+`)
+	issuerStopLabels          = []string{"英文名称", "英文简称", "证券代码", "股票代码", "A股简称", "法定代表人", "成立日期", "注册资本", "所属行业", "经营范围", "主营业务", "公司地址", "办公地址"}
+	businessSummaryStopLabels = []string{"英文名称", "英文简称", "证券代码", "股票代码", "A股简称", "法定代表人", "成立日期", "注册资本", "所属行业", "公司地址", "办公地址", "联系电话", "传真", "电子邮箱"}
 )
 
 func serveQuoteSnapshots(w http.ResponseWriter, r *http.Request) {
-	rawCodes := splitCodes(strings.TrimSpace(r.URL.Query().Get("code")))
-	if len(rawCodes) == 0 {
-		errorResponse(w, "code 为必填参数")
+	model, err := resolveSingleFullCodeModel(strings.TrimSpace(r.URL.Query().Get("full_code")))
+	if err != nil {
+		errorResponse(w, err.Error())
 		return
 	}
-	serveQuoteSnapshotsForCodes(w, rawCodes)
+	items, err := fetchQuoteSnapshots([]*tdx.CodeModel{model})
+	if err != nil {
+		errorResponse(w, err.Error())
+		return
+	}
+	if len(items) == 0 {
+		errorResponse(w, fmt.Sprintf("未获取到行情: %s", model.FullCode()))
+		return
+	}
+	successResponse(w, items[0])
 }
 
 func serveBatchQuoteSnapshots(w http.ResponseWriter, r *http.Request) {
@@ -137,32 +158,39 @@ func serveBatchQuoteSnapshots(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Codes []string `json:"codes"`
+		FullCodes []string `json:"full_codes"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		errorResponse(w, "请求参数错误: "+err.Error())
 		return
 	}
-	if len(req.Codes) == 0 {
-		errorResponse(w, "codes 为必填参数")
+	if len(req.FullCodes) == 0 {
+		errorResponse(w, "full_codes 为必填参数")
 		return
 	}
-	serveQuoteSnapshotsForCodes(w, req.Codes)
-}
-
-func serveQuoteSnapshotsForCodes(w http.ResponseWriter, rawCodes []string) {
-	models, err := resolveCodeModels(rawCodes)
+	models, err := resolveFullCodeModels(req.FullCodes)
 	if err != nil {
 		errorResponse(w, err.Error())
 		return
 	}
-	if len(models) > 50 {
-		errorResponse(w, "一次最多查询50只证券")
+	items, err := fetchQuoteSnapshots(models)
+	if err != nil {
+		errorResponse(w, err.Error())
 		return
 	}
+
+	successResponse(w, map[string]interface{}{
+		"count": len(items),
+		"items": items,
+	})
+}
+
+func fetchQuoteSnapshots(models []*tdx.CodeModel) ([]providerQuoteSnapshot, error) {
+	if len(models) > 50 {
+		return nil, errors.New("一次最多查询50只证券")
+	}
 	if client == nil {
-		errorResponse(w, "TDX client 未初始化")
-		return
+		return nil, errors.New("TDX client 未初始化")
 	}
 
 	queryCodes := make([]string, 0, len(models))
@@ -171,8 +199,7 @@ func serveQuoteSnapshotsForCodes(w http.ResponseWriter, rawCodes []string) {
 	}
 	quotes, err := client.GetQuote(queryCodes...)
 	if err != nil {
-		errorResponse(w, fmt.Sprintf("获取行情失败: %v", err))
-		return
+		return nil, fmt.Errorf("获取行情失败: %v", err)
 	}
 
 	byFullCode := make(map[string]*protocol.Quote, len(quotes))
@@ -192,15 +219,11 @@ func serveQuoteSnapshotsForCodes(w http.ResponseWriter, rawCodes []string) {
 		}
 		items = append(items, buildQuoteSnapshotItem(model, quote, now))
 	}
-
-	successResponse(w, map[string]interface{}{
-		"count": len(items),
-		"items": items,
-	})
+	return items, nil
 }
 
 func handleGetInstrument(w http.ResponseWriter, r *http.Request) {
-	model, err := resolveSingleCodeModel(strings.TrimSpace(r.URL.Query().Get("code")))
+	model, err := resolveSingleFullCodeModel(strings.TrimSpace(r.URL.Query().Get("full_code")))
 	if err != nil {
 		errorResponse(w, err.Error())
 		return
@@ -226,7 +249,7 @@ func handleGetInstrument(w http.ResponseWriter, r *http.Request) {
 }
 
 func serveHistoricalBars(w http.ResponseWriter, r *http.Request) {
-	model, err := resolveSingleCodeModel(strings.TrimSpace(r.URL.Query().Get("code")))
+	model, err := resolveSingleFullCodeModel(strings.TrimSpace(r.URL.Query().Get("full_code")))
 	if err != nil {
 		errorResponse(w, err.Error())
 		return
@@ -287,7 +310,7 @@ func serveHistoricalBars(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleGetAdjustmentFactors(w http.ResponseWriter, r *http.Request) {
-	model, err := resolveSingleCodeModel(strings.TrimSpace(r.URL.Query().Get("code")))
+	model, err := resolveSingleFullCodeModel(strings.TrimSpace(r.URL.Query().Get("full_code")))
 	if err != nil {
 		errorResponse(w, err.Error())
 		return
@@ -328,7 +351,7 @@ func handleGetAdjustmentFactors(w http.ResponseWriter, r *http.Request) {
 }
 
 func serveIntradayBars(w http.ResponseWriter, r *http.Request) {
-	model, err := resolveSingleCodeModel(strings.TrimSpace(r.URL.Query().Get("code")))
+	model, err := resolveSingleFullCodeModel(strings.TrimSpace(r.URL.Query().Get("full_code")))
 	if err != nil {
 		errorResponse(w, err.Error())
 		return
@@ -402,12 +425,15 @@ func serveBlocks(w http.ResponseWriter, r *http.Request) {
 		errorResponse(w, "板块服务未初始化")
 		return
 	}
-	key, err := parseBlockProviderKey(r, false)
+	key, err := parseBlockProviderKey(r, blockProviderKeyRequirement{RequireSource: true})
 	if err != nil {
 		errorResponse(w, err.Error())
 		return
 	}
-	keyword := strings.TrimSpace(r.URL.Query().Get("keyword"))
+	if key.Name != "" && key.BlockType == "" {
+		errorResponse(w, "name 过滤需要同时提供 block_type")
+		return
+	}
 
 	records := bs.GetBlocks("")
 	items := make([]map[string]interface{}, 0, len(records))
@@ -418,7 +444,7 @@ func serveBlocks(w http.ResponseWriter, r *http.Request) {
 		if key.BlockType != "" && record.BlockType != key.BlockType {
 			continue
 		}
-		if keyword != "" && !strings.Contains(strings.ToLower(record.Name), strings.ToLower(keyword)) {
+		if key.Name != "" && record.Name != key.Name {
 			continue
 		}
 		items = append(items, map[string]interface{}{
@@ -450,7 +476,7 @@ func serveBlockMembers(w http.ResponseWriter, r *http.Request) {
 		errorResponse(w, "板块服务未初始化")
 		return
 	}
-	key, err := parseBlockProviderKey(r, true)
+	key, err := parseBlockProviderKey(r, blockProviderKeyRequirement{RequireSource: true, RequireBlockType: true, RequireName: true})
 	if err != nil {
 		errorResponse(w, err.Error())
 		return
@@ -475,7 +501,7 @@ func serveStockBlocks(w http.ResponseWriter, r *http.Request) {
 		errorResponse(w, "板块服务未初始化")
 		return
 	}
-	model, err := resolveSingleCodeModel(strings.TrimSpace(r.URL.Query().Get("code")))
+	model, err := resolveSingleFullCodeModel(strings.TrimSpace(r.URL.Query().Get("full_code")))
 	if err != nil {
 		errorResponse(w, err.Error())
 		return
@@ -504,7 +530,7 @@ func serveBlockRanking(w http.ResponseWriter, r *http.Request) {
 		errorResponse(w, "实时行情服务未初始化")
 		return
 	}
-	key, err := parseBlockProviderKey(r, false)
+	key, err := parseBlockProviderKey(r, blockProviderKeyRequirement{RequireSource: true, RequireBlockType: true})
 	if err != nil {
 		errorResponse(w, err.Error())
 		return
@@ -516,6 +542,9 @@ func serveBlockRanking(w http.ResponseWriter, r *http.Request) {
 	ranks := ts.GetBlockRanking(key.Source, key.BlockType, sortBy, order, limit)
 	items := make([]map[string]interface{}, 0, len(ranks))
 	for _, rank := range ranks {
+		if key.Name != "" && rank.Name != key.Name {
+			continue
+		}
 		item := map[string]interface{}{
 			"source":            rank.Source,
 			"block_type":        rank.BlockType,
@@ -550,7 +579,7 @@ func serveBlockStocks(w http.ResponseWriter, r *http.Request) {
 		errorResponse(w, "实时行情服务未初始化")
 		return
 	}
-	key, err := parseBlockProviderKey(r, true)
+	key, err := parseBlockProviderKey(r, blockProviderKeyRequirement{RequireSource: true, RequireBlockType: true, RequireName: true})
 	if err != nil {
 		errorResponse(w, err.Error())
 		return
@@ -582,7 +611,7 @@ func handleMarketSignalCheck(w http.ResponseWriter, r *http.Request) {
 		errorResponse(w, "Signal 服务未初始化")
 		return
 	}
-	models, err := resolveCodeModels(splitCodes(strings.TrimSpace(r.URL.Query().Get("codes"))))
+	models, err := resolveFullCodeModels(splitCodes(strings.TrimSpace(r.URL.Query().Get("full_codes"))))
 	if err != nil {
 		errorResponse(w, err.Error())
 		return
@@ -733,11 +762,12 @@ func fetchInstrumentF10Fields(fullCode string) (string, string) {
 		if err != nil || strings.TrimSpace(content) == "" {
 			continue
 		}
+		cleanContent := sanitizeF10Text(content)
 		if issuerName == "" {
-			issuerName = extractIssuerName(content)
+			issuerName = extractIssuerName(cleanContent)
 		}
 		if businessSummary == "" {
-			businessSummary = extractBusinessSummary(content)
+			businessSummary = extractBusinessSummary(cleanContent)
 		}
 		if issuerName != "" && businessSummary != "" {
 			break
@@ -781,33 +811,33 @@ func selectRelevantF10Categories(categories protocol.CompanyInfoCategories) []*p
 }
 
 func extractIssuerName(text string) string {
-	if value := extractPatternValue(text, issuerPatterns); value != "" {
+	if value := extractPatternValue(text, issuerPatterns, issuerStopLabels); value != "" {
 		return value
 	}
-	return extractLineValue(text, []string{"公司全称", "公司名称", "中文名称", "法定中文名称", "发行人名称"})
+	return extractLineValue(text, []string{"公司全称", "公司名称", "中文名称", "法定中文名称", "发行人名称"}, issuerStopLabels)
 }
 
 func extractBusinessSummary(text string) string {
-	if value := extractPatternValue(text, businessSummaryPatterns); value != "" {
+	if value := extractPatternValue(text, businessSummaryPatterns, businessSummaryStopLabels); value != "" {
 		return truncateSummary(value)
 	}
-	return truncateSummary(extractLineValue(text, []string{"主营业务", "主要业务", "经营范围"}))
+	return truncateSummary(extractLineValue(text, []string{"主营业务", "主要业务", "经营范围"}, businessSummaryStopLabels))
 }
 
-func extractPatternValue(text string, patterns []*regexp.Regexp) string {
+func extractPatternValue(text string, patterns []*regexp.Regexp, stopLabels []string) string {
 	for _, pattern := range patterns {
 		matches := pattern.FindStringSubmatch(text)
 		if len(matches) < 2 {
 			continue
 		}
-		if value := cleanF10Value(matches[1]); value != "" {
+		if value := normalizeF10FieldValue(matches[1], stopLabels); value != "" {
 			return value
 		}
 	}
 	return ""
 }
 
-func extractLineValue(text string, keys []string) string {
+func extractLineValue(text string, keys []string, stopLabels []string) string {
 	lines := strings.Split(strings.ReplaceAll(text, "\r", "\n"), "\n")
 	for index, rawLine := range lines {
 		line := strings.TrimSpace(rawLine)
@@ -820,12 +850,12 @@ func extractLineValue(text string, keys []string) string {
 			}
 			trimmed := strings.TrimSpace(line)
 			if pos := strings.IndexAny(trimmed, "：:"); pos >= 0 && pos+1 < len(trimmed) {
-				if value := cleanF10Value(trimmed[pos+1:]); value != "" {
+				if value := normalizeF10FieldValue(trimmed[pos+1:], stopLabels); value != "" {
 					return value
 				}
 			}
 			if index+1 < len(lines) {
-				if value := cleanF10Value(lines[index+1]); value != "" {
+				if value := normalizeF10FieldValue(lines[index+1], stopLabels); value != "" {
 					return value
 				}
 			}
@@ -836,9 +866,19 @@ func extractLineValue(text string, keys []string) string {
 
 func cleanF10Value(value string) string {
 	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	value = strings.NewReplacer("\r", "\n", "\t", " ", "\u00a0", " ", "|", " ", "｜", " ").Replace(value)
+	value = f10BoxCharsPattern.ReplaceAllString(value, " ")
+	value = f10LeaderPattern.ReplaceAllString(value, " ")
+	value = f10WhitespacePattern.ReplaceAllString(value, " ")
 	value = strings.Trim(value, "：:;；，,。 \t")
-	if len(value) > 120 {
-		value = value[:120]
+	if isF10NoiseLine(value) {
+		return ""
+	}
+	if len(value) > 200 {
+		value = value[:200]
 	}
 	return strings.TrimSpace(value)
 }
@@ -856,7 +896,68 @@ func truncateSummary(value string) string {
 	if len(value) > 160 {
 		value = value[:160]
 	}
+	value = strings.TrimSpace(f10LeadingMarkerPattern.ReplaceAllString(value, ""))
 	return strings.TrimSpace(value)
+}
+
+func sanitizeF10Text(text string) string {
+	lines := strings.Split(strings.ReplaceAll(text, "\r", "\n"), "\n")
+	cleaned := make([]string, 0, len(lines))
+	for _, rawLine := range lines {
+		line := cleanF10Value(rawLine)
+		if line == "" || isF10NoiseLine(line) {
+			continue
+		}
+		cleaned = append(cleaned, line)
+	}
+	return strings.Join(cleaned, "\n")
+}
+
+func normalizeF10FieldValue(value string, stopLabels []string) string {
+	value = trimF10FieldFragments(cleanF10Value(value), stopLabels)
+	if value == "" || isF10NoiseLine(value) {
+		return ""
+	}
+	return cleanF10Value(value)
+}
+
+func trimF10FieldFragments(value string, stopLabels []string) string {
+	trimmed := value
+	for _, label := range stopLabels {
+		if idx := strings.Index(trimmed, label); idx > 0 {
+			trimmed = trimmed[:idx]
+		}
+	}
+	return strings.TrimSpace(trimmed)
+}
+
+func isF10NoiseLine(value string) bool {
+	compact := strings.TrimSpace(value)
+	if compact == "" {
+		return true
+	}
+	joined := strings.ReplaceAll(compact, " ", "")
+	if strings.Contains(joined, "目录") || strings.Contains(joined, "目次") {
+		return true
+	}
+	if strings.HasPrefix(joined, "第") && strings.Contains(joined, "页") && len([]rune(joined)) <= 10 {
+		return true
+	}
+
+	meaningful := 0
+	for _, r := range joined {
+		switch {
+		case r >= '0' && r <= '9':
+			meaningful++
+		case r >= 'a' && r <= 'z':
+			meaningful++
+		case r >= 'A' && r <= 'Z':
+			meaningful++
+		case r >= 0x4e00 && r <= 0x9fff:
+			meaningful++
+		}
+	}
+	return meaningful == 0
 }
 
 func loadIndustryLabels(fullCode string) (string, string) {
@@ -927,7 +1028,7 @@ func buildQuoteSnapshotItem(model *tdx.CodeModel, quote *protocol.Quote, now tim
 		Bids:          buildQuoteLevels(quote.BuyLevel, true),
 		Asks:          buildQuoteLevels(quote.SellLevel, false),
 	}
-	return item
+	return normalizeQuoteSnapshot(item)
 }
 
 func buildQuoteLevels(levels protocol.PriceLevels, bids bool) []providerPriceLevel {
@@ -1337,7 +1438,7 @@ func parseAdjustMode(raw string) (string, error) {
 
 func parseIntradayInterval(raw string) (int, error) {
 	if raw == "" {
-		return 0, errors.New("interval_minutes 为必填参数")
+		return 1, nil
 	}
 	value, err := strconv.Atoi(raw)
 	if err != nil {
@@ -1351,7 +1452,7 @@ func parseIntradayInterval(raw string) (int, error) {
 	}
 }
 
-func parseBlockProviderKey(r *http.Request, requireAll bool) (blockProviderKey, error) {
+func parseBlockProviderKey(r *http.Request, requirement blockProviderKeyRequirement) (blockProviderKey, error) {
 	key := blockProviderKey{
 		Source:    strings.TrimSpace(r.URL.Query().Get("source")),
 		BlockType: strings.TrimSpace(r.URL.Query().Get("block_type")),
@@ -1364,8 +1465,18 @@ func parseBlockProviderKey(r *http.Request, requireAll bool) (blockProviderKey, 
 			return blockProviderKey{}, errors.New("block_type 参数无效")
 		}
 	}
-	if requireAll && (key.Source == "" || key.BlockType == "" || key.Name == "") {
-		return blockProviderKey{}, errors.New("source、block_type、name 均为必填参数")
+	missing := make([]string, 0, 3)
+	if requirement.RequireSource && key.Source == "" {
+		missing = append(missing, "source")
+	}
+	if requirement.RequireBlockType && key.BlockType == "" {
+		missing = append(missing, "block_type")
+	}
+	if requirement.RequireName && key.Name == "" {
+		missing = append(missing, "name")
+	}
+	if len(missing) > 0 {
+		return blockProviderKey{}, fmt.Errorf("%s 为必填参数", strings.Join(missing, "、"))
 	}
 	return key, nil
 }
@@ -1376,6 +1487,36 @@ func resolveSingleCodeModel(raw string) (*tdx.CodeModel, error) {
 		return nil, err
 	}
 	return models[0], nil
+}
+
+func resolveSingleFullCodeModel(raw string) (*tdx.CodeModel, error) {
+	models, err := resolveFullCodeModels([]string{raw})
+	if err != nil {
+		return nil, err
+	}
+	return models[0], nil
+}
+
+func resolveFullCodeModels(rawCodes []string) ([]*tdx.CodeModel, error) {
+	if len(rawCodes) == 0 {
+		return nil, errors.New("full_codes 为必填参数")
+	}
+	allModels, err := getAllCodeModels()
+	if err != nil {
+		return nil, fmt.Errorf("获取证券信息失败: %w", err)
+	}
+	resolved := make([]*tdx.CodeModel, 0, len(rawCodes))
+	for _, rawCode := range rawCodes {
+		model, err := lookupFullCodeModel(rawCode, allModels)
+		if err != nil {
+			return nil, err
+		}
+		resolved = append(resolved, model)
+	}
+	if len(resolved) == 0 {
+		return nil, errors.New("full_codes 为必填参数")
+	}
+	return resolved, nil
 }
 
 func resolveCodeModels(rawCodes []string) ([]*tdx.CodeModel, error) {
@@ -1423,6 +1564,25 @@ func resolveCodeModels(rawCodes []string) ([]*tdx.CodeModel, error) {
 	return resolved, nil
 }
 
+func lookupFullCodeModel(raw string, allModels []*tdx.CodeModel) (*tdx.CodeModel, error) {
+	fullCode := strings.ToLower(strings.TrimSpace(raw))
+	if fullCode == "" {
+		return nil, errors.New("full_code 为必填参数")
+	}
+	if bareCode(fullCode) == fullCode {
+		return nil, fmt.Errorf("full_code 参数无效，请传完整市场前缀代码，例如 sh600000：%s", raw)
+	}
+	for _, model := range allModels {
+		if model == nil {
+			continue
+		}
+		if strings.ToLower(model.FullCode()) == fullCode {
+			return model, nil
+		}
+	}
+	return nil, fmt.Errorf("证券未找到: %s", raw)
+}
+
 func providerExchange(model *tdx.CodeModel) string {
 	return strings.ToUpper(strings.TrimSpace(model.Exchange))
 }
@@ -1466,6 +1626,24 @@ func stockTickToProviderMap(tick collectorpkg.StockTick) map[string]interface{} 
 		"is_limit_up":   tick.IsLimitUp,
 		"is_limit_down": tick.IsLimitDown,
 	}
+}
+
+func normalizeQuoteSnapshot(item providerQuoteSnapshot) providerQuoteSnapshot {
+	if item.Price != 0 {
+		return item
+	}
+	if item.Change == 0 && item.ChangePct == 0 && item.Volume == 0 && item.Amount == 0 {
+		return item
+	}
+	item.Change = 0
+	item.ChangePct = 0
+	item.Volume = 0
+	item.Amount = 0
+	if item.StatusReason != "" {
+		item.StatusReason += "；"
+	}
+	item.StatusReason += "price 为 0 时已将涨跌额、涨跌幅、成交量、成交额归零"
+	return item
 }
 
 func bareCode(fullCode string) string {

@@ -57,6 +57,22 @@ func TestEvaluateSignalItemsSupportsTargetedChecks(t *testing.T) {
 	}
 }
 
+func TestSignalServiceCheckCodesWorksWithAttachedTicker(t *testing.T) {
+	service := NewSignalService(SignalConfig{
+		Now:          func() time.Time { return time.Date(2026, 4, 15, 14, 31, 0, 0, time.Local) },
+		KlineBaseDir: t.TempDir(),
+	})
+	service.AttachTicker(&TickerService{})
+
+	items, err := service.CheckCodes([]string{"sh600000"}, []string{"new_high"})
+	if err != nil {
+		t.Fatalf("CheckCodes returned error: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("expected no items without ticker/cache data, got %#v", items)
+	}
+}
+
 func priceMilli(value float64) PriceMilli {
 	return PriceMilli(value * 1000)
 }

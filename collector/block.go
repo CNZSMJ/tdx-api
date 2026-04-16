@@ -352,6 +352,14 @@ func (s *BlockService) loadCacheFromDB() error {
 
 // rebuildCache replaces the in-memory index atomically (caller must hold s.mu).
 func (s *BlockService) rebuildCache(groups []BlockGroupRecord, members []BlockMemberRecord) {
+	for i := range groups {
+		groups[i].BlockType = normalizeBlockType(groups[i].Source, groups[i].Name, groups[i].BlockType)
+	}
+	for i := range members {
+		members[i].BlockType = normalizeBlockType(members[i].Source, members[i].BlockName, members[i].BlockType)
+		members[i].Code = normalizeBlockMemberCode(members[i].Code)
+	}
+
 	sort.Slice(groups, func(i, j int) bool { return groups[i].Name < groups[j].Name })
 
 	byType := make(map[string][]BlockGroupRecord, 4)
@@ -403,6 +411,25 @@ func (s *BlockService) rebuildCache(groups []BlockGroupRecord, members []BlockMe
 		membersByBlk: membersByBlk,
 		blocksByCode: blocksByCode,
 		loaded:       true,
+	}
+}
+
+func normalizeBlockMemberCode(code string) string {
+	code = strings.ToLower(strings.TrimSpace(code))
+	if len(code) != 6 {
+		return code
+	}
+	switch {
+	case strings.HasPrefix(code, "6"):
+		return "sh" + code
+	case strings.HasPrefix(code, "0"), strings.HasPrefix(code, "30"), strings.HasPrefix(code, "159"):
+		return "sz" + code
+	case strings.HasPrefix(code, "510"), strings.HasPrefix(code, "511"), strings.HasPrefix(code, "512"), strings.HasPrefix(code, "513"), strings.HasPrefix(code, "515"):
+		return "sh" + code
+	case strings.HasPrefix(code, "8"), strings.HasPrefix(code, "92"), strings.HasPrefix(code, "43"):
+		return "bj" + code
+	default:
+		return code
 	}
 }
 

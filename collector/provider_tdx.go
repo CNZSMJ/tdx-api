@@ -800,25 +800,12 @@ func (p *TDXProvider) BlockGroups(ctx context.Context, filename string) ([]Block
 	for _, g := range groups {
 		items = append(items, BlockInfo{
 			Name:      g.Name,
-			BlockType: mapBlockType(g.BlockType),
+			BlockType: classifyBlockType(filename, g.Name),
 			Source:    filename,
 			Codes:     g.Codes,
 		})
 	}
 	return items, nil
-}
-
-func mapBlockType(raw uint16) BlockType {
-	switch raw {
-	case 0:
-		return BlockTypeIndustry
-	case 3:
-		return BlockTypeConcept
-	case 4:
-		return BlockTypeStyle
-	default:
-		return BlockTypeIndexBlock
-	}
 }
 
 func (p *TDXProvider) refreshTradingDays(ctx context.Context, query TradingDayQuery) ([]TradingDay, error) {

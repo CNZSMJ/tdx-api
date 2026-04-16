@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -116,6 +117,93 @@ func TestBuildSignalCheckPayloadFullMode(t *testing.T) {
 	}
 	if items[1]["matched"] != false {
 		t.Fatalf("second item matched = %v, want false", items[1]["matched"])
+	}
+}
+
+func TestLookupFullCodeModelRequiresFullCode(t *testing.T) {
+	models := []*tdx.CodeModel{
+		{Code: "600000", Exchange: "sh", Name: "浦发银行"},
+		{Code: "000001", Exchange: "sz", Name: "平安银行"},
+	}
+
+	_, err := lookupFullCodeModel("000001", models)
+	if err == nil {
+		t.Fatalf("expected bare code to be rejected")
+	}
+	if err.Error() != "full_code 参数无效，请传完整市场前缀代码，例如 sh600000：000001" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLookupFullCodeModelMatchesExactFullCode(t *testing.T) {
+	models := []*tdx.CodeModel{
+		{Code: "000001", Exchange: "sh", Name: "上证指数"},
+		{Code: "000001", Exchange: "sz", Name: "平安银行"},
+	}
+
+	model, err := lookupFullCodeModel("sh000001", models)
+	if err != nil {
+		t.Fatalf("lookup full_code failed: %v", err)
+	}
+	if model.FullCode() != "sh000001" {
+		t.Fatalf("full_code = %s, want sh000001", model.FullCode())
+	}
+}
+
+func TestExtractF10FieldsRemoveNoise(t *testing.T) {
+	text := `
+┌────────────────────┐
+│ 目录               │
+├────────────────────┤
+公司全称：上海浦东发展银行股份有限公司 │ 英文名称：Shanghai Pudong Development Bank
+主营业务：商业银行及相关金融服务；吸收公众存款、发放贷款。└────────────────────┘
+`
+
+	issuer := extractIssuerName(text)
+	if issuer != "上海浦东发展银行股份有限公司" {
+		t.Fatalf("issuer_name = %q, want 上海浦东发展银行股份有限公司", issuer)
+	}
+
+	summary := extractBusinessSummary(text)
+	if summary != "商业银行及相关金融服务" {
+		t.Fatalf("business_summary = %q, want 商业银行及相关金融服务", summary)
+	}
+}
+
+func TestParseBlockProviderKeyRequiresSource(t *testing.T) {
+	req := httptest.NewRequest("GET", "/api/blocks?block_type=concept", nil)
+
+	_, err := parseBlockProviderKey(req, blockProviderKeyRequirement{RequireSource: true})
+	if err == nil {
+		t.Fatalf("expected source requirement error")
+	}
+	if err.Error() != "source 为必填参数" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestNormalizeQuoteSnapshotZeroesDerivedMetricsWhenPriceIsZero(t *testing.T) {
+	item := normalizeQuoteSnapshot(providerQuoteSnapshot{
+		Price:        0,
+		Change:       1.2,
+		ChangePct:    3.4,
+		Volume:       100,
+		Amount:       2000,
+		StatusReason: "inferred",
+	})
+
+	if item.Change != 0 || item.ChangePct != 0 || item.Volume != 0 || item.Amount != 0 {
+		t.Fatalf("normalized snapshot still contains inconsistent metrics: %#v", item)
+	}
+}
+
+func TestParseIntradayIntervalDefaultsToOneMinute(t *testing.T) {
+	interval, err := parseIntradayInterval("")
+	if err != nil {
+		t.Fatalf("parseIntradayInterval returned error: %v", err)
+	}
+	if interval != 1 {
+		t.Fatalf("interval = %d, want 1", interval)
 	}
 }
 

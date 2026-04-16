@@ -1628,7 +1628,7 @@ func main() {
 	http.HandleFunc("/api/trade", handleGetTrade)
 	http.HandleFunc("/api/search", handleSearchCode)
 	http.HandleFunc("/api/profile", handleGetProfile)
-	http.HandleFunc("/api/instrument", handleGetInstrument)
+	http.HandleFunc("/api/security", handleGetInstrument)
 	http.HandleFunc("/api/security/status", handleSecurityStatus)
 	http.HandleFunc("/api/stock-info", handleGetStockInfo)
 	http.HandleFunc("/api/finance", handleGetFinance)

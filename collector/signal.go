@@ -103,6 +103,14 @@ func (s *SignalService) Start(ctx context.Context, codes []string, ticker *Ticke
 	go s.loop(scanCtx)
 }
 
+func (s *SignalService) AttachTicker(ticker *TickerService) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ticker != nil {
+		s.ticker = ticker
+	}
+}
+
 // Stop stops the scan loop.
 func (s *SignalService) Stop() {
 	s.mu.Lock()
