@@ -248,8 +248,8 @@ func TestSecurityIndustryResolverResolvesFromTDXFiles(t *testing.T) {
 	if industryName != "白酒" {
 		t.Fatalf("industry_name = %q, want 白酒", industryName)
 	}
-	if subindustryName != "" {
-		t.Fatalf("subindustry_name = %q, want empty", subindustryName)
+	if subindustryName != "白酒" {
+		t.Fatalf("subindustry_name = %q, want 白酒", subindustryName)
 	}
 }
 

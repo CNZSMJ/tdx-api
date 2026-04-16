@@ -90,9 +90,6 @@ func (r *securityIndustryResolver) Resolve(fullCode string) (string, string) {
 		industryName = subindustryName
 		subindustryName = ""
 	}
-	if subindustryName == industryName {
-		subindustryName = ""
-	}
 	return industryName, subindustryName
 }
 
