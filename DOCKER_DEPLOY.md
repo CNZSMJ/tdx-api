@@ -141,6 +141,7 @@ mkdir -p /srv/tdx-api/database
 ```bash
 TDX_STOCK_WEB_IMAGE=tdx-api-stock-web:invest-grade-fixed
 TDX_DATA_DIR=/srv/tdx-api/database
+TDX_INCON_PATH=/srv/tdx-api/database/metadata/incon.dat
 ```
 
 ### 5.6 启动 VPS 服务
@@ -184,6 +185,25 @@ tdx-api-stock-web:invest-grade-fixed
 
 在单机上，这意味着数据保存在仓库下。  
 在 VPS 上，更推荐改成绝对路径，例如 `/srv/tdx-api/database`。
+
+如果要让 `/api/security` 返回完整行业名称，推荐同时准备：
+
+- `/srv/tdx-api/database/metadata/incon.dat`
+
+这是通达信终端导出的行业字典文件。
+
+### `TDX_INCON_PATH`
+
+可选。显式指定 `incon.dat` 路径。
+
+默认不设置时，服务会依次尝试：
+
+- `${TDX_DATA_DIR}/incon.dat`
+- `${TDX_DATA_DIR}/metadata/incon.dat`
+- `${dirname(TDX_DATA_DIR)}/incon.dat`
+- `${dirname(TDX_DATA_DIR)}/T0002/incon.dat`
+
+生产环境更推荐显式设置，避免挂载布局变化导致行业字典失效。
 
 ## 8. 镜像为什么会保持轻量
 

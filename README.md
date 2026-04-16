@@ -236,6 +236,18 @@ docker compose down                 # 停止并删除容器
 
 - `TDX_STOCK_WEB_IMAGE`：部署时使用的镜像名
 - `TDX_DATA_DIR`：宿主机数据目录，默认 `./data/database`
+- `TDX_INCON_PATH`：可选的 `incon.dat` 显式路径
+
+`/api/security` 的行业补全依赖两类 TDX 文件：
+
+- 实时从 TDX 拉取 `tdxhy.cfg`，用于证券到行业代码映射
+- 本地 `incon.dat`，用于行业代码到行业名称映射
+
+推荐把官方终端导出的 `incon.dat` 放到：
+
+- `${TDX_DATA_DIR}/metadata/incon.dat`
+
+如果不在默认位置，显式设置 `TDX_INCON_PATH`。
 
 **唯一 Docker 文档入口**: [DOCKER_DEPLOY.md](DOCKER_DEPLOY.md)
 

@@ -274,6 +274,34 @@ func TestParseSecurityIndustryDictionaryDecodesGBK(t *testing.T) {
 	}
 }
 
+func TestDefaultSecurityIndustryDictionaryPathPrefersExplicitEnv(t *testing.T) {
+	t.Setenv("TDX_INCON_PATH", "/tmp/custom/incon.dat")
+	databaseDir = t.TempDir()
+
+	if got := defaultSecurityIndustryDictionaryPath(); got != "/tmp/custom/incon.dat" {
+		t.Fatalf("dictionary path = %q, want explicit env path", got)
+	}
+}
+
+func TestDefaultSecurityIndustryDictionaryPathFallsBackToMetadataDir(t *testing.T) {
+	t.Setenv("TDX_INCON_PATH", "")
+	dir := t.TempDir()
+	databaseDir = dir
+
+	metadataDir := filepath.Join(dir, "metadata")
+	if err := os.MkdirAll(metadataDir, 0o755); err != nil {
+		t.Fatalf("mkdir metadata: %v", err)
+	}
+	want := filepath.Join(metadataDir, "incon.dat")
+	if err := os.WriteFile(want, []byte("fixture"), 0o644); err != nil {
+		t.Fatalf("write incon.dat: %v", err)
+	}
+
+	if got := defaultSecurityIndustryDictionaryPath(); got != want {
+		t.Fatalf("dictionary path = %q, want %q", got, want)
+	}
+}
+
 func containsString(items []string, target string) bool {
 	for _, item := range items {
 		if item == target {
