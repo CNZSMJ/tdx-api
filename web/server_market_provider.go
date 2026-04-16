@@ -126,12 +126,13 @@ var (
 		regexp.MustCompile(`(?m)(?:主营业务|公司主营业务|主要业务|经营范围)\s+([^\n\r]+)`),
 		regexp.MustCompile(`(?m)(?:公司主要从事|公司是国内|公司是一家)\s*([^\n\r。；;]+)`),
 	}
-	f10BoxCharsPattern        = regexp.MustCompile(`[┌┐└┘├┤┬┴┼│─━┃┏┓┗┛┣┫┳┻╋═║╔╗╚╝╠╣╦╩╬╭╮╯╰]+`)
-	f10LeaderPattern          = regexp.MustCompile(`[\.．·•…]{2,}`)
-	f10LeadingMarkerPattern   = regexp.MustCompile(`^(?:[（(]?[一二三四五六七八九十0-9]+[)）]|[一二三四五六七八九十0-9]+[、.．])\s*`)
-	f10WhitespacePattern      = regexp.MustCompile(`\s+`)
-	issuerStopLabels          = []string{"英文名称", "英文简称", "证券代码", "股票代码", "A股简称", "法定代表人", "成立日期", "注册资本", "所属行业", "经营范围", "主营业务", "公司地址", "办公地址"}
-	businessSummaryStopLabels = []string{"英文名称", "英文简称", "证券代码", "股票代码", "A股简称", "法定代表人", "成立日期", "注册资本", "所属行业", "公司地址", "办公地址", "联系电话", "传真", "电子邮箱"}
+	f10BoxCharsPattern             = regexp.MustCompile(`[┌┐└┘├┤┬┴┼│─━┃┏┓┗┛┣┫┳┻╋═║╔╗╚╝╠╣╦╩╬╭╮╯╰]+`)
+	f10LeaderPattern               = regexp.MustCompile(`[\.．·•…]{2,}`)
+	f10LeadingMarkerPattern        = regexp.MustCompile(`^(?:[（(]?[一二三四五六七八九十0-9]+[)）]|[一二三四五六七八九十0-9]+[、.．])\s*`)
+	f10WhitespacePattern           = regexp.MustCompile(`\s+`)
+	issuerStopLabels               = []string{"英文名称", "英文简称", "证券代码", "股票代码", "A股简称", "法定代表人", "成立日期", "注册资本", "所属行业", "经营范围", "主营业务", "公司地址", "办公地址"}
+	businessSummaryStopLabels      = []string{"英文名称", "英文简称", "证券代码", "股票代码", "A股简称", "法定代表人", "成立日期", "注册资本", "所属行业", "公司地址", "办公地址", "联系电话", "传真", "电子邮箱"}
+	securityIndustryLabelsResolver = newSecurityIndustryResolver()
 )
 
 func serveQuoteSnapshots(w http.ResponseWriter, r *http.Request) {
@@ -961,6 +962,15 @@ func isF10NoiseLine(value string) bool {
 }
 
 func loadIndustryLabels(fullCode string) (string, string) {
+	if securityIndustryLabelsResolver != nil {
+		if industryName, subindustryName := securityIndustryLabelsResolver.Resolve(fullCode); industryName != "" || subindustryName != "" {
+			return industryName, subindustryName
+		}
+	}
+	return loadBlockIndustryLabels(fullCode)
+}
+
+func loadBlockIndustryLabels(fullCode string) (string, string) {
 	bs := getBlockServiceForProvider()
 	if bs == nil {
 		return "", ""

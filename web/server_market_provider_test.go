@@ -2,6 +2,9 @@ package main
 
 import (
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,6 +12,7 @@ import (
 	collectorpkg "github.com/injoyai/tdx/collector"
 	"github.com/injoyai/tdx/extend"
 	"github.com/injoyai/tdx/protocol"
+	"golang.org/x/text/encoding/simplifiedchinese"
 )
 
 func TestBuildInstrumentReferenceMarksMissingFields(t *testing.T) {
@@ -204,6 +208,69 @@ func TestParseIntradayIntervalDefaultsToOneMinute(t *testing.T) {
 	}
 	if interval != 1 {
 		t.Fatalf("interval = %d, want 1", interval)
+	}
+}
+
+func TestSecurityIndustryResolverResolvesFromTDXFiles(t *testing.T) {
+	dir := t.TempDir()
+	dictPath := filepath.Join(dir, "incon.dat")
+	content := strings.Join([]string{
+		"#TDXNHY",
+		"T1001|银行",
+		"T030501|白酒",
+		"######",
+		"#TDXRSHY",
+		"X500102|股份制银行",
+		"X210205|白酒",
+	}, "\n")
+	if err := os.WriteFile(dictPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write incon.dat: %v", err)
+	}
+
+	resolver := newSecurityIndustryResolver()
+	resolver.pathResolver = func() string { return dictPath }
+	resolver.downloadAssignments = func() ([]byte, error) {
+		return []byte(strings.Join([]string{
+			"0|000001|T1001|||X500102",
+			"1|600519|T030501|||X210205",
+		}, "\n")), nil
+	}
+
+	industryName, subindustryName := resolver.Resolve("sz000001")
+	if industryName != "银行" {
+		t.Fatalf("industry_name = %q, want 银行", industryName)
+	}
+	if subindustryName != "股份制银行" {
+		t.Fatalf("subindustry_name = %q, want 股份制银行", subindustryName)
+	}
+
+	industryName, subindustryName = resolver.Resolve("sh600519")
+	if industryName != "白酒" {
+		t.Fatalf("industry_name = %q, want 白酒", industryName)
+	}
+	if subindustryName != "" {
+		t.Fatalf("subindustry_name = %q, want empty", subindustryName)
+	}
+}
+
+func TestParseSecurityIndustryDictionaryDecodesGBK(t *testing.T) {
+	raw, err := simplifiedchinese.GBK.NewEncoder().Bytes([]byte(strings.Join([]string{
+		"#TDXNHY",
+		"T1001|银行",
+		"######",
+		"#TDXRSHY",
+		"X500102|股份制银行",
+	}, "\n")))
+	if err != nil {
+		t.Fatalf("encode gbk: %v", err)
+	}
+
+	primaryNames, refinedNames := parseSecurityIndustryDictionary(raw)
+	if primaryNames["T1001"] != "银行" {
+		t.Fatalf("primary_names[T1001] = %q, want 银行", primaryNames["T1001"])
+	}
+	if refinedNames["X500102"] != "股份制银行" {
+		t.Fatalf("refined_names[X500102] = %q, want 股份制银行", refinedNames["X500102"])
 	}
 }
 
