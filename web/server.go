@@ -343,6 +343,8 @@ func copyFile(src, dst string) error {
 }
 
 func init() {
+	ensureDotEnvLoaded()
+
 	if strings.TrimSpace(os.Getenv("TDX_WEB_SKIP_INIT")) == "1" {
 		return
 	}
