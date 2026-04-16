@@ -212,6 +212,9 @@ func (r *Runtime) Close() error {
 		return nil
 	}
 	r.StopTicker()
+	if r.block != nil {
+		r.block.Close()
+	}
 	if r.store != nil {
 		return r.store.Close()
 	}

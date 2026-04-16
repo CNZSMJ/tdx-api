@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/robfig/cron/v3"
 	"xorm.io/xorm"
 )
 
@@ -23,8 +24,11 @@ var blockFiles = []string{
 }
 
 type BlockConfig struct {
-	BaseDir string
-	Now     func() time.Time
+	BaseDir             string
+	Now                 func() time.Time
+	DisableAutoRefresh  bool
+	AutoRefreshSchedule string
+	AutoRefreshRetry    time.Duration
 }
 
 // blockCacheKey uniquely identifies a block by (blockType, name).
@@ -51,6 +55,7 @@ type BlockService struct {
 	cfg      BlockConfig
 	mu       sync.RWMutex
 	cache    blockCache
+	task     *cron.Cron
 }
 
 type BlockGroupRecord struct {
@@ -88,6 +93,12 @@ func NewBlockService(store *Store, provider Provider, cfg BlockConfig) (*BlockSe
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
+	if strings.TrimSpace(cfg.AutoRefreshSchedule) == "" {
+		cfg.AutoRefreshSchedule = "10 0 9 * * *"
+	}
+	if cfg.AutoRefreshRetry <= 0 {
+		cfg.AutoRefreshRetry = 5 * time.Minute
+	}
 	svc := &BlockService{
 		store:    store,
 		provider: provider,
@@ -96,7 +107,45 @@ func NewBlockService(store *Store, provider Provider, cfg BlockConfig) (*BlockSe
 	if err := svc.loadCacheFromDB(); err != nil {
 		log.Printf("block service: cold start, DB not ready yet: %v", err)
 	}
+	svc.startAutoRefresh()
 	return svc, nil
+}
+
+func (s *BlockService) startAutoRefresh() {
+	if s == nil || s.cfg.DisableAutoRefresh {
+		return
+	}
+
+	task := cron.New(cron.WithSeconds())
+	if _, err := task.AddFunc(s.cfg.AutoRefreshSchedule, func() {
+		for attempt := 0; attempt < 3; attempt++ {
+			if err := s.SyncBlocks(context.Background()); err == nil {
+				return
+			} else {
+				log.Printf("block service: auto refresh attempt %d/3 failed: %v", attempt+1, err)
+			}
+			if attempt < 2 {
+				time.Sleep(s.cfg.AutoRefreshRetry)
+			}
+		}
+	}); err != nil {
+		log.Printf("block service: register auto refresh failed: %v", err)
+		return
+	}
+	task.Start()
+	s.task = task
+}
+
+func (s *BlockService) Close() {
+	if s == nil || s.task == nil {
+		return
+	}
+	ctx := s.task.Stop()
+	select {
+	case <-ctx.Done():
+	case <-time.After(5 * time.Second):
+	}
+	s.task = nil
 }
 
 // SyncBlocks downloads all block files from TDX, persists to SQLite,
