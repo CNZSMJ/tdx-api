@@ -2,11 +2,13 @@ package extend
 
 import (
 	"context"
+	"github.com/injoyai/base/chans"
 	"github.com/injoyai/conv"
 	"github.com/injoyai/logs"
 	"github.com/injoyai/tdx"
 	"github.com/injoyai/tdx/protocol"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -17,9 +19,42 @@ func NewPullTrade(dir string) *PullTrade {
 }
 
 type PullTrade struct {
-	Dir       string
-	StartYear int
-	EndYear   int
+	Codes      []string
+	AssetTypes []string
+	Dir        string
+	Limit      int
+	StartYear  int
+	EndYear    int
+}
+
+func (this *PullTrade) Run(ctx context.Context, m *tdx.Manage) error {
+	codes := this.resolveCodes(m)
+	if len(codes) == 0 {
+		return nil
+	}
+
+	limit := this.Limit
+	if limit <= 0 {
+		limit = 1
+	}
+	waiter := chans.NewWaitLimit(limit)
+	for _, code := range codes {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		waiter.Add()
+		go func(code string) {
+			defer waiter.Done()
+			if err := this.Pull(ctx, m, code); err != nil {
+				logs.Err(err)
+			}
+		}(code)
+	}
+	waiter.Wait()
+	return nil
 }
 
 func (this *PullTrade) Pull(ctx context.Context, m *tdx.Manage, code string) error {
@@ -43,6 +78,45 @@ func (this *PullTrade) Pull(ctx context.Context, m *tdx.Manage, code string) err
 		}
 	}
 	return nil
+}
+
+func (this *PullTrade) resolveCodes(m *tdx.Manage) []string {
+	if len(this.Codes) > 0 {
+		return uniqueTradeCodes(this.Codes)
+	}
+
+	assetTypes := this.AssetTypes
+	if len(assetTypes) == 0 {
+		assetTypes = []string{AssetStock}
+	}
+
+	merged := make([]string, 0)
+	for _, assetType := range assetTypes {
+		switch strings.ToLower(strings.TrimSpace(assetType)) {
+		case AssetStock:
+			merged = append(merged, m.Codes.GetStocks()...)
+		case AssetETF:
+			merged = append(merged, m.Codes.GetETFs()...)
+		}
+	}
+	return uniqueTradeCodes(merged)
+}
+
+func uniqueTradeCodes(codes []string) []string {
+	result := make([]string, 0, len(codes))
+	seen := make(map[string]struct{}, len(codes))
+	for _, code := range codes {
+		code = strings.ToLower(strings.TrimSpace(code))
+		if code == "" {
+			continue
+		}
+		if _, ok := seen[code]; ok {
+			continue
+		}
+		seen[code] = struct{}{}
+		result = append(result, code)
+	}
+	return result
 }
 
 func (this *PullTrade) PullYear(ctx context.Context, m *tdx.Manage, year int, code string) (err error) {

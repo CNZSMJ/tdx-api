@@ -41,7 +41,7 @@ go mod tidy
 3. **运行Web服务器**
 ```bash
 cd web
-go run server.go
+go run .
 ```
 
 4. **访问应用**
@@ -185,4 +185,3 @@ A: 修改 `server.go` 中的 `port` 变量即可。
 ## 联系方式
 
 如有问题或建议，请在GitHub上提交Issue。
-

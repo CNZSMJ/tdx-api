@@ -80,13 +80,34 @@ func NewWorkday(c *Client, db *xorm.Engine) (*Workday, error) {
 		}
 	})
 	task.Start()
-	return w, w.Update()
+	cacheCount, err := w.loadCache()
+	if err != nil {
+		return nil, err
+	}
+	if err := w.Update(); err != nil {
+		if cacheCount == 0 {
+			return nil, err
+		}
+		logs.Err(err)
+	}
+	return w, nil
 }
 
 type Workday struct {
 	*Client
 	db    *xorm.Engine
 	cache maps.Bit
+}
+
+func (this *Workday) loadCache() (int, error) {
+	all := []*WorkdayModel(nil)
+	if err := this.db.Find(&all); err != nil {
+		return 0, err
+	}
+	for _, v := range all {
+		this.cache.Set(uint64(v.Unix), true)
+	}
+	return len(all), nil
 }
 
 // Update 更新

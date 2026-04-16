@@ -11,21 +11,30 @@ ENDPOINTS = [
     ("kline_day", "GET", "/api/kline?code=000001&type=day"),
     ("minute", "GET", "/api/minute?code=000001&date=20241108"),
     ("trade", "GET", "/api/trade?code=000001&date=20241108"),
-    ("search", "GET", "/api/search?keyword=000001"),
+    ("search_stock", "GET", "/api/search?keyword=000001&asset_type=stock"),
+    ("search_all", "GET", "/api/search?keyword=沪深300&asset_type=all&limit=5"),
+    ("security_status", "GET", "/api/security/status?code=000001"),
+    ("profile", "GET", "/api/profile?code=000001"),
     ("stock_info", "GET", "/api/stock-info?code=000001"),
     ("codes_sz", "GET", "/api/codes?exchange=sz"),
     ("batch_quote", "POST", "/api/batch-quote", {"json": {"codes": ["000001", "600519", "601318"]}}),
-    ("kline_history", "GET", "/api/kline-history?code=000001&type=day&start_date=20241011&end_date=20241108"),
+    ("kline_history", "GET", "/api/kline-history?code=000001&type=day&limit=30"),
     ("index_day", "GET", "/api/index?code=sh000001&type=day"),
     ("index_all_day", "GET", "/api/index/all?code=sh000001&type=day"),
     ("market_stats", "GET", "/api/market-stats"),
+    ("market_screen", "GET", "/api/market/screen?sort=change_pct&limit=10"),
+    ("market_signal", "GET", "/api/market/signal?type=all"),
     ("market_count", "GET", "/api/market-count"),
     ("stock_codes", "GET", "/api/stock-codes"),
     ("etf_codes", "GET", "/api/etf-codes"),
+    ("index_codes", "GET", "/api/index-codes"),
     ("server_status", "GET", "/api/server-status"),
     ("health", "GET", "/api/health"),
     ("etf_list", "GET", "/api/etf?exchange=sh&limit=10"),
+    ("finance", "GET", "/api/finance?code=000001"),
+    ("f10_categories", "GET", "/api/f10/categories?code=000001"),
     ("trade_history", "GET", "/api/trade-history?code=000001&date=20241108&start=0&count=200"),
+    ("order_history", "GET", "/api/order-history?code=000001&date=20260331"),
     ("trade_history_full", "GET", "/api/trade-history/full?code=000001&start_date=2024-10-01&end_date=2024-10-08&limit=500"),
     ("minute_trade_all", "GET", "/api/minute-trade-all?code=000001&date=20241108"),
     ("kline_all_tdx", "GET", "/api/kline-all/tdx?code=000001&type=day&limit=1000"),
@@ -33,7 +42,9 @@ ENDPOINTS = [
     ("workday", "GET", "/api/workday?date=2024-11-08&count=3"),
     ("workday_range", "GET", "/api/workday/range?start=2024-11-01&end=2024-11-08"),
     ("income", "GET", "/api/income?code=000001&start_date=2024-11-01&days=5,10,20"),
+    ("collector_status", "GET", "/api/collector/status"),
     ("tasks_list", "GET", "/api/tasks"),
+    ("pull_trade_batch", "POST", "/api/tasks/pull-trade", {"json": {"codes": ["000001", "510300"], "limit": 1, "start_year": 2026, "end_year": 2026}}),
 ]
 
 
@@ -111,4 +122,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

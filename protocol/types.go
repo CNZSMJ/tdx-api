@@ -7,6 +7,7 @@ func (this Control) Uint8() uint8 {
 }
 
 const (
+	Control00 Control = 0x00 //板块文件等下载类请求使用
 	Control01 Control = 0x01 //好像都是01，暂时不知道啥含义
 )
 

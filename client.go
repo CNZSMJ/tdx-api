@@ -143,11 +143,26 @@ func (this *Client) handlerDealMessage(c *client.Client, msg ios.Acker) {
 
 	case protocol.TypeHeart:
 
+	case protocol.TypeFinanceInfo:
+		resp, err = protocol.MFinanceInfo.Decode(f.Data)
+
 	case protocol.TypeCount:
 		resp, err = protocol.MCount.Decode(f.Data)
 
 	case protocol.TypeCode:
 		resp, err = protocol.MCode.Decode(f.Data)
+
+	case protocol.TypeBlockFileMeta:
+		resp, err = protocol.MBlockFileMeta.Decode(f.Data)
+
+	case protocol.TypeBlockFileData:
+		resp, err = protocol.MBlockFileData.Decode(f.Data)
+
+	case protocol.TypeCompanyInfoCategory:
+		resp, err = protocol.MCompanyInfoCategory.Decode(f.Data)
+
+	case protocol.TypeCompanyInfoContent:
+		resp, err = protocol.MCompanyInfoContent.Decode(f.Data)
 
 	case protocol.TypeQuote:
 		resp = protocol.MQuote.Decode(f.Data)
@@ -156,7 +171,12 @@ func (this *Client) handlerDealMessage(c *client.Client, msg ios.Acker) {
 		resp, err = protocol.MMinute.Decode(f.Data)
 
 	case protocol.TypeHistoryMinute:
-		resp, err = protocol.MHistoryMinute.Decode(f.Data)
+		switch val.(type) {
+		case protocol.HistoryOrdersCache:
+			resp, err = protocol.MHistoryOrders.Decode(f.Data)
+		default:
+			resp, err = protocol.MHistoryMinute.Decode(f.Data)
+		}
 
 	case protocol.TypeMinuteTrade:
 		resp, err = protocol.MTrade.Decode(f.Data, val.(protocol.TradeCache))
@@ -349,6 +369,48 @@ func (this *Client) GetQuote(codes ...string) (protocol.QuotesResp, error) {
 	return quotes, nil
 }
 
+// GetFinanceInfo 获取财务数据
+func (this *Client) GetFinanceInfo(code string) (*protocol.FinanceInfo, error) {
+	code = protocol.AddPrefix(code)
+	f, err := protocol.MFinanceInfo.Frame(code)
+	if err != nil {
+		return nil, err
+	}
+	result, err := this.SendFrame(f)
+	if err != nil {
+		return nil, err
+	}
+	return result.(*protocol.FinanceInfo), nil
+}
+
+// GetCompanyInfoCategory 获取F10目录
+func (this *Client) GetCompanyInfoCategory(code string) (protocol.CompanyInfoCategories, error) {
+	code = protocol.AddPrefix(code)
+	f, err := protocol.MCompanyInfoCategory.Frame(code)
+	if err != nil {
+		return nil, err
+	}
+	result, err := this.SendFrame(f)
+	if err != nil {
+		return nil, err
+	}
+	return result.(protocol.CompanyInfoCategories), nil
+}
+
+// GetCompanyInfoContent 获取F10正文内容
+func (this *Client) GetCompanyInfoContent(code, filename string, start, length uint32) (string, error) {
+	code = protocol.AddPrefix(code)
+	f, err := protocol.MCompanyInfoContent.Frame(code, filename, start, length)
+	if err != nil {
+		return "", err
+	}
+	result, err := this.SendFrame(f)
+	if err != nil {
+		return "", err
+	}
+	return result.(string), nil
+}
+
 // GetMinute 获取分时数据,todo 解析好像不对,先用历史数据
 func (this *Client) GetMinute(code string) (*protocol.MinuteResp, error) {
 	return this.GetHistoryMinute(time.Now().Format("20060102"), code)
@@ -375,6 +437,20 @@ func (this *Client) GetHistoryMinute(date, code string) (*protocol.MinuteResp, e
 		return nil, err
 	}
 	return result.(*protocol.MinuteResp), nil
+}
+
+// GetHistoryOrders 获取历史委托分布
+func (this *Client) GetHistoryOrders(date, code string) (*protocol.HistoryOrdersResp, error) {
+	code = protocol.AddPrefix(code)
+	f, err := protocol.MHistoryOrders.Frame(date, code)
+	if err != nil {
+		return nil, err
+	}
+	result, err := this.SendFrame(f, protocol.HistoryOrdersCache{})
+	if err != nil {
+		return nil, err
+	}
+	return result.(*protocol.HistoryOrdersResp), nil
 }
 
 func (this *Client) GetTrade(code string, start, count uint16) (*protocol.TradeResp, error) {
@@ -794,4 +870,60 @@ func (this *Client) GetKlineYearAll(code string) (*protocol.KlineResp, error) {
 
 func (this *Client) GetKlineYearUntil(code string, f func(k *protocol.Kline) bool) (*protocol.KlineResp, error) {
 	return this.GetKlineUntil(protocol.TypeKlineYear, code, f)
+}
+
+// GetBlockFileMeta 获取板块文件元信息（文件大小等）
+func (this *Client) GetBlockFileMeta(filename string) (*protocol.BlockFileMetaResp, error) {
+	f, err := protocol.MBlockFileMeta.Frame(filename)
+	if err != nil {
+		return nil, err
+	}
+	result, err := this.SendFrame(f)
+	if err != nil {
+		return nil, err
+	}
+	return result.(*protocol.BlockFileMetaResp), nil
+}
+
+// GetBlockFileChunk 下载板块文件的一个数据块
+func (this *Client) GetBlockFileChunk(filename string, start, size uint32) (*protocol.BlockFileChunkResp, error) {
+	f, err := protocol.MBlockFileData.Frame(filename, start, size)
+	if err != nil {
+		return nil, err
+	}
+	result, err := this.SendFrame(f)
+	if err != nil {
+		return nil, err
+	}
+	return result.(*protocol.BlockFileChunkResp), nil
+}
+
+// DownloadBlockFile 下载并拼接完整的板块文件
+func (this *Client) DownloadBlockFile(filename string) ([]byte, error) {
+	meta, err := this.GetBlockFileMeta(filename)
+	if err != nil {
+		return nil, fmt.Errorf("block file meta %s: %w", filename, err)
+	}
+	if meta.Size == 0 {
+		return nil, fmt.Errorf("block file %s is empty", filename)
+	}
+
+	const chunkSize uint32 = 0x7530
+	buf := make([]byte, 0, meta.Size)
+	for offset := uint32(0); offset < meta.Size; {
+		reqSize := chunkSize
+		if remaining := meta.Size - offset; remaining < reqSize {
+			reqSize = remaining
+		}
+		chunk, err := this.GetBlockFileChunk(filename, offset, reqSize)
+		if err != nil {
+			return nil, fmt.Errorf("block file chunk %s offset=%d: %w", filename, offset, err)
+		}
+		if len(chunk.Data) == 0 {
+			break
+		}
+		buf = append(buf, chunk.Data...)
+		offset += uint32(len(chunk.Data))
+	}
+	return buf, nil
 }

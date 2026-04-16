@@ -218,7 +218,7 @@ start.bat
 cd web
 
 # 2. 运行服务器
-go run server.go
+go run .
 
 # 3. 打开浏览器
 # 访问 http://localhost:8080
@@ -499,4 +499,3 @@ function displayNewFeature(data) {
 **最后更新**：2024年11月3日  
 **版本**：v1.0.0  
 **许可**：遵循原项目开源协议
-

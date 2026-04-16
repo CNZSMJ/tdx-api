@@ -1,7 +1,6 @@
 package protocol
 
 import (
-	"errors"
 	"time"
 
 	"github.com/injoyai/conv"
@@ -35,8 +34,8 @@ func (historyTrade) Frame(date, code string, start, count uint16) (*Frame, error
 }
 
 func (historyTrade) Decode(bs []byte, c TradeCache) (*TradeResp, error) {
-	if len(bs) < 2 {
-		return nil, errors.New("数据长度不足")
+	if len(bs) < 6 {
+		return &TradeResp{}, nil
 	}
 
 	_, number, err := DecodeCode(c.Code)

@@ -1,6 +1,7 @@
 package tdx
 
 import (
+	"encoding/json"
 	"errors"
 	"github.com/injoyai/conv"
 	"github.com/injoyai/ios/client"
@@ -10,6 +11,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 	"xorm.io/core"
 	"xorm.io/xorm"
@@ -17,6 +19,24 @@ import (
 
 // DefaultCodes 增加单例,部分数据需要通过Codes里面的信息计算
 var DefaultCodes *Codes
+
+const (
+	DefaultIndexCodesFile = "index_codes.json"
+	IndexCodesEnv         = "TDX_INDEX_CODES"
+)
+
+var defaultIndexModels = []*CodeModel{
+	{Name: "上证指数", Exchange: "sh", Code: "000001"},
+	{Name: "上证50", Exchange: "sh", Code: "000016"},
+	{Name: "沪深300", Exchange: "sh", Code: "000300"},
+	{Name: "中证500", Exchange: "sh", Code: "000905"},
+	{Name: "中证1000", Exchange: "sh", Code: "000852"},
+	{Name: "科创50", Exchange: "sh", Code: "000688"},
+	{Name: "深证成指", Exchange: "sz", Code: "399001"},
+	{Name: "中小100", Exchange: "sz", Code: "399005"},
+	{Name: "创业板指", Exchange: "sz", Code: "399006"},
+	{Name: "国证2000", Exchange: "sz", Code: "399303"},
+}
 
 func DialCodes(filename string, op ...client.Option) (*Codes, error) {
 	c, err := DialDefault(op...)
@@ -35,7 +55,14 @@ func NewCodesMysql(c *Client, dsn string) (*Codes, error) {
 	}
 	db.SetMapper(core.SameMapper{})
 
-	return NewCodes(c, db)
+	cc, err := NewCodes(c, db)
+	if err != nil {
+		return nil, err
+	}
+	if models, source := loadConfiguredIndexModelsFromDir(DefaultDatabaseDir); len(models) > 0 {
+		cc.indexes, cc.indexFrom = models, source
+	}
+	return cc, nil
 }
 
 func NewCodesSqlite(c *Client, filenames ...string) (*Codes, error) {
@@ -57,7 +84,14 @@ func NewCodesSqlite(c *Client, filenames ...string) (*Codes, error) {
 	db.SetMapper(core.SameMapper{})
 	db.DB().SetMaxOpenConns(1)
 
-	return NewCodes(c, db)
+	cc, err := NewCodes(c, db)
+	if err != nil {
+		return nil, err
+	}
+	if models, source := loadConfiguredIndexModelsFromDir(dir); len(models) > 0 {
+		cc.indexes, cc.indexFrom = models, source
+	}
+	return cc, nil
 }
 
 func NewCodes(c *Client, db *xorm.Engine) (*Codes, error) {
@@ -86,6 +120,7 @@ func NewCodes(c *Client, db *xorm.Engine) (*Codes, error) {
 		Client: c,
 		db:     db,
 	}
+	cc.indexes, cc.indexFrom = cloneIndexModels(defaultIndexModels), "builtin"
 
 	{ //设置定时器,每天早上9点更新数据
 		task := cron.New(cron.WithSeconds())
@@ -106,21 +141,39 @@ func NewCodes(c *Client, db *xorm.Engine) (*Codes, error) {
 		now := time.Now()
 		node := time.Date(now.Year(), now.Month(), now.Day(), 9, 0, 0, 0, time.Local)
 		updateTime := time.Unix(update.Time, 0)
+		needRefresh := false
 		if now.Sub(node) > 0 {
 			//当前时间在9点之后,且更新时间在9点之前,需要更新
 			if updateTime.Sub(node) < 0 {
-				return cc, cc.Update()
+				needRefresh = true
 			}
 		} else {
-			//当前时间在9点之前,且更新时间在上个节点之前
-			if updateTime.Sub(node.Add(time.Hour*24)) < 0 {
-				return cc, cc.Update()
+			//当前时间在9点之前,只有在昨日9点前仍未更新时才需要刷新
+			if updateTime.Sub(node.Add(-time.Hour*24)) < 0 {
+				needRefresh = true
 			}
+		}
+		if needRefresh {
+			if err := cc.Update(); err != nil {
+				cached, cacheErr := cc.GetCodes(true)
+				if cacheErr != nil || len(cached) == 0 {
+					return cc, err
+				}
+				cc.applyCodes(cached)
+				logs.Err(err)
+				return cc, nil
+			}
+			return cc, nil
 		}
 	}
 
 	//从缓存中加载
-	return cc, cc.Update(true)
+	cached, err := cc.GetCodes(true)
+	if err != nil {
+		return cc, err
+	}
+	cc.applyCodes(cached)
+	return cc, nil
 }
 
 type Codes struct {
@@ -129,12 +182,19 @@ type Codes struct {
 	Map       map[string]*CodeModel //股票缓存
 	list      []*CodeModel          //列表方式缓存
 	exchanges map[string][]string   //交易所缓存
+	indexes   []*CodeModel          //核心指数缓存
+	indexFrom string                //指数来源
 }
 
 // GetName 获取股票名称
 func (this *Codes) GetName(code string) string {
 	if v, ok := this.Map[code]; ok {
 		return v.Name
+	}
+	for _, index := range this.indexes {
+		if index.FullCode() == code {
+			return index.Name
+		}
 	}
 	return "未知"
 }
@@ -171,6 +231,35 @@ func (this *Codes) GetETFs(limits ...int) []string {
 	return ls
 }
 
+// GetIndexes 获取指数代码
+func (this *Codes) GetIndexes(limits ...int) []string {
+	limit := conv.Default(-1, limits...)
+	ls := make([]string, 0, len(this.indexes))
+	for _, index := range this.indexes {
+		ls = append(ls, index.FullCode())
+		if limit > 0 && len(ls) >= limit {
+			break
+		}
+	}
+	return ls
+}
+
+func (this *Codes) GetIndexModels() []*CodeModel {
+	models := make([]*CodeModel, 0, len(this.indexes))
+	for _, model := range this.indexes {
+		copyModel := *model
+		models = append(models, &copyModel)
+	}
+	return models
+}
+
+func (this *Codes) GetIndexSource() string {
+	if this.indexFrom == "" {
+		return "builtin"
+	}
+	return this.indexFrom
+}
+
 func (this *Codes) Get(code string) *CodeModel {
 	return this.Map[code]
 }
@@ -185,6 +274,13 @@ func (this *Codes) Update(byDB ...bool) error {
 	if err != nil {
 		return err
 	}
+	this.applyCodes(codes)
+	//更新时间
+	_, err = this.db.Where("`Key`=?", "codes").Update(&UpdateModel{Time: time.Now().Unix()})
+	return err
+}
+
+func (this *Codes) applyCodes(codes []*CodeModel) {
 	codeMap := make(map[string]*CodeModel)
 	exchanges := make(map[string][]string)
 	for _, code := range codes {
@@ -194,9 +290,9 @@ func (this *Codes) Update(byDB ...bool) error {
 	this.Map = codeMap
 	this.list = codes
 	this.exchanges = exchanges
-	//更新时间
-	_, err = this.db.Where("`Key`=?", "codes").Update(&UpdateModel{Time: time.Now().Unix()})
-	return err
+	if this.GetIndexSource() == "builtin" {
+		this.indexes = detectIndexModels(codes)
+	}
 }
 
 // GetCodes 更新股票并返回结果
@@ -329,6 +425,135 @@ func (*CodeModel) TableName() string {
 
 func (this *CodeModel) FullCode() string {
 	return this.Exchange + this.Code
+}
+
+func loadConfiguredIndexModelsFromDir(dir string) ([]*CodeModel, string) {
+	if raw := strings.TrimSpace(os.Getenv(IndexCodesEnv)); raw != "" {
+		models, err := parseIndexModelsCSV(raw)
+		if err != nil {
+			logs.Err(err)
+		} else if len(models) > 0 {
+			return models, "env"
+		}
+	}
+
+	filename := filepath.Join(dir, DefaultIndexCodesFile)
+	bs, err := os.ReadFile(filename)
+	if err == nil {
+		models, parseErr := parseIndexModelsJSON(bs)
+		if parseErr != nil {
+			logs.Err(parseErr)
+		} else if len(models) > 0 {
+			return models, "file"
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		logs.Err(err)
+	}
+
+	return nil, ""
+}
+
+func parseIndexModelsCSV(raw string) ([]*CodeModel, error) {
+	parts := strings.Split(raw, ",")
+	models := make([]*CodeModel, 0, len(parts))
+	for _, part := range parts {
+		code := strings.ToLower(strings.TrimSpace(part))
+		if code == "" {
+			continue
+		}
+		model, err := newIndexModel(code, "")
+		if err != nil {
+			return nil, err
+		}
+		models = append(models, model)
+	}
+	return models, nil
+}
+
+func parseIndexModelsJSON(bs []byte) ([]*CodeModel, error) {
+	var stringList []string
+	if err := json.Unmarshal(bs, &stringList); err == nil && len(stringList) > 0 {
+		return parseIndexModelsCSV(strings.Join(stringList, ","))
+	}
+
+	var itemList []struct {
+		Code string `json:"code"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(bs, &itemList); err == nil && len(itemList) > 0 {
+		models := make([]*CodeModel, 0, len(itemList))
+		for _, item := range itemList {
+			model, newErr := newIndexModel(item.Code, item.Name)
+			if newErr != nil {
+				return nil, newErr
+			}
+			models = append(models, model)
+		}
+		return models, nil
+	}
+
+	return nil, errors.New("index_codes.json 格式错误，应为字符串数组或包含 code/name 的对象数组")
+}
+
+func newIndexModel(code, name string) (*CodeModel, error) {
+	code = strings.ToLower(strings.TrimSpace(code))
+	if !protocol.IsIndex(code) {
+		return nil, errors.New("指数代码必须带交易所前缀，示例: sh000001 / sz399001")
+	}
+
+	exchange := code[:2]
+	number := code[2:]
+	if strings.TrimSpace(name) == "" {
+		name = defaultIndexName(code)
+	}
+	if strings.TrimSpace(name) == "" {
+		name = number
+	}
+
+	return &CodeModel{
+		Name:     name,
+		Exchange: exchange,
+		Code:     number,
+	}, nil
+}
+
+func defaultIndexName(code string) string {
+	for _, model := range defaultIndexModels {
+		if model.FullCode() == code {
+			return model.Name
+		}
+	}
+	return ""
+}
+
+func cloneIndexModels(src []*CodeModel) []*CodeModel {
+	models := make([]*CodeModel, 0, len(src))
+	for _, model := range src {
+		copyModel := *model
+		models = append(models, &copyModel)
+	}
+	return models
+}
+
+func detectIndexModels(list []*CodeModel) []*CodeModel {
+	models := make([]*CodeModel, 0, 512)
+	seen := make(map[string]struct{})
+	for _, model := range list {
+		code := model.FullCode()
+		if !protocol.IsIndex(code) {
+			continue
+		}
+		if _, ok := seen[code]; ok {
+			continue
+		}
+		seen[code] = struct{}{}
+		copyModel := *model
+		models = append(models, &copyModel)
+	}
+	if len(models) == 0 {
+		return cloneIndexModels(defaultIndexModels)
+	}
+	return models
 }
 
 func (this *CodeModel) Price(p protocol.Price) protocol.Price {

@@ -1,0 +1,8 @@
+data/
+web/data/
+.env
+*.db
+*.db-journal
+__pycache__/
+*.py[cod]
+docs/ROADMAP.md

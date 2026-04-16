@@ -10,7 +10,7 @@
 
 ## 📋 响应格式
 
-所有接口统一返回格式：
+除 `/api/health` 探活接口外，其他业务接口统一返回格式：
 
 ```json
 {
@@ -98,8 +98,7 @@ GET /api/quote?code=000001,600519
 
 **接口**: `GET /api/kline`
 
-**描述**: 获取股票K线数据（OHLC + 成交量成交额）。日/周/月K线默认返回同花顺前复权数据；若第三方源不可用将直接返回错误提示，不再自动切换通达信源。需要原始数据或自行设置兜底时，可调用文末的 `/api/kline-all/tdx` 等接口。
-**描述**: 获取股票K线数据（OHLC + 成交量成交额）。日/周/月K线优先返回同花顺前复权数据，若第三方源不可用则自动回退到通达信原始数据；分钟级及小时级为原始数据。
+**描述**: 获取股票K线数据（OHLC + 成交量成交额）。日/周/月K线默认返回同花顺前复权数据；若第三方源不可用将直接返回错误提示，不再自动切换通达信源。需要原始数据或自行设置兜底时，可调用文末的 `/api/kline-all/tdx` 等接口。分钟级及小时级为原始数据。
 
 **请求参数**:
 | 参数 | 类型 | 必填 | 说明 |
@@ -161,7 +160,6 @@ GET /api/kline?code=600519&type=minute30
 
 **接口**: `GET /api/minute`
 
-**描述**: 获取股票分时走势数据。接口严格按照请求日期返回结果，不再自动回退其他交易日；若指定日期无数据，将返回空列表并保留原日期。
 **描述**: 获取股票分时走势数据；若查询日期或当日无数据，会自动回退至最近一个有交易数据的工作日，并在响应体中附加实际数据日期。
 
 **请求参数**:
@@ -182,7 +180,6 @@ GET /api/minute?code=000001&date=20241103
   "code": 0,
   "message": "success",
   "data": {
-    "date": "20251110",   // 实际数据日期，与请求日期一致
     "date": "20251107",   // 实际数据日期，可能与请求日期不同
     "Count": 240,
     "List": [
@@ -206,7 +203,8 @@ GET /api/minute?code=000001&date=20241103
 - 交易时段：9:30-11:30（120分钟）, 13:00-15:00（120分钟）
 - 共240个数据点
 - 价格单位：厘
-- 若 `List` 为空，表示该日期无分时数据，请由调用方自行选择备用日期或数据源
+- `date` 为实际返回数据所属交易日；若发生回退，可能与请求日期不同
+- 若 `List` 为空，表示回退后仍未找到可用分时数据
 
 ---
 
@@ -265,21 +263,25 @@ GET /api/trade?code=000001&date=20241103
 
 ---
 
-### 5. 搜索股票代码
+### 5. 跨资产证券搜索
 
 **接口**: `GET /api/search`
 
-**描述**: 根据关键词搜索股票代码和名称
+**描述**: 根据关键词在全市场（股票、ETF、指数）中搜索证券代码和名称，返回丰富的元数据。
 
 **请求参数**:
 | 参数 | 类型 | 必填 | 说明 |
 |-----|------|------|------|
-| keyword | string | 是 | 搜索关键词（代码或名称） |
+| keyword | string | 是 | 搜索关键词（代码或名称，模糊匹配） |
+| asset_type | string | 否 | `stock`、`etf`、`index`、`all`（默认 `all`）。兼容旧参数名 `type` |
+| limit | int | 否 | 返回条数上限，默认 50 |
 
 **请求示例**:
 ```
 GET /api/search?keyword=平安
-GET /api/search?keyword=000001
+GET /api/search?keyword=000001&asset_type=stock
+GET /api/search?keyword=沪深300&asset_type=index
+GET /api/search?keyword=510&asset_type=etf&limit=10
 ```
 
 **响应示例**:
@@ -287,24 +289,96 @@ GET /api/search?keyword=000001
 {
   "code": 0,
   "message": "success",
-  "data": [
-    {
-      "code": "000001",
-      "name": "平安银行"
-    },
-    {
-      "code": "601318",
-      "name": "中国平安"
-    }
-    // ... 最多50条结果
-  ]
+  "data": {
+    "count": 3,
+    "list": [
+      {
+        "code": "000001",
+        "full_code": "sz000001",
+        "name": "平安银行",
+        "exchange": "sz",
+        "asset_type": "stock",
+        "decimal": 2,
+        "multiple": 100,
+        "last_price": 11.05
+      },
+      {
+        "code": "601318",
+        "full_code": "sh601318",
+        "name": "中国平安",
+        "exchange": "sh",
+        "asset_type": "stock",
+        "decimal": 2,
+        "multiple": 100,
+        "last_price": 48.50
+      }
+    ]
+  }
 }
 ```
 
-**数据说明**:
-- 支持代码和名称模糊搜索
-- 最多返回50条结果
-- 仅返回A股（过滤指数等）
+**出参字段说明**:
+| 字段 | 说明 |
+|------|------|
+| `code` | 6 位证券代码 |
+| `full_code` | 含交易所前缀的 8 位全码（如 `sz000001`） |
+| `name` | 证券名称 |
+| `exchange` | 交易所（`sh` / `sz` / `bj`） |
+| `asset_type` | `stock` / `etf` / `index` / `other` |
+| `decimal` | 价格精度（小数位数） |
+| `multiple` | 乘数 |
+| `last_price` | 昨收价 |
+
+---
+
+### 5a. 证券可交易状态
+
+**接口**: `GET /api/security/status`
+
+**描述**: 查询单只证券的可交易性状态，包括是否停牌、是否 ST、是否有退市风险等。判断逻辑基于证券名称模式匹配和盘中行情推断。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| code | string | 是 | 证券代码（6 位或 8 位含前缀） |
+
+**请求示例**:
+```
+GET /api/security/status?code=000001
+GET /api/security/status?code=sh600519
+```
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "code": "000001",
+    "full_code": "sz000001",
+    "name": "平安银行",
+    "asset_type": "stock",
+    "is_trading": true,
+    "is_suspended": false,
+    "is_st": false,
+    "is_delisting_risk": false,
+    "quote_time": "15:00:03",
+    "updated_at": "2026-04-09T10:30:00+08:00",
+    "note": "is_suspended 基于盘中 volume==0 推断，非交易时段可能不准确；is_st/is_delisting_risk 基于证券名称模式匹配"
+  }
+}
+```
+
+**字段说明**:
+| 字段 | 说明 |
+|------|------|
+| `is_trading` | 综合判断：非停牌且无退市风险则为 `true` |
+| `is_suspended` | 盘中 volume=0 且开盘价=0 判定为停牌（非交易时段可能不准确） |
+| `is_st` | 名称含 `ST`（含 `*ST`） |
+| `is_delisting_risk` | 名称含 `*ST` |
+| `note` | 数据来源与精度说明 |
+
+> **局限性**：TDX 协议不提供显式的停牌/ST 标记，上述字段均为推断值。`is_suspended` 在非交易时段由于无行情数据而可能误判。建议在盘中使用以获得最佳准确性。
 
 ---
 
@@ -406,7 +480,7 @@ GET /api/codes?exchange=sh
 
 **接口**: `POST /api/batch-quote`
 
-**描述**: 批量获取多只股票的实时行情
+**描述**: 批量获取多只标的的实时行情。`codes` 中除 A 股、ETF 六位或八位全码外，亦可传入**指数全码**（如 `sh000001`、`sz399001`、`sz399006`），与 `/api/quote` 使用同一行情通道，便于一次拉取多只指数的盘中快照（单次仍受 50 只上限约束）。
 
 **请求参数** (JSON Body):
 ```json
@@ -439,21 +513,18 @@ curl -X POST http://localhost:8080/api/batch-quote \
 
 **接口**: `GET /api/kline-history`
 
-**描述**: 获取指定时间范围的K线数据
+**描述**: 获取最近 N 条历史K线数据，优先面向低开销的最近窗口读取，不支持按日期范围筛选
 
 **请求参数**:
 | 参数 | 类型 | 必填 | 说明 |
 |-----|------|------|------|
 | code | string | 是 | 股票代码 |
 | type | string | 是 | K线类型 |
-| start_date | string | 否 | 开始日期（YYYYMMDD） |
-| end_date | string | 否 | 结束日期（YYYYMMDD） |
 | limit | int | 否 | 返回条数，默认100，最大800 |
 
 **请求示例**:
 ```
 GET /api/kline-history?code=000001&type=day&limit=30
-GET /api/kline-history?code=000001&type=day&start_date=20241001&end_date=20241101
 ```
 
 ---
@@ -503,22 +574,45 @@ GET /api/index?code=sh000001&type=day
 }
 ```
 
+#### 补充：健康检查（探活）
+
+**接口**: `GET /api/health`
+
+**描述**: 面向 Docker / 负载均衡探活使用，返回 HTTP 200 和轻量 JSON，不走统一响应包裹。
+
+**响应示例**:
+```json
+{
+  "status": "healthy",
+  "time": 1712800000
+}
+```
+
 ---
 
 ### 12. 创建批量K线入库任务
 
 **接口**: `POST /api/tasks/pull-kline`
 
-**描述**: 启动后台任务，批量拉取指定股票、指定周期的K线数据并存入本地数据库（默认目录：`data/database/kline`）。任务在后台异步执行，可通过任务管理接口查询状态。
+**描述**: 启动后台任务，批量拉取指定证券、指定周期的K线数据并存入本地数据库（默认目录：`data/database/kline`）。任务在后台异步执行，可通过任务管理接口查询状态。
 
 **请求参数**（JSON Body）:
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| codes | array | 否 | 股票代码数组，默认遍历全部A股 |
+| codes | array | 否 | 证券代码数组；为空时按 `asset_types` 自动选择代码池 |
+| index_codes | array | 否 | 临时覆盖的指数代码列表，仅在 `asset_types` 包含 `index` 且 `codes` 为空时生效 |
+| asset_types | array | 否 | 采集对象类型，支持 `stock` / `etf` / `index`；默认 `["stock"]` |
 | tables | array | 否 | K线类型列表，取值见下表，默认 `["day"]` |
 | dir | string | 否 | 数据库存储目录，默认 `data/database/kline` |
 | limit | int | 否 | 并发协程数量，默认1 |
 | start_date | string | 否 | 起始日期阈值（`YYYY-MM-DD` 或 `YYYYMMDD`），早于此日期的数据不会重新拉取 |
+
+**说明**:
+- 当 `codes` 为空时，服务会按 `asset_types` 自动拼装代码池
+- `index` 默认使用内置核心指数清单，可通过 `/api/index-codes` 查看
+- 若配置了 `data/database/index_codes.json` 或环境变量 `TDX_INDEX_CODES`，`/api/index-codes` 会优先使用自定义指数池
+- `index_codes` 必须使用带交易所前缀的指数代码，如 `sh000001`、`sz399001`
+- 若 `codes` 中混合了股票、ETF、指数，服务会按代码类型自动切换采集实现
 
 **K线类型列表**:
 `minute`, `5minute`, `15minute`, `30minute`, `hour`, `day`, `week`, `month`, `quarter`, `year`
@@ -528,7 +622,7 @@ GET /api/index?code=sh000001&type=day
 curl -X POST http://localhost:8080/api/tasks/pull-kline \
   -H "Content-Type: application/json" \
   -d '{
-    "codes": ["000001","600519"],
+    "asset_types": ["stock", "etf", "index"],
     "tables": ["day","week","month"],
     "limit": 4,
     "start_date": "2020-01-01"
@@ -552,24 +646,33 @@ curl -X POST http://localhost:8080/api/tasks/pull-kline \
 
 **接口**: `POST /api/tasks/pull-trade`
 
-**描述**: 拉取指定股票从 `start_year` 到 `end_year` 的历史分时成交数据，并自动导出CSV（默认目录：`data/database/trade`）。
+**描述**: 拉取指定股票或 ETF 从 `start_year` 到 `end_year` 的历史分时成交数据，并自动导出CSV（默认目录：`data/database/trade`）。
 
 **请求参数**（JSON Body）:
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| code | string | 是 | 股票代码（如：000001） |
+| code | string | 否 | 单个证券代码，兼容旧用法 |
+| codes | array | 否 | 批量证券代码列表 |
+| asset_types | array | 否 | 采集对象类型，支持 `stock` / `etf`；默认 `["stock"]` |
 | dir | string | 否 | 输出目录，默认 `data/database/trade` |
+| limit | int | 否 | 并发协程数量，默认1 |
 | start_year | int | 否 | 起始年份，默认2000 |
 | end_year | int | 否 | 结束年份，默认当年 |
+
+**说明**:
+- 若同时未提供 `code` 与 `codes`，服务会按 `asset_types` 自动拼装代码池
+- `pull-trade` 当前暂不支持 `index`，传入指数代码会直接报错
+- 该接口保留旧版单 `code` 调法，兼容已有调用
 
 **请求示例**:
 ```bash
 curl -X POST http://localhost:8080/api/tasks/pull-trade \
   -H "Content-Type: application/json" \
   -d '{
-    "code": "000001",
-    "start_year": 2015,
-    "end_year": 2023
+    "asset_types": ["stock", "etf"],
+    "limit": 2,
+    "start_year": 2025,
+    "end_year": 2026
   }'
 ```
 
@@ -646,7 +749,159 @@ curl -X POST http://localhost:8080/api/tasks/pull-trade \
 
 ---
 
-### 16. 获取历史分时成交（分页）
+### 16. 获取财务数据
+
+**接口**: `GET /api/finance`
+
+**描述**: 获取单只证券的财务摘要数据，字段为通达信原始财务口径。该接口用于返回 raw 财务快照，不承诺直接提供 PE/PB 等估值比率。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| code | string | 是 | 股票代码 |
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "code": "000001",
+    "liutongguben": 2188390000,
+    "zongguben": 19405918198,
+    "gudongrenshu": 124352,
+    "UpdatedDate": 20260321
+  }
+}
+```
+
+---
+
+### 16a. 获取多期财报
+
+**接口**: `GET /api/financial-reports`
+
+**描述**: 获取单只证券的多期财报摘要序列。数据源为 `professional_finance` 报告文件，按报告期倒序返回，适合做历史财报趋势分析。该接口返回的是多期“报告级”数据，不等同于 `/api/finance` 的单份 raw 快照。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| code | string | 是 | 证券代码，支持 6 位或带前缀代码 |
+| limit | int | 否 | 返回报告期数量，默认 8，最大 40 |
+| start_date | string | 否 | 起始报告期（`YYYYMMDD` 或 `YYYY-MM-DD`） |
+| end_date | string | 否 | 结束报告期（`YYYYMMDD` 或 `YYYY-MM-DD`） |
+
+**请求示例**:
+```text
+GET /api/financial-reports?code=000001
+GET /api/financial-reports?code=sz000001&limit=4
+GET /api/financial-reports?code=600000&start_date=20250101&end_date=20251231
+```
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "code": "000001",
+    "count": 3,
+    "limit": 8,
+    "start_date": "",
+    "end_date": "",
+    "source": "tdx_professional_finance",
+    "list": [
+      {
+        "code": "000001",
+        "report_date": "20260331",
+        "book_value_per_share": 23.25,
+        "total_shares": 19405918198,
+        "float_a_shares": 19405600768,
+        "net_profit_ttm": 42632998912,
+        "revenue_ttm_yuan": 1314420000000,
+        "weighted_roe": 9.15,
+        "source_report_file": "gpcw20260331.zip"
+      }
+    ]
+  }
+}
+```
+
+**字段说明**:
+| 字段 | 说明 |
+|------|------|
+| `report_date` | 报告期，`YYYYMMDD` |
+| `book_value_per_share` | 每股净资产 |
+| `total_shares` | 总股本 |
+| `float_a_shares` | 流通 A 股股本 |
+| `net_profit_ttm` | TTM 口径净利润 |
+| `revenue_ttm_yuan` | TTM 口径营收（元） |
+| `weighted_roe` | 加权 ROE |
+| `source_report_file` | 来源财报文件 |
+
+---
+
+### 17. 获取 F10 目录
+
+**接口**: `GET /api/f10/categories`
+
+**描述**: 获取指定证券的 F10 栏目目录，可用于后续拉取具体正文内容。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| code | string | 是 | 股票代码 |
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": [
+    {
+      "Name": "最新提示",
+      "Filename": "000001.txt",
+      "Start": 0,
+      "Length": 1744
+    }
+  ]
+}
+```
+
+---
+
+### 18. 获取 F10 正文
+
+**接口**: `GET /api/f10/content`
+
+**描述**: 按 F10 目录项返回正文文本，通常配合 `/api/f10/categories` 使用。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| code | string | 是 | 股票代码 |
+| filename | string | 是 | F10 文件名 |
+| start | int | 是 | 起始偏移 |
+| length | int | 是 | 读取长度 |
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "code": "000001",
+    "filename": "000001.txt",
+    "start": 0,
+    "length": 1744,
+    "content": "平安银行股份有限公司..."
+  }
+}
+```
+
+---
+
+### 19. 获取历史分时成交（分页）
 
 **接口**: `GET /api/trade-history`
 
@@ -681,7 +936,50 @@ curl -X POST http://localhost:8080/api/tasks/pull-trade \
 
 ---
 
-### 17. 获取全天分时成交
+### 20. 获取历史委托分布
+
+**接口**: `GET /api/order-history`
+
+**描述**: 获取指定交易日的历史委托分布数据。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| code | string | 是 | 股票代码 |
+| date | string | 是 | 交易日期（YYYYMMDD 或 YYYY-MM-DD） |
+
+**字段说明**:
+| 字段 | 说明 |
+|------|------|
+| Price | 价格，单位为厘，实际价格 = `Price / 1000` |
+| BuySellDelta | 买卖差原始值，正数偏买盘，负数偏卖盘，`0` 表示相对平衡或无明显偏向 |
+| Volume | 委托量 |
+
+**说明**: `BuySellDelta` 是基于通达信历史委托返回值的推断命名，用于表达买卖盘偏向；其具体业务定义仍建议结合更多样本进一步校验。
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "date": "20260331",
+    "Count": 240,
+    "PreClose": 10990,
+    "List": [
+      {
+        "Price": 11050,
+        "BuySellDelta": -368,
+        "Volume": 21016
+      }
+    ]
+  }
+}
+```
+
+---
+
+### 21. 获取全天分时成交
 
 **接口**: `GET /api/minute-trade-all`
 
@@ -714,7 +1012,7 @@ curl -X POST http://localhost:8080/api/tasks/pull-trade \
 
 ---
 
-### 18. 查询交易日信息
+### 22. 查询交易日信息
 
 **接口**: `GET /api/workday`
 
@@ -755,7 +1053,7 @@ curl -X POST http://localhost:8080/api/tasks/pull-trade \
 
 ---
 
-### 19. 获取市场证券数量
+### 23. 获取市场证券数量
 
 **接口**: `GET /api/market-count`
 
@@ -779,7 +1077,76 @@ curl -X POST http://localhost:8080/api/tasks/pull-trade \
 
 ---
 
-### 20. 获取股票代码列表
+### 全市场宽度与异动接口（补充）
+
+以下接口依赖本服务内的 **Ticker 实时聚合**；部分能力还依赖本地 **日 K 线 SQLite 库**（`Kline.BaseDir` 下 `{code}.db`）。未就绪时返回明确 `status`，避免使用陈旧或误导性数据。
+
+#### `GET /api/market-stats` — 全市场宽度统计
+
+**描述**: 按交易所与资产类型汇总涨跌家数、涨跌停家数、成交额与成交量等；数据来自 Ticker 每轮轮询后的预计算缓存。
+
+**未就绪时的 `data` 形态**（仍为标准 `code:0` 成功包装，字段在 `data` 内）:
+
+| status | 含义 |
+|--------|------|
+| `not_started` | Ticker 服务未初始化 |
+| `warming_up` | Ticker 已启动，尚未完成首次行情写入 |
+| `out_of_session` | 非交易时段或 Ticker 未运行，且无有效 `updated_at` |
+
+**就绪时的 `data` 主要字段**:
+
+| 字段 | 说明 |
+|------|------|
+| `sh` / `sz` / `bj` | 各交易所：`total`、`up`、`down`、`flat`、`up_ratio`、`limit_up`、`limit_down`、`total_amount`、`total_volume` |
+| `summary` | `stock`、`etf` 两组，字段同上 |
+| `updated_at` | Ticker 缓存更新时间（RFC3339） |
+| `status` | `live`（约 10 秒内更新）或 `stale` |
+| `status_hint` | 仅在 `stale` 等需要说明时给出 |
+
+---
+
+#### `GET /api/market/screen` — 排行与涨跌停池
+
+**描述**: 在 Ticker 缓存上按条件筛选、排序，返回列表；涨跌停筛选**仅股票**有效。
+
+**请求参数**:
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| sort | string | 否 | 排序字段：`change_pct`（默认）、`amount`、`volume`、`amplitude` |
+| order | string | 否 | `desc`（默认）或 `asc` |
+| filter | string | 否 | 空：不过滤；`limit_up`：涨停池；`limit_down`：跌停池（强制 `asset_type=stock`） |
+| asset_type | string | 否 | `stock`（默认）、`etf`、`all` |
+| limit | int | 否 | 返回条数，默认 50，最大 200 |
+
+**响应**: `count`、`list`（元素含 `code`、`name`、`exchange`、`asset_type`、`price`、`change_pct`、`volume`、`amount`、`amplitude`、`is_limit_up`、`is_limit_down` 等）。涨跌停池项可含 `limit_first_seen`、`limit_last_seen`、`limit_break_count`、`bid1_volume`（涨停）或 `ask1_volume`（跌停）。若使用涨跌停筛选，可能附带 `filter_note`。另含 `updated_at` 与 `status`（`live` / `stale` / `waiting` / `not_started`，与 Ticker 元数据一致）。
+
+---
+
+#### `GET /api/market/signal` — K 线扫描异动
+
+**描述**: 后台按配置间隔扫描各股日 K 表，与当前 Ticker 快照对比，产出**阶段新高**、**阶段新低**、**放量异动**三类列表；扫描进行中仍返回**上一轮完整结果**。
+
+**请求参数**:
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| type | string | 否 | `all`（默认，不返回合并 `list`，仅各数组与总 `count`）、`new_high`、`new_low`、`volume_spike` |
+
+**响应**（`data` 内）:
+
+| 字段 | 说明 |
+|------|------|
+| `status` | `not_ready`（尚无首轮结果）、`scanning`、`ready`、`stale`（超过新鲜度阈值，默认 15 分钟） |
+| `status_hint` | 人类可读说明 |
+| `updated_at` | 上一轮扫描完成时间 |
+| `scan_duration_ms` | 上一轮扫描耗时 |
+| `new_high` / `new_low` / `volume_spike` | 信号数组；单项含 `code`、`name`、`signal_type`、`window`、`price`、`ref_high`/`ref_low`、`volume`、`avg_volume`、`volume_ratio`、`change_pct` 等（按类型取舍） |
+| `list` / `count` | 当 `type` 为某一类时，返回该类列表与条数 |
+
+---
+
+### 24. 获取股票代码列表
 
 **接口**: `GET /api/stock-codes`
 
@@ -809,7 +1176,7 @@ curl -X POST http://localhost:8080/api/tasks/pull-trade \
 
 ---
 
-### 21. 获取ETF代码列表
+### 25. 获取ETF代码列表
 
 **接口**: `GET /api/etf-codes`
 
@@ -832,7 +1199,44 @@ curl -X POST http://localhost:8080/api/tasks/pull-trade \
 
 ---
 
-### 22. 获取股票全部历史K线
+### 26. 获取指数代码列表
+
+**接口**: `GET /api/index-codes`
+
+**描述**: 返回当前服务使用的指数代码列表，参数与 `/api/stock-codes` 相同。
+
+**来源优先级**:
+1. 环境变量 `TDX_INDEX_CODES`
+2. 配置文件 `data/database/index_codes.json`
+3. 交易所代码表自动识别的全量指数
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "count": 10,
+    "source": "builtin",
+    "list": [
+      "sh000001",
+      "sz399001",
+      "sz399006"
+    ],
+    "items": [
+      {
+        "name": "上证指数",
+        "code": "000001",
+        "exchange": "sh"
+      }
+    ]
+  }
+}
+```
+
+---
+
+### 27. 获取股票全部历史K线
 
 **接口**: `GET /api/kline-all`
 
@@ -849,7 +1253,7 @@ curl -X POST http://localhost:8080/api/tasks/pull-trade \
 
 ---
 
-### 23. 获取指数全部历史K线
+### 28. 获取指数全部历史K线
 
 **接口**: `GET /api/index/all`
 
@@ -859,7 +1263,7 @@ curl -X POST http://localhost:8080/api/tasks/pull-trade \
 
 ---
 
-### 24. 获取上市以来分时成交
+### 29. 获取上市以来分时成交
 
 **接口**: `GET /api/trade-history/full`
 
@@ -874,7 +1278,7 @@ curl -X POST http://localhost:8080/api/tasks/pull-trade \
 
 ---
 
-### 25. 获取交易日范围
+### 30. 获取交易日范围
 
 **接口**: `GET /api/workday/range`
 
@@ -888,7 +1292,7 @@ curl -X POST http://localhost:8080/api/tasks/pull-trade \
 
 ---
 
-### 26. 计算收益区间指标
+### 31. 计算收益区间指标
 
 **接口**: `GET /api/income`
 
@@ -917,6 +1321,435 @@ curl -X POST http://localhost:8080/api/tasks/pull-trade \
         "source": { "close": 12250.0, "open": 12300.0, "...": 0 },
         "current": { "close": 12580.0, "open": 12600.0, "...": 0 }
       }
+    ]
+  }
+}
+```
+
+---
+
+## 🏷️ 板块数据接口
+
+### 32. 获取板块列表
+
+**接口**: `GET /api/blocks`
+
+**描述**: 获取行业板块、概念板块等分类列表，支持按类型筛选或关键词搜索。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| type | string | 否 | 板块类型：`industry`（行业）/ `concept`（概念）/ `style`（风格）/ `index_block`（指数板块），默认返回全部 |
+| keyword | string | 否 | 搜索关键词（模糊匹配板块名称），与 type 互斥 |
+
+**请求示例**:
+```
+GET /api/blocks?type=concept
+GET /api/blocks?keyword=半导体
+```
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "count": 3,
+    "list": [
+      {
+        "name": "半导体",
+        "block_type": "concept",
+        "source": "block_gn.dat",
+        "stock_count": 85
+      }
+    ]
+  }
+}
+```
+
+---
+
+### 33. 获取板块成份股
+
+**接口**: `GET /api/block/members`
+
+**描述**: 获取指定板块的成份股代码列表。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| name | string | 是 | 板块名称（如：半导体） |
+
+**请求示例**:
+```
+GET /api/block/members?name=半导体
+```
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "block_name": "半导体",
+    "count": 85,
+    "codes": ["sz000100", "sz002049", "sh600460"]
+  }
+}
+```
+
+---
+
+### 34. 获取个股所属板块
+
+**接口**: `GET /api/stock/blocks`
+
+**描述**: 查询指定个股属于哪些板块（行业、概念等）。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| code | string | 是 | 股票代码（如：sh600460） |
+
+**请求示例**:
+```
+GET /api/stock/blocks?code=sh600460
+```
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "code": "sh600460",
+    "count": 5,
+    "blocks": [
+      {
+        "name": "半导体",
+        "block_type": "concept",
+        "source": "block_gn.dat",
+        "stock_count": 85
+      },
+      {
+        "name": "电子元器件",
+        "block_type": "industry",
+        "source": "block.dat",
+        "stock_count": 120
+      }
+    ]
+  }
+}
+```
+
+---
+
+## 📈 实时板块排名接口
+
+以下接口依赖后台 Ticker 服务，服务启动后自动开始工作。盘中（9:15-15:05）每 3 秒更新一次全市场行情并聚合板块排名，非盘中返回最后一次采集的快照数据。
+
+### 35. 板块涨幅排名
+
+**接口**: `GET /api/block/ranking`
+
+**描述**: 获取板块实时排名，支持按涨幅、成交额、涨停数等多维度排序。核心用途：发现资金正在进攻的板块。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| type | string | 否 | 板块类型筛选：`industry` / `concept` / `style` / `index_block`，默认全部 |
+| sort_by | string | 否 | 排序字段：`pct_change`（涨幅，默认）/ `amount`（成交额）/ `limit_up`（涨停数）/ `rise_count`（上涨家数） |
+| order | string | 否 | 排序方向：`desc`（降序，默认）/ `asc`（升序） |
+| limit | int | 否 | 返回条数限制 |
+
+**请求示例**:
+```
+GET /api/block/ranking?type=concept&sort_by=pct_change&limit=20
+GET /api/block/ranking?type=industry&sort_by=amount&order=desc
+```
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "count": 20,
+    "status": "live",
+    "updated_at": "2026-04-08T14:30:03+08:00",
+    "list": [
+      {
+        "name": "半导体",
+        "block_type": "concept",
+        "pct_change": 3.85,
+        "amount": 18530000000,
+        "leading_stock_code": "sh600460",
+        "leading_stock_name": "士兰微",
+        "leading_stock_pct": 9.98,
+        "rise_count": 65,
+        "fall_count": 12,
+        "flat_count": 8,
+        "limit_up_count": 3,
+        "limit_down_count": 0,
+        "member_count": 85,
+        "available_count": 82
+      }
+    ]
+  }
+}
+```
+
+**字段说明**:
+| 字段 | 说明 |
+|------|------|
+| pct_change | 板块平均涨跌幅（%），成员简单平均 |
+| amount | 板块总成交额（元） |
+| leading_stock_code/name/pct | 领涨股代码、名称、涨幅 |
+| rise_count / fall_count / flat_count | 上涨/下跌/平盘家数 |
+| limit_up_count / limit_down_count | 涨停/跌停家数 |
+| member_count | 板块总成员数 |
+| available_count | 本次有行情数据的成员数 |
+| status | 数据状态：`live`（实时）/ `stale`（过期）/ `waiting`（等待盘中）/ `not_started`（未启动） |
+| status_hint | 当 status 非 live 时，提供具体原因说明 |
+
+---
+
+### 36. 板块内个股排名
+
+**接口**: `GET /api/block/stocks`
+
+**描述**: 获取指定板块内个股的实时排名，支持按涨幅、成交额、成交量排序。核心用途：发现板块内资金正在进攻的标的。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| name | string | 是 | 板块名称（如：半导体） |
+| sort_by | string | 否 | 排序字段：`pct_change`（涨幅，默认）/ `amount`（成交额）/ `volume`（成交量）/ `amplitude`（振幅） |
+| order | string | 否 | 排序方向：`desc`（降序，默认）/ `asc`（升序） |
+| limit | int | 否 | 返回条数限制 |
+
+**请求示例**:
+```
+GET /api/block/stocks?name=半导体&sort_by=pct_change&order=desc
+GET /api/block/stocks?name=半导体&sort_by=amount&limit=10
+```
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "block_name": "半导体",
+    "block_pct_change": 3.85,
+    "count": 82,
+    "status": "live",
+    "updated_at": "2026-04-08T14:30:03+08:00",
+    "list": [
+      {
+        "code": "sh600460",
+        "name": "士兰微",
+        "exchange": "sh",
+        "last": 38.5,
+        "pre_close": 35.0,
+        "open": 35.2,
+        "high": 38.5,
+        "low": 35.0,
+        "pct_change": 9.98,
+        "price_change": 3.5,
+        "volume": 12500000,
+        "amount": 4560000000,
+        "amplitude": 10.0,
+        "is_limit_up": true,
+        "is_limit_down": false
+      }
+    ]
+  }
+}
+```
+
+**字段说明**:
+| 字段 | 说明 |
+|------|------|
+| last / pre_close / open / high / low | 最新价 / 昨收 / 今开 / 最高 / 最低（元） |
+| pct_change | 涨跌幅（%） |
+| price_change | 涨跌额（元） |
+| volume | 成交量（手） |
+| amount | 成交额（元） |
+| amplitude | 振幅（%） |
+| is_limit_up / is_limit_down | 是否涨停/跌停（科创板/创业板 ±20%，其余 ±10%） |
+
+---
+
+### 37. Ticker 服务状态
+
+**接口**: `GET /api/ticker/status`
+
+**描述**: 查询实时行情轮询服务的运行状态。
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "running": true,
+    "status": "live",
+    "updated_at": "2026-04-08T14:30:03+08:00"
+  }
+}
+```
+
+**status 状态说明**:
+| 值 | 含义 |
+|---|---|
+| `live` | 实时更新中（最近 10 秒内有更新） |
+| `stale` | 数据已过期（非盘中时段，`status_hint` 包含过期时长） |
+| `waiting` | Ticker 已启动，等待盘中时段开始采集 |
+| `not_started` | Ticker 尚未启动，服务可能仍在初始化 |
+
+---
+
+### 38. 证券轻量快照
+
+**接口**: `GET /api/profile`
+
+**描述**: 根据证券代码（6 位或含交易所前缀的 8 位）返回轻量当前快照。响应按 `security`、`quote`、`fundamentals`、`valuation` 分组，既保留静态证券属性，也返回当前行情与可直接消费的常用估值字段。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| code | string | 是 | 证券代码（如 `000001` 或 `sz000001`） |
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "security": {
+      "code": "000001",
+      "full_code": "sz000001",
+      "name": "平安银行",
+      "exchange": "sz",
+      "asset_type": "stock",
+      "decimal": 2,
+      "multiple": 100
+    },
+    "quote": {
+      "available": true,
+      "source": "realtime_quote",
+      "is_realtime": true,
+      "price": 11.08,
+      "prev_close": 11.05,
+      "open": 11.02,
+      "high": 11.12,
+      "low": 10.98,
+      "change": 0.03,
+      "change_pct": 0.27,
+      "volume_shares": 178560000,
+      "turnover_yuan": 1962048000,
+      "quote_time": "20260410150000"
+    },
+    "fundamentals": {
+      "available": true,
+      "source": "tdx_raw_finance+tdx_professional_finance",
+      "finance_updated_date": "20260403",
+      "report_date": "20251231",
+      "total_shares": 19405918198,
+      "float_shares": 2188390000,
+      "book_value_per_share_mrq": 18.42,
+      "report_net_assets": 39183347500,
+      "report_net_profit": 5192232812.5,
+      "report_revenue": 20331036250,
+      "net_profit_ttm": 5192233280,
+      "revenue_ttm": 20331036250,
+      "weighted_roe": 14.09
+    },
+    "valuation": {
+      "available": true,
+      "source": "tdx_raw_finance+tdx_professional_finance",
+      "price_source": "realtime_quote",
+      "price": 11.08,
+      "finance_updated_date": "20260403",
+      "report_date": "20251231",
+      "book_value_per_share_mrq": 18.42,
+      "market_cap_total": 215417973633.84,
+      "market_cap_float": 24287481200,
+      "pb_mrq": 0.6,
+      "pe_ttm": 8.7,
+      "ps_ttm": 2.4,
+      "eps_ttm": 1.27,
+      "revenue_per_share_ttm": 4.62
+    }
+  }
+}
+```
+
+---
+
+### 39. Collector 运行状态
+
+**接口**: `GET /api/collector/status`
+
+**描述**: 查看数据采集器（Collector）的运行时状态，包括最近一次启动追赶、每日全量同步、每日对账的执行记录，以及调度表达式和待处理的数据缺口数。
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "runtime": {
+      "now": "2026-04-09T10:30:00+08:00",
+      "open_gap_count": 0,
+      "last_startup_run": { "schedule_name": "collector_startup_catchup", "status": "passed", "started_at": "...", "ended_at": "..." },
+      "last_full_sync": { "schedule_name": "collector_daily_full_sync", "status": "passed", "started_at": "...", "ended_at": "..." },
+      "last_reconcile": { "schedule_name": "collector_daily_reconcile", "status": "passed", "started_at": "...", "ended_at": "..." },
+      "recent_runs": [],
+      "next_actions": []
+    },
+    "jobs": {},
+    "schedule": {
+      "daily_full_sync": "0 0 18 * * *",
+      "daily_reconcile": "0 0 19 * * *"
+    }
+  }
+}
+```
+
+---
+
+### 40. 执行 / 查看对账报告
+
+**接口**: `GET/POST /api/collector/reconcile`
+
+**描述**:
+- **POST**: 手动触发一次数据对账，可指定日期。对账会检查 K 线、分时成交、委托分布等各域数据的完整性，并尝试修复缺失。
+- **GET**: 查看已生成的对账报告（JSON 文件），按日期检索。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| date | string | 否 | 对账日期（YYYYMMDD 或 YYYY-MM-DD）；POST 时可通过 query 或 JSON body 传入，GET 时通过 query 传入。默认使用最近交易日 |
+
+**POST 响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "date": "20260408",
+    "trigger": "manual",
+    "status": "reconciled",
+    "is_trading_day": true,
+    "open_gap_count": 0,
+    "started_at": "2026-04-09T10:35:00+08:00",
+    "completed_at": "2026-04-09T10:35:12+08:00",
+    "report_path": "/data/collector_reports/reconcile-20260408.json",
+    "domains": [
+      { "domain": "kline", "status": "reconciled", "items": 5200 },
+      { "domain": "trade_history", "status": "reconciled", "items": 5200 }
     ]
   }
 }
@@ -1197,11 +2030,15 @@ curl -X POST http://localhost:8080/api/batch-quote \
 - ✅ 统一响应格式
 - ✅ 完整文档和示例
 
-### v1.1.0 (计划中)
-- 🔄 批量查询接口
-- 🔄 历史K线范围查询
-- 🔄 指数数据接口
-- 🔄 WebSocket实时推送
+### v1.1.0 (2026-04)
+- 板块数据接口：板块列表、成份股、个股所属板块
+- 实时板块排名：盘中 3 秒刷新，按涨幅/成交额/涨停数排序
+- 板块内个股排名：支持涨幅/成交额/成交量/振幅排序
+- Ticker 服务状态查询
+
+### v1.2.0 (计划中)
+- 🔄 WebSocket 实时推送
+- 🔄 板块资金流向
 
 ---
 
@@ -1214,4 +2051,3 @@ curl -X POST http://localhost:8080/api/batch-quote \
 ---
 
 **Happy Coding!** 🎉
-

@@ -29,25 +29,35 @@ fi
 echo "[√] Docker正在运行"
 echo ""
 
-# 检查docker-compose是否可用
-if ! command -v docker-compose &> /dev/null; then
-    echo "[错误] docker-compose不可用，请先安装"
+# 检查docker compose是否可用
+if ! docker compose version &> /dev/null; then
+    echo "[错误] docker compose不可用，请先安装Docker Compose插件"
     echo ""
-    echo "安装命令: sudo apt-get install docker-compose"
+    echo "安装说明: https://docs.docker.com/compose/install/"
     echo ""
     exit 1
 fi
 
-echo "[√] docker-compose可用"
+echo "[√] docker compose可用"
 echo ""
 
 echo "----------------------------------------"
-echo "正在构建并启动服务..."
+echo "准备启动服务..."
 echo "----------------------------------------"
 echo ""
+
+IMAGE_NAME="${TDX_STOCK_WEB_IMAGE:-tdx-api-stock-web:invest-grade-fixed}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+if ! docker image inspect "${IMAGE_NAME}" &> /dev/null; then
+    echo "[信息] 未检测到本地镜像 ${IMAGE_NAME}"
+    echo "[信息] 先构建镜像，再启动容器"
+    echo ""
+    "${SCRIPT_DIR}/scripts/build_local_image.sh"
+fi
 
 # 启动服务
-docker-compose up -d
+docker compose up -d
 
 if [ $? -ne 0 ]; then
     echo ""
@@ -64,10 +74,10 @@ echo ""
 echo "访问地址: http://localhost:8080"
 echo ""
 echo "常用命令:"
-echo "  查看日志: docker-compose logs -f"
-echo "  停止服务: docker-compose stop"
-echo "  重启服务: docker-compose restart"
-echo "  完全清理: docker-compose down"
+echo "  查看日志: docker compose logs -f"
+echo "  停止服务: docker compose stop"
+echo "  重启服务: docker compose restart"
+echo "  完全清理: docker compose down"
 echo ""
 echo "----------------------------------------"
 echo ""
@@ -85,4 +95,3 @@ else
 fi
 
 echo "准备就绪！"
-

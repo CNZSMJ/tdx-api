@@ -30,8 +30,14 @@
 git clone https://github.com/oficcejo/tdx-api.git
 cd tdx-api
 
-# 启动服务（已配置国内镜像加速）
-docker-compose up -d
+# 可选：复制部署变量模板
+cp .env.example .env
+
+# 首次在本机上构建最终镜像
+./scripts/build_local_image.sh
+
+# 启动服务
+docker compose up -d
 
 # 访问 http://localhost:8080
 ```
@@ -69,7 +75,9 @@ go run .
 | `/api/kline` | K线数据 | `?code=000001&type=day` |
 | `/api/minute` | 分时数据 | `?code=000001` |
 | `/api/trade` | 分时成交 | `?code=000001` |
-| `/api/search` | 搜索股票 | `?keyword=平安` |
+| `/api/search` | 跨资产证券搜索 | `?keyword=平安&asset_type=all` |
+| `/api/security/status` | 证券可交易状态 | `?code=000001` |
+| `/api/profile` | 证券轻量快照（基础属性 + 当前行情 + 常用估值字段） | `?code=000001` |
 | `/api/stock-info` | 综合信息 | `?code=000001` |
 
 ### 扩展接口
@@ -84,12 +92,20 @@ go run .
 | `/api/kline-all/ths` | 同花顺源K线数据（含前复权） |
 | `/api/index` | 指数数据 |
 | `/api/index/all` | 全部指数数据 |
-| `/api/market-stats` | 市场统计 |
+| `/api/market-stats` | 全市场宽度统计 |
+| `/api/market/screen` | 全市场排行 / 涨跌停池 |
+| `/api/market/signal` | K 线扫描异动 |
 | `/api/market-count` | 市场数量统计 |
 | `/api/stock-codes` | 股票代码 |
 | `/api/etf-codes` | ETF代码 |
+| `/api/index-codes` | 指数代码 |
 | `/api/etf` | ETF列表 |
+| `/api/finance` | 财务数据 |
+| `/api/financial-reports` | 多期财报摘要 |
+| `/api/f10/categories` | F10目录 |
+| `/api/f10/content` | F10正文 |
 | `/api/trade-history` | 历史成交 |
+| `/api/order-history` | 历史委托分布 |
 | `/api/trade-history/full` | 完整历史成交 |
 | `/api/minute-trade-all` | 全部分时成交 |
 | `/api/workday` | 交易日查询 |
@@ -100,8 +116,32 @@ go run .
 | `/api/tasks` | 任务列表 |
 | `/api/server-status` | 服务器状态 |
 | `/api/health` | 健康检查 |
+| `/api/collector/status` | 数据采集器运行状态 |
+| `/api/collector/reconcile` | 查看/触发数据对账 |
 
 **完整API文档**: [API_接口文档.md](API_接口文档.md)
+
+### 指数池配置
+
+服务默认会从交易所代码表自动识别全量指数，也支持自定义覆盖：
+
+- 配置文件：`data/database/index_codes.json`
+- 环境变量：`TDX_INDEX_CODES=sh000001,sh000300,sz399006`
+
+`index_codes.json` 支持两种格式：
+
+```json
+["sh000001", "sh000300", "sz399006"]
+```
+
+```json
+[
+  { "code": "sh000001", "name": "上证指数" },
+  { "code": "sh000300", "name": "沪深300" }
+]
+```
+
+指数代码必须带交易所前缀，例如 `sh000001`、`sz399001`。
 
 ---
 
@@ -118,6 +158,38 @@ curl "http://localhost:8080/api/kline?code=000001&type=day"
 
 # 搜索股票
 curl "http://localhost:8080/api/search?keyword=平安"
+
+# 获取财务数据
+curl "http://localhost:8080/api/finance?code=000001"
+
+# 获取F10目录
+curl "http://localhost:8080/api/f10/categories?code=000001"
+
+# 获取指数代码
+curl "http://localhost:8080/api/index-codes"
+
+# 创建混合证券K线任务
+curl -X POST "http://localhost:8080/api/tasks/pull-kline" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "asset_types": ["stock", "etf", "index"],
+    "index_codes": ["sh000001", "sh000300", "sz399006"],
+    "tables": ["day"],
+    "limit": 1
+  }'
+
+# 创建股票/ETF成交采集任务
+curl -X POST "http://localhost:8080/api/tasks/pull-trade" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "asset_types": ["stock", "etf"],
+    "limit": 2,
+    "start_year": 2025,
+    "end_year": 2026
+  }'
+
+# 获取历史委托分布
+curl "http://localhost:8080/api/order-history?code=000001&date=2026-03-31"
 
 # 健康检查
 curl "http://localhost:8080/api/health"
@@ -142,28 +214,30 @@ kline, _ := c.GetKlineDayAll("000001")
 
 ## � Docker配置说明
 
-### 国内镜像加速
+### 当前推荐流程
 
-Docker配置已使用国内镜像源，加速构建：
-
-| 组件 | 镜像源 |
-|-----|-------|
-| Go基础镜像 | `registry.cn-hangzhou.aliyuncs.com/library/golang` |
-| Alpine镜像 | `registry.cn-hangzhou.aliyuncs.com/library/alpine` |
-| Alpine APK | `mirrors.aliyun.com` |
-| Go Proxy | `goproxy.cn` + `mirrors.aliyun.com/goproxy` |
+- **构建**：用 [`scripts/build_local_image.sh`](scripts/build_local_image.sh) 生成最终应用镜像
+- **部署**：用 [`docker-compose.yml`](docker-compose.yml) 直接启动该镜像
+- **数据**：宿主机目录挂载到容器，不会被打进镜像
 
 ### 常用命令
 
 ```bash
-docker-compose up -d       # 启动服务
-docker-compose logs -f     # 查看日志
-docker-compose stop        # 停止服务
-docker-compose restart     # 重启服务
-docker-compose down        # 完全清理
+./scripts/build_local_image.sh      # 本机构建最终镜像
+docker compose up -d                # 启动服务
+docker compose logs -f              # 查看日志
+docker compose stop                 # 停止服务
+docker compose restart              # 重启服务
+docker compose down                 # 停止并删除容器
+./scripts/save_image.sh             # 导出镜像，便于迁移到VPS
 ```
 
-**详细部署文档**: [DOCKER_DEPLOY.md](DOCKER_DEPLOY.md)
+`.env.example` 中提供了两个常用变量：
+
+- `TDX_STOCK_WEB_IMAGE`：部署时使用的镜像名
+- `TDX_DATA_DIR`：宿主机数据目录，默认 `./data/database`
+
+**唯一 Docker 文档入口**: [DOCKER_DEPLOY.md](DOCKER_DEPLOY.md)
 
 ---
 
