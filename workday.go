@@ -95,8 +95,9 @@ func NewWorkday(c *Client, db *xorm.Engine) (*Workday, error) {
 
 type Workday struct {
 	*Client
-	db    *xorm.Engine
-	cache maps.Bit
+	db         *xorm.Engine
+	cache      maps.Bit
+	latestUnix int64
 }
 
 func (this *Workday) loadCache() (int, error) {
@@ -104,9 +105,14 @@ func (this *Workday) loadCache() (int, error) {
 	if err := this.db.Find(&all); err != nil {
 		return 0, err
 	}
+	var latest int64
 	for _, v := range all {
 		this.cache.Set(uint64(v.Unix), true)
+		if v.Unix > latest {
+			latest = v.Unix
+		}
 	}
+	this.latestUnix = latest
 	return len(all), nil
 }
 
@@ -129,6 +135,7 @@ func (this *Workday) Update() error {
 	if len(all) > 0 {
 		lastWorkday = all[len(all)-1]
 	}
+	this.latestUnix = lastWorkday.Unix
 	for _, v := range all {
 		this.cache.Set(uint64(v.Unix), true)
 	}
@@ -142,10 +149,14 @@ func (this *Workday) Update() error {
 		}
 
 		inserts := []any(nil)
+		var latest int64
 		for _, v := range resp.List {
 			if unix := v.Time.Unix(); unix > lastWorkday.Unix {
 				inserts = append(inserts, &WorkdayModel{Unix: unix, Date: v.Time.Format("20060102")})
 				this.cache.Set(uint64(unix), true)
+				if unix > latest {
+					latest = unix
+				}
 			}
 		}
 
@@ -154,6 +165,9 @@ func (this *Workday) Update() error {
 		}
 
 		_, err = this.db.Insert(inserts)
+		if err == nil && latest > this.latestUnix {
+			this.latestUnix = latest
+		}
 		return err
 
 	}
@@ -169,6 +183,14 @@ func (this *Workday) Is(t time.Time) bool {
 // TodayIs 今天是否是工作日
 func (this *Workday) TodayIs() bool {
 	return this.Is(time.Now())
+}
+
+// Latest returns the latest cached trading day known to the local workday store.
+func (this *Workday) Latest() time.Time {
+	if this == nil || this.latestUnix == 0 {
+		return time.Time{}
+	}
+	return time.Unix(this.latestUnix, 0).In(time.Local)
 }
 
 // RangeYear 遍历一年的所有工作日

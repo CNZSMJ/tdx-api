@@ -1016,7 +1016,7 @@ GET /api/financial-reports?code=600000&start_date=20250101&end_date=20251231
 
 **接口**: `GET /api/workday`
 
-**描述**: 查询指定日期是否为交易日，并返回前后若干个最近的交易日。
+**描述**: 查询指定日期是否为交易日，并返回前后若干个最近的交易日。历史日期使用本地 `workday.db`，超出历史覆盖范围的未来日期会按官方休市安排进行推导。
 
 **请求参数**:
 | 参数 | 类型 | 必填 | 说明 |
@@ -1083,7 +1083,13 @@ GET /api/financial-reports?code=600000&start_date=20250101&end_date=20251231
 
 #### `GET /api/market-stats` — 全市场宽度统计
 
-**描述**: 按交易所与资产类型汇总涨跌家数、涨跌停家数、成交额与成交量等；数据来自 Ticker 每轮轮询后的预计算缓存。
+**描述**: 按交易所与资产类型汇总涨跌家数、涨跌停家数、成交额与成交量等；数据来自 Ticker 每轮轮询后的预计算缓存。默认统计 `stock` 口径，确保交易所分项与 `summary.stock` 可直接对账。
+
+**请求参数**:
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| asset_type | string | 否 | 统计口径：`stock`（默认）/ `etf` / `all` |
 
 **未就绪时的 `data` 形态**（仍为标准 `code:0` 成功包装，字段在 `data` 内）:
 
@@ -1097,7 +1103,8 @@ GET /api/financial-reports?code=600000&start_date=20250101&end_date=20251231
 
 | 字段 | 说明 |
 |------|------|
-| `sh` / `sz` / `bj` | 各交易所：`total`、`up`、`down`、`flat`、`up_ratio`、`limit_up`、`limit_down`、`total_amount`、`total_volume` |
+| `asset_type` | 当前交易所分项采用的资产口径 |
+| `sh` / `sz` / `bj` | 各交易所在 `asset_type` 口径下的统计：`total`、`up`、`down`、`flat`、`up_ratio`、`limit_up`、`limit_down`、`total_amount`、`total_volume` |
 | `summary` | `stock`、`etf` 两组，字段同上 |
 | `updated_at` | Ticker 缓存更新时间（RFC3339） |
 | `status` | `live`（约 10 秒内更新）或 `stale` |
@@ -1282,7 +1289,7 @@ GET /api/financial-reports?code=600000&start_date=20250101&end_date=20251231
 
 **接口**: `GET /api/workday/range`
 
-**描述**: 返回指定起止日期之间的所有交易日。
+**描述**: 返回指定起止日期之间的所有交易日。历史日期使用本地 `workday.db`，超出历史覆盖范围的未来日期会按官方休市安排进行推导。
 
 **请求参数**:
 | 参数 | 类型 | 必填 | 说明 |

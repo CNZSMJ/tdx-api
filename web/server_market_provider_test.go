@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -186,6 +187,34 @@ func TestParseBlockProviderKeyRequiresSource(t *testing.T) {
 	}
 }
 
+func TestFilterBlockRecordsAppliesKeywordBeforeLimit(t *testing.T) {
+	records := []collectorpkg.BlockGroupRecord{
+		{Source: "block_gn.dat", BlockType: "concept", Name: "A白酒", StockCount: 10},
+		{Source: "block_gn.dat", BlockType: "concept", Name: "B白酒", StockCount: 11},
+		{Source: "block_gn.dat", BlockType: "concept", Name: "C白酒", StockCount: 12},
+		{Source: "block_gn.dat", BlockType: "concept", Name: "新能源", StockCount: 13},
+		{Source: "block_fg.dat", BlockType: "industry", Name: "白酒", StockCount: 14},
+	}
+
+	allMatches := filterBlockRecords(records, blockProviderKey{Source: "block_gn.dat", BlockType: "concept"}, "白酒", 0)
+	if len(allMatches) != 3 {
+		t.Fatalf("full keyword match count = %d, want 3", len(allMatches))
+	}
+	for _, record := range allMatches {
+		if !strings.Contains(record.Name, "白酒") {
+			t.Fatalf("unexpected non-matching record in keyword result: %#v", record)
+		}
+	}
+
+	limited := filterBlockRecords(records, blockProviderKey{Source: "block_gn.dat", BlockType: "concept"}, "白酒", 2)
+	if len(limited) != 2 {
+		t.Fatalf("limited keyword match count = %d, want 2", len(limited))
+	}
+	if limited[0].Name != "A白酒" || limited[1].Name != "B白酒" {
+		t.Fatalf("unexpected limited order: %#v", limited)
+	}
+}
+
 func TestNormalizeQuoteSnapshotZeroesDerivedMetricsWhenPriceIsZero(t *testing.T) {
 	item := normalizeQuoteSnapshot(providerQuoteSnapshot{
 		Price:        0,
@@ -208,6 +237,95 @@ func TestParseIntradayIntervalDefaultsToOneMinute(t *testing.T) {
 	}
 	if interval != 1 {
 		t.Fatalf("interval = %d, want 1", interval)
+	}
+}
+
+func TestFetchQuoteSnapshotsWithFetchersIncludesIndexItems(t *testing.T) {
+	models := []*tdx.CodeModel{
+		{Code: "600519", Exchange: "sh", Name: "贵州茅台", Multiple: 100, Decimal: 2},
+		{Code: "510300", Exchange: "sh", Name: "300ETF", Multiple: 1, Decimal: 3},
+		{Code: "000300", Exchange: "sh", Name: "沪深300", Multiple: 1, Decimal: 2},
+	}
+	now := time.Date(2026, 4, 16, 14, 35, 0, 0, time.Local)
+
+	items, err := fetchQuoteSnapshotsWithFetchers(
+		models,
+		now,
+		func(codes ...string) (protocol.QuotesResp, error) {
+			if len(codes) != 2 {
+				return nil, fmt.Errorf("quote fetch received %d codes, want 2", len(codes))
+			}
+			return protocol.QuotesResp{
+				{
+					Exchange:  protocol.ExchangeSH,
+					Code:      "600519",
+					TotalHand: 123,
+					Amount:    45678,
+					K: protocol.K{
+						Last:  protocol.Price(1467500),
+						Open:  protocol.Price(1468000),
+						High:  protocol.Price(1472000),
+						Low:   protocol.Price(1465000),
+						Close: protocol.Price(1469000),
+					},
+				},
+				{
+					Exchange:  protocol.ExchangeSH,
+					Code:      "510300",
+					TotalHand: 321,
+					Amount:    87654,
+					K: protocol.K{
+						Last:  protocol.Price(4100),
+						Open:  protocol.Price(4110),
+						High:  protocol.Price(4120),
+						Low:   protocol.Price(4090),
+						Close: protocol.Price(4115),
+					},
+				},
+			}, nil
+		},
+		func(fullCode string) (*protocol.KlineResp, error) {
+			if fullCode != "sh000300" {
+				return nil, fmt.Errorf("unexpected index code %s", fullCode)
+			}
+			return &protocol.KlineResp{
+				Count: 2,
+				List: []*protocol.Kline{
+					{Close: protocol.Price(3980000), Time: time.Date(2026, 4, 15, 15, 0, 0, 0, time.Local)},
+					{
+						Last:   protocol.Price(3980000),
+						Open:   protocol.Price(3985000),
+						High:   protocol.Price(4012000),
+						Low:    protocol.Price(3978000),
+						Close:  protocol.Price(4005000),
+						Volume: 123456,
+						Amount: protocol.Price(7890100),
+						Time:   time.Date(2026, 4, 16, 15, 0, 0, 0, time.Local),
+					},
+				},
+			}, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("fetchQuoteSnapshotsWithFetchers returned error: %v", err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("item count = %d, want 3", len(items))
+	}
+	if items[2].FullCode != "sh000300" {
+		t.Fatalf("third item full_code = %s, want sh000300", items[2].FullCode)
+	}
+	if items[2].AssetType != "index" {
+		t.Fatalf("third item asset_type = %s, want index", items[2].AssetType)
+	}
+	if items[2].Price != 4005 {
+		t.Fatalf("third item price = %v, want 4005", items[2].Price)
+	}
+	if items[2].PrevClose != 3980 {
+		t.Fatalf("third item prev_close = %v, want 3980", items[2].PrevClose)
+	}
+	if items[2].Change != 25 || items[2].ChangePct != 0.63 {
+		t.Fatalf("third item change metrics = (%v, %v), want (25, 0.63)", items[2].Change, items[2].ChangePct)
 	}
 }
 
@@ -299,6 +417,93 @@ func TestDefaultSecurityIndustryDictionaryPathFallsBackToMetadataDir(t *testing.
 
 	if got := defaultSecurityIndustryDictionaryPath(); got != want {
 		t.Fatalf("dictionary path = %q, want %q", got, want)
+	}
+}
+
+func TestResolveTradingDayWithCoverageProjectsFutureDates(t *testing.T) {
+	coverageEnd := time.Date(2026, 4, 16, 15, 0, 0, 0, time.Local)
+	historical := func(day time.Time) bool {
+		return day.Format("2006-01-02") == "2026-04-16"
+	}
+
+	isTradingDay, err := resolveTradingDayWithCoverage(time.Date(2026, 4, 17, 9, 30, 0, 0, time.Local), coverageEnd, historical)
+	if err != nil {
+		t.Fatalf("resolveTradingDayWithCoverage future weekday error: %v", err)
+	}
+	if !isTradingDay {
+		t.Fatalf("2026-04-17 should be projected as trading day")
+	}
+
+	isTradingDay, err = resolveTradingDayWithCoverage(time.Date(2026, 4, 18, 9, 30, 0, 0, time.Local), coverageEnd, historical)
+	if err != nil {
+		t.Fatalf("resolveTradingDayWithCoverage weekend error: %v", err)
+	}
+	if isTradingDay {
+		t.Fatalf("2026-04-18 should not be a trading day")
+	}
+
+	isTradingDay, err = resolveTradingDayWithCoverage(time.Date(2026, 5, 1, 9, 30, 0, 0, time.Local), coverageEnd, historical)
+	if err != nil {
+		t.Fatalf("resolveTradingDayWithCoverage holiday error: %v", err)
+	}
+	if isTradingDay {
+		t.Fatalf("2026-05-01 should not be a trading day")
+	}
+}
+
+func TestResolveTradingDayWithCoverageRejectsUnsupportedFutureYear(t *testing.T) {
+	coverageEnd := time.Date(2026, 4, 16, 15, 0, 0, 0, time.Local)
+
+	_, err := resolveTradingDayWithCoverage(time.Date(2027, 1, 4, 9, 30, 0, 0, time.Local), coverageEnd, func(time.Time) bool { return false })
+	if err == nil {
+		t.Fatalf("expected unsupported future year error")
+	}
+}
+
+func TestParseMarketStatsAssetTypeDefaultsToStock(t *testing.T) {
+	got, err := parseMarketStatsAssetType("")
+	if err != nil {
+		t.Fatalf("parseMarketStatsAssetType returned error: %v", err)
+	}
+	if got != "stock" {
+		t.Fatalf("asset_type = %q, want stock", got)
+	}
+}
+
+func TestBuildMarketStatsDataUsesRequestedAssetTypeForExchanges(t *testing.T) {
+	resp := buildMarketStatsData([]collectorpkg.StockTick{
+		{Code: "sh600000", Exchange: "sh", AssetType: "stock", PctChange: 1.2, Amount: 100, Volume: 10, IsLimitUp: true},
+		{Code: "sh510300", Exchange: "sh", AssetType: "etf", PctChange: 0.5, Amount: 50, Volume: 5},
+		{Code: "sz000001", Exchange: "sz", AssetType: "stock", PctChange: -0.3, Amount: 80, Volume: 8},
+	}, "stock")
+
+	summary := resp["summary"].(map[string]interface{})
+	stock := summary["stock"].(map[string]interface{})
+	sh := resp["sh"].(map[string]interface{})
+	sz := resp["sz"].(map[string]interface{})
+	bj := resp["bj"].(map[string]interface{})
+
+	if stock["total"] != 2 {
+		t.Fatalf("summary.stock.total = %v, want 2", stock["total"])
+	}
+	if sh["total"] != 1 {
+		t.Fatalf("sh.total = %v, want 1", sh["total"])
+	}
+	if sz["total"] != 1 {
+		t.Fatalf("sz.total = %v, want 1", sz["total"])
+	}
+	if bj["total"] != 0 {
+		t.Fatalf("bj.total = %v, want 0", bj["total"])
+	}
+	if sh["limit_up"] != 1 {
+		t.Fatalf("sh.limit_up = %v, want 1", sh["limit_up"])
+	}
+
+	upTotal := sh["up"].(int) + sz["up"].(int) + bj["up"].(int)
+	downTotal := sh["down"].(int) + sz["down"].(int) + bj["down"].(int)
+	flatTotal := sh["flat"].(int) + sz["flat"].(int) + bj["flat"].(int)
+	if stock["up"] != upTotal || stock["down"] != downTotal || stock["flat"] != flatTotal {
+		t.Fatalf("summary.stock does not align with per-exchange totals: stock=%v sh=%v sz=%v bj=%v", stock, sh, sz, bj)
 	}
 }
 

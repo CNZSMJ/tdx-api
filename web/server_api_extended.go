@@ -639,32 +639,13 @@ func handleGetMarketStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ov := ts.GetOverview()
-	ex := func(key string) map[string]interface{} {
-		b, ok := ov.ByExchange[key]
-		if !ok {
-			b = collectorpkg.AssetOverview{}
-		}
-		return map[string]interface{}{
-			"total": b.Total, "up": b.Up, "down": b.Down, "flat": b.Flat,
-			"up_ratio": b.UpRatio, "limit_up": b.LimitUp, "limit_down": b.LimitDown,
-			"total_amount": b.TotalAmount, "total_volume": b.TotalVolume,
-		}
-	}
-	sum := func(a collectorpkg.AssetOverview) map[string]interface{} {
-		return map[string]interface{}{
-			"total": a.Total, "up": a.Up, "down": a.Down, "flat": a.Flat,
-			"up_ratio": a.UpRatio, "limit_up": a.LimitUp, "limit_down": a.LimitDown,
-			"total_amount": a.TotalAmount, "total_volume": a.TotalVolume,
-		}
+	assetType, err := parseMarketStatsAssetType(r.URL.Query().Get("asset_type"))
+	if err != nil {
+		errorResponse(w, err.Error())
+		return
 	}
 
-	resp := map[string]interface{}{
-		"sh":      ex("sh"),
-		"sz":      ex("sz"),
-		"bj":      ex("bj"),
-		"summary": map[string]interface{}{"stock": sum(ov.Stock), "etf": sum(ov.ETF)},
-	}
+	resp := buildMarketStatsData(ts.GetAllStocks(), assetType)
 	updatedAt := ts.UpdatedAt()
 	resp["updated_at"] = updatedAt.Format(time.RFC3339)
 	if age := time.Since(updatedAt); age < 10*time.Second {
@@ -1214,7 +1195,11 @@ func handleGetWorkday(w http.ResponseWriter, r *http.Request) {
 		target = parsed
 	}
 
-	isWorkday := manager.Workday.Is(target)
+	isWorkday, err := resolveTradingDay(target)
+	if err != nil {
+		errorResponse(w, err.Error())
+		return
+	}
 
 	response := map[string]interface{}{
 		"date": map[string]string{
@@ -1259,15 +1244,25 @@ func handleGetWorkdayRange(w http.ResponseWriter, r *http.Request) {
 	}
 
 	list := make([]map[string]string, 0)
-	manager.Workday.Range(startDate, endDate.AddDate(0, 0, 1), func(t time.Time) bool {
-		list = append(list, map[string]string{
-			"iso":     t.Format("2006-01-02"),
-			"numeric": t.Format("20060102"),
-		})
-		return true
-	})
+	for day := startDate; !day.After(endDate); day = day.AddDate(0, 0, 1) {
+		isWorkday, err := resolveTradingDay(day)
+		if err != nil {
+			if day.After(manager.Workday.Latest()) {
+				errorResponse(w, err.Error())
+				return
+			}
+			log.Printf("交易日判断失败: date=%s err=%v", day.Format("2006-01-02"), err)
+			continue
+		}
+		if isWorkday {
+			list = append(list, map[string]string{
+				"iso":     day.Format("2006-01-02"),
+				"numeric": day.Format("20060102"),
+			})
+		}
+	}
 
-	if len(list) == 0 {
+	if len(list) == 0 && !endDate.After(manager.Workday.Latest()) {
 		if err := manager.Workday.Update(); err == nil {
 			manager.Workday.Range(startDate, endDate.AddDate(0, 0, 1), func(t time.Time) bool {
 				list = append(list, map[string]string{
@@ -1434,7 +1429,7 @@ func parseWorkdayDate(value string) (time.Time, error) {
 
 func collectNeighborWorkdays(base time.Time, count int, step int) []map[string]string {
 	result := make([]map[string]string, 0, count)
-	if manager == nil || manager.Workday == nil {
+	if manager == nil || manager.Workday == nil || step == 0 {
 		return result
 	}
 	cursor := base
@@ -1443,7 +1438,11 @@ func collectNeighborWorkdays(base time.Time, count int, step int) []map[string]s
 	for len(result) < count && attempts < maxAttempts {
 		attempts++
 		cursor = cursor.AddDate(0, 0, step)
-		if manager.Workday.Is(cursor) {
+		isWorkday, err := resolveTradingDay(cursor)
+		if err != nil {
+			break
+		}
+		if isWorkday {
 			result = append(result, map[string]string{
 				"iso":     cursor.Format("2006-01-02"),
 				"numeric": cursor.Format("20060102"),

@@ -193,32 +193,86 @@ func fetchQuoteSnapshots(models []*tdx.CodeModel) ([]providerQuoteSnapshot, erro
 	if client == nil {
 		return nil, errors.New("TDX client 未初始化")
 	}
+	return fetchQuoteSnapshotsWithFetchers(
+		models,
+		time.Now(),
+		func(codes ...string) (protocol.QuotesResp, error) {
+			return client.GetQuote(codes...)
+		},
+		func(fullCode string) (*protocol.KlineResp, error) {
+			return client.GetIndexDay(fullCode, 0, 2)
+		},
+	)
+}
 
-	queryCodes := make([]string, 0, len(models))
+func fetchQuoteSnapshotsWithFetchers(
+	models []*tdx.CodeModel,
+	now time.Time,
+	quoteFetcher func(...string) (protocol.QuotesResp, error),
+	indexFetcher func(string) (*protocol.KlineResp, error),
+) ([]providerQuoteSnapshot, error) {
+	quoteModels := make([]*tdx.CodeModel, 0, len(models))
+	indexModels := make([]*tdx.CodeModel, 0, len(models))
 	for _, model := range models {
-		queryCodes = append(queryCodes, model.FullCode())
-	}
-	quotes, err := client.GetQuote(queryCodes...)
-	if err != nil {
-		return nil, fmt.Errorf("获取行情失败: %v", err)
-	}
-
-	byFullCode := make(map[string]*protocol.Quote, len(quotes))
-	for _, quote := range quotes {
-		if quote == nil {
+		if model == nil {
 			continue
 		}
-		byFullCode[strings.ToLower(protocol.AddPrefix(quote.Code))] = quote
+		if modelAssetType(model) == "index" {
+			indexModels = append(indexModels, model)
+			continue
+		}
+		quoteModels = append(quoteModels, model)
 	}
 
-	now := time.Now()
+	byFullCode := make(map[string]providerQuoteSnapshot, len(models))
+	if len(quoteModels) > 0 {
+		queryCodes := make([]string, 0, len(quoteModels))
+		for _, model := range quoteModels {
+			queryCodes = append(queryCodes, model.FullCode())
+		}
+		quotes, err := quoteFetcher(queryCodes...)
+		if err != nil {
+			return nil, fmt.Errorf("获取行情失败: %v", err)
+		}
+
+		rawQuotes := make(map[string]*protocol.Quote, len(quotes))
+		for _, quote := range quotes {
+			if quote == nil {
+				continue
+			}
+			rawQuotes[strings.ToLower(protocol.AddPrefix(quote.Code))] = quote
+		}
+		for _, model := range quoteModels {
+			quote := rawQuotes[strings.ToLower(model.FullCode())]
+			if quote == nil {
+				continue
+			}
+			byFullCode[strings.ToLower(model.FullCode())] = buildQuoteSnapshotItem(model, quote, now)
+		}
+	}
+
+	if len(indexModels) > 0 {
+		for _, model := range indexModels {
+			resp, err := indexFetcher(model.FullCode())
+			if err != nil || resp == nil {
+				continue
+			}
+			item, ok := buildIndexQuoteSnapshotItem(model, resp.List)
+			if !ok {
+				continue
+			}
+			item.QuoteTime = now.Format(time.RFC3339)
+			byFullCode[strings.ToLower(model.FullCode())] = item
+		}
+	}
+
 	items := make([]providerQuoteSnapshot, 0, len(models))
 	for _, model := range models {
-		quote := byFullCode[strings.ToLower(model.FullCode())]
-		if quote == nil {
+		item, ok := byFullCode[strings.ToLower(model.FullCode())]
+		if !ok {
 			continue
 		}
-		items = append(items, buildQuoteSnapshotItem(model, quote, now))
+		items = append(items, item)
 	}
 	return items, nil
 }
@@ -437,7 +491,20 @@ func serveBlocks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	records := bs.GetBlocks("")
-	items := make([]map[string]interface{}, 0, len(records))
+	keyword := strings.TrimSpace(r.URL.Query().Get("keyword"))
+	limit := parsePositiveInt(strings.TrimSpace(r.URL.Query().Get("limit")))
+	filtered := filterBlockRecords(records, key, keyword, limit)
+	items := buildBlockItems(filtered)
+
+	successResponse(w, map[string]interface{}{
+		"count": len(items),
+		"items": items,
+	})
+}
+
+func filterBlockRecords(records []collectorpkg.BlockGroupRecord, key blockProviderKey, keyword string, limit int) []collectorpkg.BlockGroupRecord {
+	normalizedKeyword := normalizeBlockKeyword(keyword)
+	filtered := make([]collectorpkg.BlockGroupRecord, 0, len(records))
 	for _, record := range records {
 		if key.Source != "" && record.Source != key.Source {
 			continue
@@ -448,6 +515,29 @@ func serveBlocks(w http.ResponseWriter, r *http.Request) {
 		if key.Name != "" && record.Name != key.Name {
 			continue
 		}
+		if normalizedKeyword != "" && !strings.Contains(normalizeBlockKeyword(record.Name), normalizedKeyword) {
+			continue
+		}
+		filtered = append(filtered, record)
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].BlockType != filtered[j].BlockType {
+			return filtered[i].BlockType < filtered[j].BlockType
+		}
+		if filtered[i].Source != filtered[j].Source {
+			return filtered[i].Source < filtered[j].Source
+		}
+		return filtered[i].Name < filtered[j].Name
+	})
+	if limit > 0 && len(filtered) > limit {
+		filtered = filtered[:limit]
+	}
+	return filtered
+}
+
+func buildBlockItems(records []collectorpkg.BlockGroupRecord) []map[string]interface{} {
+	items := make([]map[string]interface{}, 0, len(records))
+	for _, record := range records {
 		items = append(items, map[string]interface{}{
 			"source":      record.Source,
 			"block_type":  record.BlockType,
@@ -455,20 +545,11 @@ func serveBlocks(w http.ResponseWriter, r *http.Request) {
 			"stock_count": record.StockCount,
 		})
 	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i]["block_type"].(string) != items[j]["block_type"].(string) {
-			return items[i]["block_type"].(string) < items[j]["block_type"].(string)
-		}
-		if items[i]["source"].(string) != items[j]["source"].(string) {
-			return items[i]["source"].(string) < items[j]["source"].(string)
-		}
-		return items[i]["name"].(string) < items[j]["name"].(string)
-	})
+	return items
+}
 
-	successResponse(w, map[string]interface{}{
-		"count": len(items),
-		"items": items,
-	})
+func normalizeBlockKeyword(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
 }
 
 func serveBlockMembers(w http.ResponseWriter, r *http.Request) {
@@ -1039,6 +1120,58 @@ func buildQuoteSnapshotItem(model *tdx.CodeModel, quote *protocol.Quote, now tim
 		Asks:          buildQuoteLevels(quote.SellLevel, false),
 	}
 	return normalizeQuoteSnapshot(item)
+}
+
+func buildIndexQuoteSnapshotItem(model *tdx.CodeModel, list []*protocol.Kline) (providerQuoteSnapshot, bool) {
+	latest := latestKline(list)
+	if latest == nil {
+		return providerQuoteSnapshot{}, false
+	}
+	prevClose := latest.Last.Float64()
+	if prevClose == 0 && len(list) >= 2 && list[len(list)-2] != nil {
+		prevClose = list[len(list)-2].Close.Float64()
+	}
+	price := latest.Close.Float64()
+	change := price - prevClose
+	changePct := 0.0
+	if prevClose != 0 {
+		changePct = change / prevClose * 100
+	}
+	item := providerQuoteSnapshot{
+		Code:          model.Code,
+		FullCode:      model.FullCode(),
+		Name:          model.Name,
+		Exchange:      providerExchange(model),
+		AssetType:     modelAssetType(model),
+		TradingStatus: "active",
+		IsHalted:      false,
+		IsLimitUp:     false,
+		IsLimitDown:   false,
+		StatusSource:  "tdx_index_kline",
+		StatusReason:  "指数快照基于最新指数日线构造，不含盘口状态字段",
+		Price:         roundFloat(price, 3),
+		PrevClose:     roundFloat(prevClose, 3),
+		Open:          roundFloat(latest.Open.Float64(), 3),
+		High:          roundFloat(latest.High.Float64(), 3),
+		Low:           roundFloat(latest.Low.Float64(), 3),
+		Change:        roundFloat(change, 3),
+		ChangePct:     roundFloat(changePct, 2),
+		Volume:        latest.Volume,
+		Amount:        roundFloat(latest.Amount.Float64(), 2),
+	}
+	if !latest.Time.IsZero() {
+		item.QuoteTime = latest.Time.Format(time.RFC3339)
+	}
+	return normalizeQuoteSnapshot(item), true
+}
+
+func latestKline(list []*protocol.Kline) *protocol.Kline {
+	for i := len(list) - 1; i >= 0; i-- {
+		if list[i] != nil {
+			return list[i]
+		}
+	}
+	return nil
 }
 
 func buildQuoteLevels(levels protocol.PriceLevels, bids bool) []providerPriceLevel {
