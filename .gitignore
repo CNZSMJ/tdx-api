@@ -6,3 +6,7 @@ web/data/
 __pycache__/
 *.py[cod]
 docs/ROADMAP.md
+web/.stock-web.pid
+web/.stock-web.log
+web/stock-web
+web/web.test

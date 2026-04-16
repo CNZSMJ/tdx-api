@@ -764,6 +764,13 @@ func wireRuntimeConfig(cfg *RuntimeConfig) {
 	if cfg.Kline.BaseDir == "" {
 		cfg.Kline.BaseDir = filepath.Join(DefaultBaseDir, "kline")
 	}
+	if cfg.Kline.LiveBaseDir == "" {
+		if cfg.Live.BaseDir != "" {
+			cfg.Kline.LiveBaseDir = cfg.Live.BaseDir
+		} else {
+			cfg.Kline.LiveBaseDir = filepath.Join(DefaultBaseDir, "live")
+		}
+	}
 	if cfg.Trade.BaseDir == "" {
 		cfg.Trade.BaseDir = filepath.Join(DefaultBaseDir, "trade")
 	}

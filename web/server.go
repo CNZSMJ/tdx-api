@@ -53,7 +53,7 @@ const (
 // startup catch-up for thousands of symbols (trade/live/order per trading day).
 // Startup trigger defaults to no overall deadline; set COLLECTOR_STARTUP_CATCHUP_TIMEOUT to cap it.
 func collectorCatchUpContext(trigger string) (context.Context, context.CancelFunc) {
-	if trigger == "startup" {
+	if collectorTriggerUsesStartupProfile(trigger) {
 		if d := collectorStartupCatchUpTimeoutFromEnv(); d > 0 {
 			return context.WithTimeout(context.Background(), d)
 		}
@@ -529,6 +529,10 @@ func runCollectorStartupSequence() {
 		log.Printf("collector: startup sequence skipped because shutdown is in progress")
 		return
 	}
+	if collectorControl.isPaused() {
+		log.Printf("collector: startup sequence skipped because collector is paused")
+		return
+	}
 	if err := runCollectorCatchUp("startup"); err != nil {
 		log.Printf("collector startup catch-up 失败: %v", err)
 	}
@@ -545,6 +549,9 @@ func runCollectorCatchUp(trigger string) error {
 	if isServiceShuttingDown() {
 		return fmt.Errorf("collector shutdown in progress, skip trigger: %s", trigger)
 	}
+	if collectorControl.isPaused() {
+		return fmt.Errorf("collector paused, skip trigger: %s", trigger)
+	}
 	if collectorRuntime == nil {
 		return fmt.Errorf("collector runtime 未初始化，跳过触发: %s", trigger)
 	}
@@ -555,12 +562,12 @@ func runCollectorCatchUp(trigger string) error {
 
 	jobName := "daily_full_sync"
 	runFn := collectorRuntime.RunDailyFullSync
-	if trigger == "startup" {
+	if collectorTriggerUsesStartupProfile(trigger) {
 		jobName = "startup_catchup"
 		runFn = collectorRuntime.RunStartupCatchUp
 	}
 	job := collectorJobState.start(jobName, trigger, "")
-	if trigger == "startup" && collectorStartupCatchUpTimeoutFromEnv() == 0 {
+	if collectorTriggerUsesStartupProfile(trigger) && collectorStartupCatchUpTimeoutFromEnv() == 0 {
 		log.Printf("collector 全量补采开始: trigger=%s (启动补采未设置 COLLECTOR_STARTUP_CATCHUP_TIMEOUT，无整体 deadline)", trigger)
 	} else {
 		log.Printf("collector 全量补采开始: trigger=%s", trigger)
@@ -586,6 +593,9 @@ func runCollectorCatchUp(trigger string) error {
 func runCollectorReconcile(trigger, date string) (*collectorpkg.ReconcileReport, error) {
 	if isServiceShuttingDown() {
 		return nil, fmt.Errorf("collector shutdown in progress, skip reconcile: trigger=%s date=%s", trigger, date)
+	}
+	if collectorControl.isPaused() {
+		return nil, fmt.Errorf("collector paused, skip reconcile: trigger=%s date=%s", trigger, date)
 	}
 	if collectorRuntime == nil {
 		return nil, fmt.Errorf("collector runtime 未初始化，跳过对账: trigger=%s date=%s", trigger, date)
@@ -622,6 +632,9 @@ func runCollectorReconcile(trigger, date string) (*collectorpkg.ReconcileReport,
 
 func runCollectorMissedMaintenance() error {
 	if isServiceShuttingDown() {
+		return nil
+	}
+	if collectorControl.isPaused() {
 		return nil
 	}
 	if collectorRuntime == nil {
@@ -685,6 +698,7 @@ func handleCollectorStatus(w http.ResponseWriter, r *http.Request) {
 	successResponse(w, map[string]any{
 		"runtime": status,
 		"jobs":    collectorJobState.snapshot(),
+		"control": collectorControl.snapshot(),
 		"schedule": map[string]string{
 			"daily_full_sync": collectorDailySyncSpec,
 			"daily_reconcile": collectorDailyReconcileSpec,
@@ -1654,7 +1668,10 @@ func main() {
 	http.HandleFunc("/api/server-status", handleGetServerStatus)
 	http.HandleFunc("/api/health", handleHealthCheck)
 	http.HandleFunc("/api/collector/status", handleCollectorStatus)
+	http.HandleFunc("/api/collector/control", handleCollectorControl)
 	http.HandleFunc("/api/collector/reconcile", handleCollectorReconcile)
+	http.HandleFunc("/api/collector/kline-gap-cleanup", handleCollectorKlineGapCleanup)
+	http.HandleFunc("/api/collector/kline-gap-reconcile", handleCollectorKlineGapReconcile)
 	http.HandleFunc("/api/etf", handleGetETFList)
 	http.HandleFunc("/api/trade-history", handleGetTradeHistory)
 	http.HandleFunc("/api/order-history", handleGetOrderHistory)
@@ -1681,7 +1698,7 @@ func main() {
 	server := &http.Server{Addr: port, Handler: nil}
 	errCh := make(chan error, 1)
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(sigCh, collectorShutdownSignals()...)
 	defer signal.Stop(sigCh)
 
 	go func() {
@@ -1716,4 +1733,8 @@ func main() {
 
 		shutdownCollectorRuntime()
 	}
+}
+
+func collectorShutdownSignals() []os.Signal {
+	return []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP}
 }

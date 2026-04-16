@@ -327,3 +327,43 @@ func (s *Store) UpsertCollectGap(record *CollectGapRecord) error {
 	_, err = s.engine.Insert(record)
 	return err
 }
+
+func (s *Store) ListOpenCollectGaps(domain, assetType, instrument, period string) ([]CollectGapRecord, error) {
+	records := make([]CollectGapRecord, 0, 8)
+	session := s.engine.Where("Status = ?", "open")
+	if domain != "" {
+		session = session.And("Domain = ?", domain)
+	}
+	if assetType != "" {
+		session = session.And("AssetType = ?", assetType)
+	}
+	if instrument != "" {
+		session = session.And("Instrument = ?", instrument)
+	}
+	if period != "" {
+		session = session.And("Period = ?", period)
+	}
+	if err := session.Asc("CreatedAt", "ID").Find(&records); err != nil {
+		return nil, err
+	}
+	return records, nil
+}
+
+func (s *Store) UpdateCollectGap(record *CollectGapRecord) error {
+	if record == nil {
+		return nil
+	}
+	record.UpdatedAt = time.Now()
+	_, err := s.engine.ID(record.ID).AllCols().Update(record)
+	return err
+}
+
+func (s *Store) CloseCollectGap(id int64, reason string) error {
+	record := &CollectGapRecord{
+		Status:    "closed",
+		Reason:    reason,
+		UpdatedAt: time.Now(),
+	}
+	_, err := s.engine.ID(id).Cols("Status", "Reason", "UpdatedAt").Update(record)
+	return err
+}

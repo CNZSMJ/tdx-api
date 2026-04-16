@@ -3,9 +3,12 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "${ROOT_DIR}/.." && pwd)"
 PID_FILE="${ROOT_DIR}/.stock-web.pid"
-LOG_FILE="${ROOT_DIR}/output.log"
+LOG_FILE="${ROOT_DIR}/.stock-web.log"
 DEFAULT_PORT="${TDX_WEB_PORT:-8080}"
+ENV_FILE="${TDX_WEB_ENV_FILE:-${PROJECT_DIR}/.env}"
+DEFAULT_BIN="${ROOT_DIR}/stock-web"
 
 usage() {
   cat <<'EOF'
@@ -23,7 +26,10 @@ Commands:
   restart  Restart the managed background process
   status   Show whether the managed process is running
   run      Run stock-web in foreground
-  logs     Tail output.log
+  logs     Tail the current service log
+
+Environment:
+  TDX_WEB_ENV_FILE  Optional env file to source before start/run
 EOF
 }
 
@@ -62,6 +68,73 @@ cleanup_stale_pid_file() {
   fi
 }
 
+load_runtime_env() {
+  if [[ -f "${ENV_FILE}" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "${ENV_FILE}"
+    set +a
+  fi
+
+  export TZ="${TZ:-Asia/Shanghai}"
+}
+
+launch_background_process() {
+  local -a cmd
+  local pid=""
+
+  if [[ -x "${DEFAULT_BIN}" ]]; then
+    cmd=("${DEFAULT_BIN}")
+  else
+    cmd=(go run .)
+  fi
+
+  if command -v python3 >/dev/null 2>&1; then
+    pid="$(
+      python3 - "${LOG_FILE}" "${cmd[@]}" <<'PY'
+import subprocess
+import sys
+
+log_path = sys.argv[1]
+cmd = sys.argv[2:]
+
+with open(log_path, "ab", buffering=0) as log_file:
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=log_file,
+        stderr=log_file,
+        close_fds=True,
+        start_new_session=True,
+    )
+
+print(proc.pid)
+PY
+    )"
+    if [[ -n "${pid}" ]]; then
+      printf '%s\n' "${pid}"
+      return 0
+    fi
+  fi
+
+  if command -v setsid >/dev/null 2>&1; then
+    nohup setsid "${cmd[@]}" < /dev/null >> "${LOG_FILE}" 2>&1 &
+    printf '%s\n' "$!"
+    return 0
+  fi
+
+  nohup "${cmd[@]}" < /dev/null >> "${LOG_FILE}" 2>&1 &
+  printf '%s\n' "$!"
+}
+
+run_foreground_process() {
+  if [[ -x "${DEFAULT_BIN}" ]]; then
+    exec "${DEFAULT_BIN}"
+  fi
+
+  exec go run .
+}
+
 start_service() {
   cleanup_stale_pid_file
 
@@ -84,15 +157,21 @@ start_service() {
   echo "正在后台启动服务器..."
   echo "日志文件: ${LOG_FILE}"
 
-  (
+  pid="$(
     cd "${ROOT_DIR}"
-    nohup go run . >> "${LOG_FILE}" 2>&1 &
-    echo $! > "${PID_FILE}"
-  )
+    load_runtime_env
+    launch_background_process
+  )"
+
+  if [[ -z "${pid}" ]]; then
+    echo "启动失败，未获取到后台进程 PID" >&2
+    return 1
+  fi
+
+  printf '%s\n' "${pid}" > "${PID_FILE}"
 
   sleep 1
 
-  pid="$(read_pid_file)"
   if [[ -n "${pid}" ]] && is_running_pid "${pid}"; then
     echo "启动成功: PID ${pid}"
     return 0
@@ -178,7 +257,8 @@ run_foreground() {
   print_banner
   echo "正在前台启动服务器..."
   cd "${ROOT_DIR}"
-  exec go run .
+  load_runtime_env
+  run_foreground_process
 }
 
 tail_logs() {
