@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"os"
@@ -18,12 +19,16 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/robfig/cron/v3"
 )
 
 const (
-	defaultBaseURL   = "https://data.tdx.com.cn/tdxfin"
-	defaultUserAgent = "Mozilla/5.0 (compatible; nexus-fi-tdx-api/1.0; +https://data.tdx.com.cn)"
-	listCacheTTL     = 6 * time.Hour
+	defaultBaseURL          = "https://data.tdx.com.cn/tdxfin"
+	defaultUserAgent        = "Mozilla/5.0 (compatible; nexus-fi-tdx-api/1.0; +https://data.tdx.com.cn)"
+	listCacheTTL            = 6 * time.Hour
+	defaultPrefetchSchedule = "0 0 9 * * *"
+	defaultPrefetchRetry    = 5 * time.Minute
 
 	fieldBookValuePerShare = 4
 	fieldTotalShares       = 238
@@ -36,10 +41,13 @@ const (
 )
 
 type Config struct {
-	BaseURL    string
-	UserAgent  string
-	HTTPClient *http.Client
-	Now        func() time.Time
+	BaseURL              string
+	UserAgent            string
+	HTTPClient           *http.Client
+	Now                  func() time.Time
+	DisableAutoPrefetch  bool
+	AutoPrefetchSchedule string
+	AutoPrefetchRetry    time.Duration
 }
 
 type ReportFile struct {
@@ -68,11 +76,19 @@ type Service struct {
 	httpClient *http.Client
 	now        func() time.Time
 
-	mu            sync.RWMutex
-	listFetchedAt time.Time
-	reportFiles   []ReportFile
-	reportCache   map[string]map[string]Snapshot
-	codeCache     map[string]Snapshot
+	mu                   sync.RWMutex
+	listFetchedAt        time.Time
+	reportFiles          []ReportFile
+	reportCache          map[string]map[string]Snapshot
+	codeCache            map[string]Snapshot
+	task                 cronStopper
+	prefetchRetry        time.Duration
+	autoPrefetchSchedule string
+	disableAutoPrefetch  bool
+}
+
+type cronStopper interface {
+	Stop() context.Context
 }
 
 func NewService(cacheDir string, cfg Config) *Service {
@@ -96,15 +112,29 @@ func NewService(cacheDir string, cfg Config) *Service {
 		cacheDir = filepath.Join(os.TempDir(), "tdx-profinance")
 	}
 
-	return &Service{
-		baseURL:     baseURL,
-		userAgent:   userAgent,
-		cacheDir:    cacheDir,
-		httpClient:  httpClient,
-		now:         now,
-		reportCache: make(map[string]map[string]Snapshot),
-		codeCache:   make(map[string]Snapshot),
+	autoPrefetchSchedule := strings.TrimSpace(cfg.AutoPrefetchSchedule)
+	if autoPrefetchSchedule == "" {
+		autoPrefetchSchedule = defaultPrefetchSchedule
 	}
+	autoPrefetchRetry := cfg.AutoPrefetchRetry
+	if autoPrefetchRetry <= 0 {
+		autoPrefetchRetry = defaultPrefetchRetry
+	}
+
+	svc := &Service{
+		baseURL:              baseURL,
+		userAgent:            userAgent,
+		cacheDir:             cacheDir,
+		httpClient:           httpClient,
+		now:                  now,
+		reportCache:          make(map[string]map[string]Snapshot),
+		codeCache:            make(map[string]Snapshot),
+		prefetchRetry:        autoPrefetchRetry,
+		autoPrefetchSchedule: autoPrefetchSchedule,
+		disableAutoPrefetch:  cfg.DisableAutoPrefetch,
+	}
+	svc.startAutoPrefetch()
+	return svc
 }
 
 func (s *Service) LatestForCode(ctx context.Context, code string) (*Snapshot, error) {
@@ -121,7 +151,7 @@ func (s *Service) LatestForCode(ctx context.Context, code string) (*Snapshot, er
 	}
 	s.mu.RUnlock()
 
-	reports, err := s.listReports(ctx)
+	reports, err := s.listReports(ctx, false)
 	if err != nil {
 		return nil, err
 	}
@@ -156,7 +186,7 @@ func (s *Service) ListForCode(ctx context.Context, code string, limit int, start
 		limit = 8
 	}
 
-	reports, err := s.listReports(ctx)
+	reports, err := s.listReports(ctx, false)
 	if err != nil {
 		return nil, err
 	}
@@ -194,9 +224,9 @@ func (s *Service) ListForCode(ctx context.Context, code string, limit int, start
 	return out, nil
 }
 
-func (s *Service) listReports(ctx context.Context) ([]ReportFile, error) {
+func (s *Service) listReports(ctx context.Context, forceRefresh bool) ([]ReportFile, error) {
 	s.mu.RLock()
-	if len(s.reportFiles) > 0 && s.now().Sub(s.listFetchedAt) < listCacheTTL {
+	if !forceRefresh && len(s.reportFiles) > 0 && s.now().Sub(s.listFetchedAt) < listCacheTTL {
 		out := append([]ReportFile(nil), s.reportFiles...)
 		s.mu.RUnlock()
 		return out, nil
@@ -239,6 +269,70 @@ func (s *Service) listReports(ctx context.Context) ([]ReportFile, error) {
 	return reports, nil
 }
 
+func (s *Service) PrefetchAll(ctx context.Context) error {
+	reports, err := s.listReports(ctx, true)
+	if err != nil {
+		return err
+	}
+
+	nowDate := s.now().Format("20060102")
+	var downloaded int
+	for _, report := range reports {
+		if report.ReportDate == "" || report.ReportDate > nowDate {
+			continue
+		}
+		if _, err := s.ensureReportZip(ctx, report); err != nil {
+			return fmt.Errorf("prefetch %s: %w", report.Filename, err)
+		}
+		downloaded++
+	}
+	log.Printf("profinance: prefetched %d report zip files", downloaded)
+	return nil
+}
+
+func (s *Service) startAutoPrefetch() {
+	if s == nil || s.disableAutoPrefetch {
+		return
+	}
+
+	task := cron.New(cron.WithSeconds())
+	if _, err := task.AddFunc(s.autoPrefetchSchedule, func() {
+		for attempt := 0; attempt < 3; attempt++ {
+			if err := s.PrefetchAll(context.Background()); err == nil {
+				return
+			} else {
+				log.Printf("profinance: auto prefetch attempt %d/3 failed: %v", attempt+1, err)
+			}
+			if attempt < 2 {
+				time.Sleep(s.prefetchRetry)
+			}
+		}
+	}); err != nil {
+		log.Printf("profinance: register auto prefetch failed: %v", err)
+		return
+	}
+	task.Start()
+	s.task = task
+
+	go func() {
+		if err := s.PrefetchAll(context.Background()); err != nil {
+			log.Printf("profinance: startup prefetch failed: %v", err)
+		}
+	}()
+}
+
+func (s *Service) Close() {
+	if s == nil || s.task == nil {
+		return
+	}
+	ctx := s.task.Stop()
+	select {
+	case <-ctx.Done():
+	case <-time.After(5 * time.Second):
+	}
+	s.task = nil
+}
+
 func (s *Service) loadReport(ctx context.Context, report ReportFile) (map[string]Snapshot, error) {
 	s.mu.RLock()
 	if cached, ok := s.reportCache[report.Filename]; ok {
@@ -247,7 +341,7 @@ func (s *Service) loadReport(ctx context.Context, report ReportFile) (map[string
 	}
 	s.mu.RUnlock()
 
-	bs, err := s.readOrDownloadReport(ctx, report)
+	bs, err := s.ensureReportZip(ctx, report)
 	if err != nil {
 		return nil, err
 	}
@@ -262,7 +356,7 @@ func (s *Service) loadReport(ctx context.Context, report ReportFile) (map[string
 	return rows, nil
 }
 
-func (s *Service) readOrDownloadReport(ctx context.Context, report ReportFile) ([]byte, error) {
+func (s *Service) ensureReportZip(ctx context.Context, report ReportFile) ([]byte, error) {
 	if err := os.MkdirAll(s.cacheDir, 0o755); err != nil {
 		return nil, err
 	}

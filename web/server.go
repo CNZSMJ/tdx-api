@@ -385,9 +385,6 @@ func init() {
 	if err := manager.Codes.Update(); err != nil {
 		log.Printf("更新管理器代码库失败: %v", err)
 	}
-	if err := manager.Workday.Update(); err != nil {
-		log.Printf("更新交易日数据失败: %v", err)
-	}
 	manager.Cron.Start()
 	initCollectorRuntime()
 }

@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -91,8 +92,9 @@ func TestLatestForCodeUsesNewestAvailableReportForCode(t *testing.T) {
 
 	cacheDir := t.TempDir()
 	service := NewService(cacheDir, Config{
-		BaseURL:    server.URL,
-		HTTPClient: server.Client(),
+		BaseURL:             server.URL,
+		HTTPClient:          server.Client(),
+		DisableAutoPrefetch: true,
 		Now: func() time.Time {
 			return time.Date(2026, 4, 10, 0, 0, 0, 0, time.UTC)
 		},
@@ -163,8 +165,9 @@ func TestListForCodeReturnsHistoricalReportsInDescendingOrder(t *testing.T) {
 	defer server.Close()
 
 	service := NewService(t.TempDir(), Config{
-		BaseURL:    server.URL,
-		HTTPClient: server.Client(),
+		BaseURL:             server.URL,
+		HTTPClient:          server.Client(),
+		DisableAutoPrefetch: true,
 		Now: func() time.Time {
 			return time.Date(2026, 4, 10, 0, 0, 0, 0, time.UTC)
 		},
@@ -190,6 +193,76 @@ func TestListForCodeReturnsHistoricalReportsInDescendingOrder(t *testing.T) {
 	}
 	if len(filtered) != 1 || filtered[0].ReportDate != "20251231" {
 		t.Fatalf("filtered reports = %#v, want only 20251231", filtered)
+	}
+}
+
+func TestPrefetchAllDownloadsHistoricalZipsAndSkipsFuturePlaceholders(t *testing.T) {
+	var downloaded int32
+	listBody := "gpcw20260331.zip,newhash,100\n" +
+		"gpcw20251231.zip,oldhash,100\n" +
+		"gpcw20260930.zip,future,164\n"
+
+	q12026 := buildZIPFixture(t, "gpcw20260331.dat", buildDATFixture(t, "600000", map[int]float32{
+		fieldBookValuePerShare: 13.5,
+		fieldTotalShares:       2000000000,
+		fieldFloatAShares:      1500000000,
+		fieldNetProfitTTM:      1500000000,
+		fieldRevenueTTM:        500000,
+		fieldWeightedROE:       12.1,
+	}))
+	fy2025 := buildZIPFixture(t, "gpcw20251231.dat", buildDATFixture(t, "600000", map[int]float32{
+		fieldBookValuePerShare: 12.0,
+		fieldTotalShares:       2000000000,
+		fieldFloatAShares:      1500000000,
+		fieldNetProfitTTM:      1230000000,
+		fieldRevenueTTM:        450000,
+		fieldWeightedROE:       11.2,
+	}))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/gpcw.txt":
+			_, _ = w.Write([]byte(listBody))
+		case "/gpcw20260331.zip":
+			atomic.AddInt32(&downloaded, 1)
+			w.Header().Set("Content-Type", "application/zip")
+			_, _ = w.Write(q12026)
+		case "/gpcw20251231.zip":
+			atomic.AddInt32(&downloaded, 1)
+			w.Header().Set("Content-Type", "application/zip")
+			_, _ = w.Write(fy2025)
+		case "/gpcw20260930.zip":
+			t.Fatalf("future placeholder report should not be downloaded")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cacheDir := t.TempDir()
+	service := NewService(cacheDir, Config{
+		BaseURL:             server.URL,
+		HTTPClient:          server.Client(),
+		DisableAutoPrefetch: true,
+		Now: func() time.Time {
+			return time.Date(2026, 4, 10, 0, 0, 0, 0, time.UTC)
+		},
+	})
+
+	if err := service.PrefetchAll(context.Background()); err != nil {
+		t.Fatalf("PrefetchAll: %v", err)
+	}
+	if got := atomic.LoadInt32(&downloaded); got != 2 {
+		t.Fatalf("downloaded zips = %d, want 2", got)
+	}
+	if _, err := os.Stat(filepath.Join(cacheDir, "gpcw20260331.zip")); err != nil {
+		t.Fatalf("expected cached zip gpcw20260331.zip: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cacheDir, "gpcw20251231.zip")); err != nil {
+		t.Fatalf("expected cached zip gpcw20251231.zip: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cacheDir, "gpcw20260930.zip")); !os.IsNotExist(err) {
+		t.Fatalf("future placeholder zip should not exist, stat err=%v", err)
 	}
 }
 

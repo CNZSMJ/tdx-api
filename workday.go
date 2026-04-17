@@ -12,6 +12,8 @@ import (
 	"github.com/robfig/cron/v3"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 	"xorm.io/core"
 	"xorm.io/xorm"
@@ -105,15 +107,29 @@ func (this *Workday) loadCache() (int, error) {
 	if err := this.db.Find(&all); err != nil {
 		return 0, err
 	}
+	normalized, changed, err := normalizeWorkdayModels(all)
+	if err != nil {
+		return 0, err
+	}
+	if changed {
+		if err := rewriteWorkdayTable(this.db, normalized); err != nil {
+			return 0, err
+		}
+	}
+	if err := ensureWorkdayDateUniqueIndex(this.db); err != nil {
+		return 0, err
+	}
+
+	this.cache = maps.NewBit()
 	var latest int64
-	for _, v := range all {
+	for _, v := range normalized {
 		this.cache.Set(uint64(v.Unix), true)
 		if v.Unix > latest {
 			latest = v.Unix
 		}
 	}
 	this.latestUnix = latest
-	return len(all), nil
+	return len(normalized), nil
 }
 
 // Update 更新
@@ -126,22 +142,12 @@ func (this *Workday) Update() error {
 	//获取沪市指数的日K线,用作历史是否节假日的判断依据
 	//判断日K线是否拉取过
 
-	//获取全部工作日
-	all := []*WorkdayModel(nil)
-	if err := this.db.Find(&all); err != nil {
+	if _, err := this.loadCache(); err != nil {
 		return err
-	}
-	var lastWorkday = &WorkdayModel{}
-	if len(all) > 0 {
-		lastWorkday = all[len(all)-1]
-	}
-	this.latestUnix = lastWorkday.Unix
-	for _, v := range all {
-		this.cache.Set(uint64(v.Unix), true)
 	}
 
 	now := time.Now()
-	if lastWorkday.Unix < IntegerDay(now).Unix() {
+	if this.latestUnix < canonicalWorkdayTime(now).Unix() {
 		resp, err := this.Client.GetIndexDayAll("sh000001")
 		if err != nil {
 			logs.Err(err)
@@ -150,9 +156,17 @@ func (this *Workday) Update() error {
 
 		inserts := []any(nil)
 		var latest int64
+		seenDates := make(map[string]struct{})
 		for _, v := range resp.List {
-			if unix := v.Time.Unix(); unix > lastWorkday.Unix {
-				inserts = append(inserts, &WorkdayModel{Unix: unix, Date: v.Time.Format("20060102")})
+			canonical := canonicalWorkdayTime(v.Time)
+			unix := canonical.Unix()
+			date := canonical.Format("20060102")
+			if _, ok := seenDates[date]; ok {
+				continue
+			}
+			seenDates[date] = struct{}{}
+			if unix > this.latestUnix {
+				inserts = append(inserts, &WorkdayModel{Unix: unix, Date: date})
 				this.cache.Set(uint64(unix), true)
 				if unix > latest {
 					latest = unix
@@ -173,6 +187,99 @@ func (this *Workday) Update() error {
 	}
 
 	return nil
+}
+
+func normalizeWorkdayModels(rows []*WorkdayModel) ([]*WorkdayModel, bool, error) {
+	byDate := make(map[string]*WorkdayModel, len(rows))
+	changed := false
+
+	for _, row := range rows {
+		if row == nil {
+			continue
+		}
+		canonical, err := canonicalWorkdayModel(row)
+		if err != nil {
+			return nil, false, err
+		}
+		if canonical.Unix != row.Unix || canonical.Date != strings.TrimSpace(row.Date) {
+			changed = true
+		}
+		if _, exists := byDate[canonical.Date]; exists {
+			changed = true
+		}
+		byDate[canonical.Date] = canonical
+	}
+
+	out := make([]*WorkdayModel, 0, len(byDate))
+	for _, row := range byDate {
+		out = append(out, row)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Unix == out[j].Unix {
+			return out[i].Date < out[j].Date
+		}
+		return out[i].Unix < out[j].Unix
+	})
+	for i := 1; i < len(out); i++ {
+		if out[i-1].Unix == out[i].Unix {
+			return nil, false, errors.New("duplicate canonical workday unix detected")
+		}
+	}
+	if len(out) != len(rows) {
+		changed = true
+	}
+	return out, changed, nil
+}
+
+func canonicalWorkdayModel(row *WorkdayModel) (*WorkdayModel, error) {
+	date := strings.TrimSpace(row.Date)
+	if date != "" {
+		t, err := time.ParseInLocation("20060102", date, time.Local)
+		if err != nil {
+			return nil, err
+		}
+		canonical := canonicalWorkdayTime(t)
+		return &WorkdayModel{
+			Unix: canonical.Unix(),
+			Date: canonical.Format("20060102"),
+		}, nil
+	}
+	canonical := canonicalWorkdayTime(time.Unix(row.Unix, 0).In(time.Local))
+	return &WorkdayModel{
+		Unix: canonical.Unix(),
+		Date: canonical.Format("20060102"),
+	}, nil
+}
+
+func canonicalWorkdayTime(t time.Time) time.Time {
+	year, month, day := t.In(time.Local).Date()
+	return time.Date(year, month, day, 15, 0, 0, 0, time.Local)
+}
+
+func rewriteWorkdayTable(db *xorm.Engine, rows []*WorkdayModel) error {
+	_, err := db.Transaction(func(session *xorm.Session) (interface{}, error) {
+		if _, err := session.Exec("DELETE FROM workday"); err != nil {
+			return nil, err
+		}
+		if len(rows) == 0 {
+			return nil, nil
+		}
+		inserts := make([]any, 0, len(rows))
+		for _, row := range rows {
+			inserts = append(inserts, &WorkdayModel{
+				Unix: row.Unix,
+				Date: row.Date,
+			})
+		}
+		_, err := session.Insert(inserts...)
+		return nil, err
+	})
+	return err
+}
+
+func ensureWorkdayDateUniqueIndex(db *xorm.Engine) error {
+	_, err := db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS UQE_workday_Date ON workday (Date)")
+	return err
 }
 
 // Is 是否是工作日
