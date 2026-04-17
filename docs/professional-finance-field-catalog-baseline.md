@@ -14,6 +14,176 @@ Completed normalization batches are recorded as tables with `source_field_id`, `
 Row-level `category` follows public field-catalog classification by professional financial data semantics, not the source appendix section heading.
 For earnings preview and earnings flash report fields, `category` follows information-source semantics first. These fields should be grouped under dedicated preview/flash categories even when the underlying economic meaning resembles balance-sheet, income-statement, per-share, or profitability fields.
 
+## Registry Metadata Rules
+
+本附录的主职责是固定：
+
+- 完整 `source_field_id` 宇宙
+- 稳定 `field_code`
+- 稳定 `field_name_cn`
+- 稳定 `field_name_en`
+- 稳定 `category`
+
+Professional Finance 字段注册层在实现时，必须在此基础上为每个字段补齐以下元数据：
+
+- `concept_code`
+- `statement`
+- `period_semantics`
+- `unit`
+- `value_type`
+- `storage_precision`
+- `display_precision`
+- `rounding_mode`
+- `nullable`
+- `source`
+- `supported`
+
+这些元数据不在本附录中逐行展开 403 次，但它们不是自由发挥项。实现时必须遵守以下规则：
+
+### `concept_code`
+
+- 用于把同一经济概念下的不同字段归为一个概念族
+- 例如同属“营业收入”概念的报告期值、单季度值、TTM 值、快报值、预告值，应共享同一 `concept_code`
+- `concept_code` 不参与对外查询参数，但必须在字段目录中可见
+
+### `statement`
+
+允许值必须来自以下受控集合之一：
+
+- `meta`
+- `disclosure`
+- `per_share`
+- `balance_sheet`
+- `income_statement`
+- `cash_flow_statement`
+- `analysis`
+- `preview`
+- `flash_report`
+
+说明：
+
+- `statement` 是会计/信息源维度
+- `category` 是对外字段目录分组维度
+- 两者不必一一相同
+- 若两者出现分歧，解释优先级固定为：
+  - `statement` 保留字段的会计报表或披露来源属性
+  - `category` 决定对外字段目录的浏览、过滤和展示分组
+- 对业绩预告、业绩快报字段：
+  - `statement` 可以继续表达其 underlying statement 或披露来源
+  - `category` 必须优先归入 `earnings_preview` 或 `earnings_flash_report`
+- 对分析类/衍生类字段：
+  - `statement=analysis`
+  - `category` 仍按对外公开分组语义归类
+
+### `period_semantics`
+
+允许值必须来自以下受控集合之一：
+
+- `report_period`
+- `single_quarter`
+- `ttm`
+- `instant`
+- `preview`
+- `flash_report`
+
+说明：
+
+- `report_period` 表示报告期累计值
+- `single_quarter` 表示单季度值
+- `ttm` 表示近一年滚动值
+- `instant` 表示时点值或存量值
+- `preview` / `flash_report` 表示信息源语义优先的特殊披露值
+
+### `unit`
+
+允许值必须使用稳定规范化表达，例如：
+
+- `yuan`
+- `ten_thousand_yuan`
+- `shares`
+- `percent`
+- `ratio`
+- `times`
+- `days`
+- `date_yyyymmdd`
+- `string`
+
+### `value_type`
+
+允许值必须来自以下集合之一：
+
+- `number`
+- `date`
+- `string`
+- `boolean`
+
+### `storage_precision`
+
+- 表示字段在标准化存储层中的精度定义
+- 对 decimal-like 字段，必须至少能表达：
+  - `max_digits`
+  - `decimal_places`
+- 对整数、日期、字符串字段，可返回：
+  - `0`
+  - `null`
+  - 或等价的非 decimal 表达
+- `storage_precision` 主要服务于：
+  - 持久化一致性
+  - 下游计算
+  - schema 校验
+
+### `display_precision`
+
+- 表示推荐展示精度
+- 必须与 `storage_precision` 分离
+- 例如：
+  - 每股净资产可能 `storage_precision=4`，但 `display_precision=2`
+  - 百分比字段可能 `storage_precision=6`，但 `display_precision=2`
+
+### `rounding_mode`
+
+允许值必须来自以下集合之一：
+
+- `round_half_up`
+- `round_half_even`
+- `truncate`
+- `none`
+
+说明：
+
+- `rounding_mode` 用于把高精度存储值安全转换成展示值
+- 未显式要求舍入的字段，使用 `none`
+
+### `nullable`
+
+- `true`
+  - 字段允许缺失
+- `false`
+  - 字段在该 source section 设计上必须存在
+
+说明：
+
+- `nullable` 用于解释字段缺失是否属于正常覆盖范围
+- 它不等于实际某一条记录在某天一定有值
+
+### `source`
+
+当前 professional finance 字段目录中的 `source` 固定为：
+
+- `tdx_professional_finance`
+
+后续即使引入其他专业财务来源，也不得修改本附录中既有 `field_code` 的语义。
+
+### `supported`
+
+- `supported=true`
+  - 可进入公开查询接口 contract
+- `supported=false`
+  - 字段目录中必须可见
+  - 但暂不作为查询接口的可查询字段返回
+
+无论 `supported` 为何值，只要字段已进入本附录，就必须保留稳定 `field_code`，不得在后续实现中临时改名。
+
 ### 元数据 (`0-0`)
 
 | source_field_id | field_code | field_name_cn | field_name_en | category |

@@ -1,7 +1,7 @@
 # Product Requirements Document: Professional Finance API
 
-**Version**: 1.0  
-**Date**: 2026-04-17  
+**Version**: 1.1  
+**Date**: 2026-04-18  
 **Author**: Sarah (Product Owner)  
 **Quality Score**: 93/100
 
@@ -147,12 +147,20 @@
 
 统一前缀：
 
-- `/api/prof-finance/*`
+- `/api/v1/prof-finance/*`
+
+### API Versioning
+
+- 本设计稿定义的专业财务 API 首个公开版本为 `v1`
+- 所有 breaking changes 必须通过新的主版本路径发布，例如 `/api/v2/prof-finance/*`
+- 非 breaking changes 可以在 `v1` 内演进，但不得改变既有字段语义、时间语义、错误语义和分页语义
+- `v1` 既是对外 contract，也是测试和验收基线；不得在实现中引入未写入 `v1` contract 的隐式行为
 
 ### Response Shape Conventions
 
 为避免歧义，本文对返回结构做统一约定：
 
+- 顶层 `request_id` 是一次请求的稳定标识
 - 顶层 `data` 是一个 JSON object
 - `field_values` 是 `object<field_code, value>`
 - `coverage` 是一个 JSON object
@@ -161,9 +169,49 @@
 
 除非明确标注为 `items[]` 或 `list[]`，否则字段默认都是对象字段，不额外再包一层无意义对象。
 
+### Success and Error Envelope
+
+专业财务 API 必须使用稳定的响应 envelope。
+
+**Success response**
+
+- `code=0`
+- `message=success`
+- `request_id`
+- `data`
+
+**Error response**
+
+- `code != 0`
+- `message`
+- `request_id`
+- `error`
+  - `error_code`
+  - `error_type`
+  - `http_status`
+  - `retryable`
+  - `details`
+
+`error_code` 是客户端应依赖的稳定错误代码。  
+最小必备错误代码集合：
+
+- `INVALID_ARGUMENT`
+- `NOT_FOUND`
+- `UNSUPPORTED_FIELD`
+- `UNSUPPORTED_PERIOD_MODE`
+- `SOURCE_NOT_READY`
+- `RATE_LIMITED`
+- `INTERNAL_ERROR`
+
+说明：
+
+- `message` 面向人类阅读
+- `error_code` 面向程序分支判断
+- `retryable=true` 只表示“稍后重试可能成功”，不表示客户端可以忽略错误
+
 ### A. Field Catalog
 
-#### `GET /api/prof-finance/fields`
+#### `GET /api/v1/prof-finance/fields`
 
 **Purpose**
 
@@ -186,6 +234,10 @@
 - `period_semantics`
 - `unit`
 - `value_type`
+- `storage_precision`
+- `display_precision`
+- `rounding_mode`
+- `nullable`
 - `source`
 - `supported`
 
@@ -203,7 +255,7 @@
 
 ### B. Single-Security Snapshot
 
-#### `GET /api/prof-finance/snapshot`
+#### `GET /api/v1/prof-finance/snapshot`
 
 **Purpose**
 
@@ -241,7 +293,7 @@
 
 ### C. Cross-Section Snapshot
 
-#### `GET /api/prof-finance/cross-section`
+#### `GET /api/v1/prof-finance/cross-section`
 
 **Purpose**
 
@@ -255,6 +307,8 @@
 - `as_of_date`
 - `field_codes=...`
 - `period_mode=latest_available|latest_report|exact`
+- `limit`
+- `cursor`
 
 **Response shape**
 
@@ -262,18 +316,32 @@
 - `as_of_date`
 - `knowledge_cutoff`
 - `field_codes`
+- `next_cursor`
 - `items[]`
   - `full_code`
   - `name`
+  - `report_date`
+  - `announce_date`
   - `field_values`
   - `missing_fields`
   - `coverage`
+
+**Pagination rules**
+
+- `cross-section` 必须分页，不能一次性返回整个证券全集
+- `full_codes` 单次请求最大输入数量为 `500`
+- 默认 `limit=100`
+- 最大 `limit=500`
+- `cursor` 为不透明游标，客户端不得自行解析
+- 若无更多结果，`next_cursor = null`
+- 若未显式指定排序，默认按 `full_code ASC` 形成稳定分页顺序
+- 若 `full_codes` 超过 `500`，必须返回 `INVALID_ARGUMENT`
 
 ---
 
 ### D. Historical Series
 
-#### `GET /api/prof-finance/history`
+#### `GET /api/v1/prof-finance/history`
 
 **Purpose**
 
@@ -308,7 +376,7 @@
 
 ### E. Coverage / Availability
 
-#### `GET /api/prof-finance/coverage`
+#### `GET /api/v1/prof-finance/coverage`
 
 **Purpose**
 
@@ -318,17 +386,22 @@
 
 - `full_code`
 - `report_date`
+- `as_of_date`
+- `field_codes`
 
 **Response shape**
 
 - `full_code`
 - `name`
 - `latest_report_date`
+- `requested_field_codes`
+- `evaluated_field_codes`
 - `knowledge_cutoff`
 - `available_reports`
 - `available_field_codes`
 - `missing_fields`
 - `status`
+- `status_reason`
 
 ---
 
@@ -339,8 +412,47 @@
 - 请求只接受 `field_codes`
 - 响应只返回 `field_values`
 - `field_values` 的 key 始终是 `field_code`
-- 底层 `gpcw source_field_id` 只通过 `/api/prof-finance/fields` 暴露
+- 底层 `gpcw source_field_id` 只通过 `/api/v1/prof-finance/fields` 暴露
 - 所有查询响应都必须显式返回 `knowledge_cutoff`
+- 所有正式查询响应都必须来自统一 serving layer，而不是把 ZIP 直读当成主查询路径
+
+## Non-Functional Requirements
+
+### Performance SLA
+
+以下 SLA 以**正常生产负载、SQLite serving 层命中、同一工作区本地存储正常**为前提。
+
+- `/api/v1/prof-finance/fields`
+  - 热路径 `p95 <= 300ms`
+- `/api/v1/prof-finance/snapshot`
+  - 单证券、最多 `50` 个字段，热路径 `p95 <= 800ms`
+- `/api/v1/prof-finance/history`
+  - 单证券、最多 `40` 个报告期、最多 `50` 个字段，热路径 `p95 <= 1500ms`
+- `/api/v1/prof-finance/cross-section`
+  - 单页最多 `500` 只证券、最多 `50` 个字段，热路径 `p95 <= 3000ms`
+- `/api/v1/prof-finance/coverage`
+  - 单证券覆盖查询，热路径 `p95 <= 800ms`
+
+### Observability
+
+- 所有请求必须生成 `request_id`
+- 所有请求必须记录结构化访问日志，至少包含：
+  - `request_id`
+  - `route`
+  - `latency_ms`
+  - `result_status`
+  - `error_code`
+- 系统必须能观测：
+  - `source watermark` 新鲜度
+  - ZIP 下载/解析失败率
+  - serving 查询延迟
+  - cross-section 页级返回数量
+
+### Schema Evolution
+
+- `v1` 对外 contract 稳定，但内部数据表允许演进
+- 所有结构化表变更必须通过显式 schema migration 执行
+- 不允许通过“删库重建作为常规升级路径”替代 schema migration 设计
 
 也就是说：
 
@@ -415,6 +527,7 @@
 完整字段清单见：
 
 - [professional-finance-field-catalog-baseline.md](/Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance-field-catalog-baseline.md)
+- [professional-finance-data-architecture.md](/Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance-data-architecture.md)
 
 这份附录是本设计的规范性组成部分，用来定义：
 
@@ -422,12 +535,13 @@
 - 其中文含义
 - 所属逻辑分组
 - Professional Finance API 必须至少能够在字段目录层暴露这些定义
+- 数据层如何保存原始 `gpcw` 包、解析值、标准化查询层与 `FINONE` 可见性边界
 
 ### Public field strategy
 
 对外仍然只暴露一套稳定的 `field_code` 体系，但这不等于只覆盖少数字段。
 
-- `/api/prof-finance/fields` 必须能列出全部已注册字段，而不只是当前可查询字段
+- `/api/v1/prof-finance/fields` 必须能列出全部已注册字段，而不只是当前可查询字段
 - 每个字段目录项都必须有稳定的 `field_code`，用于字段目录、映射追踪和覆盖状态表达
 - `supported` 只表示该字段当前是否进入查询接口 contract，不改变 `field_code` 作为字段目录稳定标识的语义
 - 每个字段目录项都必须能追溯到唯一的 `source_field_id`
@@ -483,14 +597,39 @@
 若 `as_of_date=2026-04-17`，则只能返回在该日期之前已经可得的报告。  
 这条规则是专业投研接口必须具备的要求，用于避免未来函数。
 
+这里的“可得”不是按文件名猜测，而是按以下最终规则判断：
+
+- 报告主可见日期使用 `effective_announce_date`
+- `effective_announce_date` 的计算规则：
+  - 若 `announce_date_raw` 合法，则取 `announce_date_raw`
+  - 若 `announce_date_raw` 缺失、为 `000000` 或非法，则取 `first_seen_at` 的日期部分
+- `knowledge_cutoff = min(as_of_date, source_watermark_date)`
+- 只有当：
+  - `effective_announce_date <= knowledge_cutoff`
+  - 且对应报告版本已被系统成功摄取
+  
+  时，该报告才算对外可见
+
 ### Exact vs latest
 
 - `period_mode=exact`
+  - 必须传 `report_date`
   - 只返回指定 `report_date`
 - `period_mode=latest_report`
-  - 返回最新报告期
+  - 不依赖 `as_of_date`
+  - 返回系统当前已知的最新报告期
 - `period_mode=latest_available`
-  - 返回当前可得的最新可用报告
+  - 必须传 `as_of_date`
+  - 返回在 `knowledge_cutoff` 下可见的最新可用报告
+
+参数冲突规则：
+
+- `period_mode=exact`
+  - 缺少 `report_date` 时直接报错
+- `period_mode=latest_report`
+  - 允许不传 `as_of_date`
+- `period_mode=latest_available`
+  - 缺少 `as_of_date` 时直接报错
 
 ### Missing handling
 
@@ -516,10 +655,12 @@
 {
   "code": 0,
   "message": "success",
+  "request_id": "req_pf_20260418_000001",
   "data": {
     "full_code": "sh600519",
     "name": "贵州茅台",
     "report_date": "20251231",
+    "announce_date": "20260328",
     "as_of_date": "20260417",
     "knowledge_cutoff": "20260417",
     "source": "tdx_professional_finance",
@@ -534,6 +675,8 @@
     "missing_fields": [],
     "coverage": {
       "available": true,
+      "announce_date_source": "gpcw_314",
+      "effective_announce_date": "20260328",
       "source_report_file": "gpcw20251231.zip"
     }
   }
@@ -546,30 +689,67 @@
 {
   "code": 0,
   "message": "success",
+  "request_id": "req_pf_20260418_000002",
   "data": {
     "report_date": "20251231",
+    "as_of_date": "20260417",
     "knowledge_cutoff": "20260417",
     "field_codes": ["net_profit_ttm", "weighted_roe"],
+    "next_cursor": null,
     "items": [
       {
         "full_code": "sh600519",
         "name": "贵州茅台",
+        "report_date": "20251231",
+        "announce_date": "20260328",
         "field_values": {
           "net_profit_ttm": 89214300000,
           "weighted_roe": 31.2
         },
-        "missing_fields": []
+        "missing_fields": [],
+        "coverage": {
+          "available": true,
+          "announce_date_source": "gpcw_314",
+          "effective_announce_date": "20260328"
+        }
       },
       {
         "full_code": "sz000001",
         "name": "平安银行",
+        "report_date": "20251231",
+        "announce_date": "20260321",
         "field_values": {
           "net_profit_ttm": 42632998912,
           "weighted_roe": 9.15
         },
-        "missing_fields": []
+        "missing_fields": [],
+        "coverage": {
+          "available": true,
+          "announce_date_source": "gpcw_314",
+          "effective_announce_date": "20260321"
+        }
       }
     ]
+  }
+}
+```
+
+### 3. Error
+
+```json
+{
+  "code": 4001001,
+  "message": "invalid argument",
+  "request_id": "req_pf_20260418_000003",
+  "error": {
+    "error_code": "INVALID_ARGUMENT",
+    "error_type": "client_error",
+    "http_status": 400,
+    "retryable": false,
+    "details": {
+      "field": "period_mode",
+      "reason": "latest_available requires as_of_date"
+    }
   }
 }
 ```
@@ -588,75 +768,38 @@
 ### Replace / absorb
 
 - `/api/financial-reports`
-  - 建议被 `/api/prof-finance/history` 吸收
+  - 建议被 `/api/v1/prof-finance/history` 吸收
   - 可在迁移期保留，但不应继续作为最终专业财务主接口扩展
 
 ---
 
-## Implementation Plan
+## Delivery Note
 
-### Phase 1
+本文只定义 **最终对外接口 contract**，不承载内部 Sprint 排期、落库步骤、迁移路径或实现阶段说明。
 
-- 建立专业财务字段注册层
-- 完整收录 `FINVALUE / FINONE` 全部 `403` 个 `source_field_id`
-- 为每个字段补齐：
-  - `field_code`
-  - `source_field_id`
-  - `field_name_cn`
-  - `field_name_en`
-  - `category`
-  - `statement`
-  - `period_semantics`
-  - `unit`
-  - `value_type`
-  - `source`
-  - `supported`
-- 明确同一经济含义下不同时间语义字段的公共命名
-- 明确 `report_date`、`announce_date`、`as_of_date`、`knowledge_cutoff` 的统一时间语义
-- 落地 `/api/prof-finance/fields`
+交付节奏与工程拆解见：
 
-### Phase 2
+- [professional-finance-implementation-guide.md](/Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance-implementation-guide.md)
+- [professional-finance-data-architecture.md](/Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance-data-architecture.md)
 
-- 建立专业财务统一查询层
-- 基于统一字段注册层实现：
-  - 单证券快照查询
-  - 单证券历史序列查询
-  - 多证券横截面查询
-- 所有查询接口统一遵守：
-  - 请求只接受 `full_code` / `full_codes`、`field_codes`
-  - 响应只返回 `field_values`
-  - 响应显式返回 `knowledge_cutoff`
-  - 按 `as_of_date` 控制可见性
-  - 不返回未来可见的数据
-  - 不用 `0` 表示缺失
-  - 显式返回 `missing_fields`
-- 落地：
-  - `/api/prof-finance/history`
-  - `/api/prof-finance/snapshot`
-  - `/api/prof-finance/cross-section`
+无论内部按多少个 Sprint 推进，对外始终只有这一套最终接口语义：
 
-### Phase 3
-
-- 实现专业财务覆盖状态查询
-- 明确字段级、报告期级、证券级可用性
-- 返回最新报告覆盖、可用报告列表、可用字段列表和缺失字段
-- 响应显式返回 `knowledge_cutoff`
-- 落地 `/api/prof-finance/coverage`
-
-### Phase 4
-
-- 让 `/api/profile` 复用统一专业财务查询层
-- 保证专业财务字段来源、命名和时间语义与 `/api/prof-finance/*` 保持一致
-- 完成字段注册测试、查询层测试、handler 测试和回归测试
-- 更新 API 文档与示例
+- 一套 `field_code / field_codes`
+- 一套 `full_code / full_codes`
+- 一套 `field_values`
+- 一套 `report_date / announce_date / as_of_date / knowledge_cutoff`
+- 一套 `exact / latest_report / latest_available`
 
 ## Completion Standard
 
-- `/api/prof-finance/fields` 可列出完整 `403` 个专业财务字段定义
-- `/api/prof-finance/history`、`/api/prof-finance/snapshot`、`/api/prof-finance/cross-section`、`/api/prof-finance/coverage` 全部可用
+- `/api/v1/prof-finance/fields` 可列出完整 `403` 个专业财务字段定义
+- `/api/v1/prof-finance/history`、`/api/v1/prof-finance/snapshot`、`/api/v1/prof-finance/cross-section`、`/api/v1/prof-finance/coverage` 全部可用
 - 所有查询接口严格使用 `full_code` / `full_codes`、`field_codes`、`field_values`
 - 所有查询接口具备明确时间语义，不产生未来函数
 - 所有缺失值与覆盖状态显式表达
+- 所有查询接口使用稳定错误代码体系
+- `cross-section` 具备稳定 cursor 分页
+- 字段目录具备精度/舍入/可空性元数据
 - `/api/profile` 与统一专业财务层保持一致
 - 测试通过，文档完成更新
 
@@ -672,9 +815,9 @@
 
 **Acceptance Criteria**
 
-- [ ] `/api/prof-finance/fields` 可列出全部 `403` 个专业财务 `source_field_id` 定义
+- [ ] `/api/v1/prof-finance/fields` 可列出全部 `403` 个专业财务 `source_field_id` 定义
 - [ ] 字段目录支持按 `category` 过滤，支持按 `query` 搜索
-- [ ] 每个字段目录项必须返回 `field_code`、`source_field_id`、`field_name_cn`、`field_name_en`、`category`、`statement`、`period_semantics`、`unit`、`value_type`、`source`、`supported`
+- [ ] 每个字段目录项必须返回 `field_code`、`source_field_id`、`field_name_cn`、`field_name_en`、`category`、`statement`、`period_semantics`、`unit`、`value_type`、`storage_precision`、`display_precision`、`rounding_mode`、`nullable`、`source`、`supported`
 - [ ] 所有 `source_field_id` 在字段目录中唯一且可追溯，不允许静默遗漏
 - [ ] 尚未进入公开查询 contract 的字段仍必须在字段目录中出现，并显式标记 `supported=false`
 
@@ -686,11 +829,13 @@
 
 **Acceptance Criteria**
 
-- [ ] `/api/prof-finance/snapshot` 的请求只接受 `full_code`、`report_date`、`as_of_date`、`field_codes`、`period_mode`
+- [ ] `/api/v1/prof-finance/snapshot` 的请求只接受 `full_code`、`report_date`、`as_of_date`、`field_codes`、`period_mode`
 - [ ] 响应必须返回 `full_code`、`name`、`report_date`、`announce_date`、`as_of_date`、`knowledge_cutoff`、`source`、`field_values`、`missing_fields`、`coverage`
 - [ ] `field_values` 的 key 必须全部来自字段目录中的公开 `field_code`
 - [ ] 查询结果必须受 `as_of_date` 约束，不得返回在 `knowledge_cutoff` 之后才可见的数据
 - [ ] 缺失值不得用 `0` 代替，字段缺失必须通过 `missing_fields` 与 `coverage` 显式表达
+- [ ] 当原始公告日缺失或非法时，系统必须通过 `coverage` 显式说明 fallback 后的 `effective_announce_date` 与来源
+- [ ] 参数错误、字段不支持、源未就绪和系统错误必须通过稳定 `error_code` 区分
 
 ### Story 3: 横截面比较
 
@@ -700,11 +845,13 @@
 
 **Acceptance Criteria**
 
-- [ ] `/api/prof-finance/cross-section` 的请求只接受 `full_codes`、`report_date`、`as_of_date`、`field_codes`、`period_mode`
-- [ ] 响应必须返回 `report_date`、`as_of_date`、`knowledge_cutoff`、`field_codes`、`items`
-- [ ] `items[]` 中每个证券项必须返回 `full_code`、`name`、`field_values`、`missing_fields`、`coverage`
+- [ ] `/api/v1/prof-finance/cross-section` 的请求只接受 `full_codes`、`report_date`、`as_of_date`、`field_codes`、`period_mode`、`limit`、`cursor`
+- [ ] 响应必须返回 `report_date`、`as_of_date`、`knowledge_cutoff`、`field_codes`、`next_cursor`、`items`
+- [ ] `items[]` 中每个证券项必须返回 `full_code`、`name`、`report_date`、`announce_date`、`field_values`、`missing_fields`、`coverage`
 - [ ] 横截面接口与字段目录接口必须使用同一套 `field_code` 命名，不允许出现只在某个接口存在的私有字段名
 - [ ] 无覆盖证券或字段缺失不得被静默丢弃，必须在对应证券项中显式表达
+- [ ] 分页顺序必须稳定，单页最大返回 `500` 只证券
+- [ ] `full_codes` 单次请求最大输入数量为 `500`，超过上限时必须返回 `INVALID_ARGUMENT`
 
 ### Story 4: 历史报告序列
 
@@ -714,7 +861,7 @@
 
 **Acceptance Criteria**
 
-- [ ] `/api/prof-finance/history` 的请求只接受 `full_code`、`field_codes`、`as_of_date`、`start_report_date`、`end_report_date`、`limit`、`period`
+- [ ] `/api/v1/prof-finance/history` 的请求只接受 `full_code`、`field_codes`、`as_of_date`、`start_report_date`、`end_report_date`、`limit`、`period`
 - [ ] 响应必须返回 `full_code`、`name`、`as_of_date`、`knowledge_cutoff`、`field_codes`、`list`
 - [ ] `list[]` 中每期必须返回 `report_date`、`announce_date`、`field_values`、`missing_fields`、`source_report_file`
 - [ ] 历史列表必须按 `report_date` 倒序返回
@@ -729,8 +876,8 @@
 
 **Acceptance Criteria**
 
-- [ ] `/api/prof-finance/coverage` 的请求只接受 `full_code`、`report_date`
-- [ ] 响应必须返回 `full_code`、`name`、`latest_report_date`、`available_reports`、`available_field_codes`、`missing_fields`、`status`、`knowledge_cutoff`
+- [ ] `/api/v1/prof-finance/coverage` 的请求只接受 `full_code`、`report_date`、`field_codes`、`as_of_date`
+- [ ] 响应必须返回 `full_code`、`name`、`latest_report_date`、`requested_field_codes`、`evaluated_field_codes`、`available_reports`、`available_field_codes`、`missing_fields`、`status`、`status_reason`、`knowledge_cutoff`
 - [ ] `status` 必须能够区分有覆盖、无覆盖、字段缺失或报告期不可用等状态
 - [ ] 覆盖状态不得用 `0`、空对象或静默缺字段来表达
 - [ ] 对于不可用结果，响应必须能让调用方直接判断不可用原因，而不是依赖额外推断
@@ -740,8 +887,10 @@
 ## Risks
 
 - `gpcw` 字段体系版本可能演进，字段映射需要版本校验
-- 公告日期与“可得时点”目前并未完整接入，需要单独补强
+- 财务重述会带来同一 `report_date` 的多版本数据，必须通过版本化 serving 策略处理，不能简单覆盖
+- 公告日期可能缺失或脏值，必须通过 `effective_announce_date` 和来源标识兜底
 - 某些 raw finance 与 professional finance 字段口径不完全一致，不能简单混写
+- 若缺少稳定错误代码、分页和字段精度元数据，客户端将难以安全集成，因此这些要求属于 `v1` 必备范围
 
 ---
 
