@@ -105,6 +105,8 @@
   - 公共财务字段名，例：`book_value_per_share`
 - `field_codes`
   - 多个公共财务字段名列表
+- `concept_code`
+  - 可选的概念分组标识，用来把同一经济含义但不同 source-section / period semantics 的字段归到同一个概念族
 - `source_field_id`
   - 底层 `gpcw` 原始字段编号，例：`4`、`238`、`283`
 - `field_name_cn`
@@ -115,11 +117,13 @@
 说明：
 
 - **查询接口只接受 `field_code / field_codes`**
+- **`field_code` 在字段目录中必须唯一**
 - `source_field_id` 只在字段字典与元数据中出现，不作为主要查询参数对外暴露
 - **查询接口只接受 `full_code / full_codes`**
 - 不接受 bare 6 位代码作为正式 contract，以避免市场歧义
 - **证券实体统一用 `name`**
 - **字段字典与字段元数据统一用 `field_name_cn / field_name_en`**
+- `concept_code` 只用于字段目录分组与映射说明，不作为查询接口参数
 
 ---
 
@@ -167,13 +171,14 @@
 
 **Core params**
 
-- `category=meta|disclosure|per_share|balance_sheet|income_statement|cash_flow_statement|solvency|operating_efficiency|growth|profitability|capital_structure|cash_flow_analysis|single_quarter|shareholder|institutional_holding|all`
+- `category=meta|disclosure|per_share|balance_sheet|income_statement|cash_flow_statement|solvency|operating_efficiency|growth|profitability|capital_structure|cash_flow_analysis|single_quarter|shareholder|institutional_holding|earnings_preview|earnings_flash_report|all`
 - `query=...`
 
 **Response fields**
 
 - `field_code`
 - `source_field_id`
+- `concept_code`
 - `field_name_cn`
 - `field_name_en`
 - `category`
@@ -188,6 +193,9 @@
 
 - `source_field_id` 对应 `gpcw` 的原始字段编号
 - `field_code` 是唯一公开字段名，例如 `book_value_per_share`
+- `concept_code` 用于聚合同一经济概念下的字段家族，例如报告期值、单季度值、TTM 值、快报值、预告值
+- 基础 per-share / 三表字段优先占用无后缀 `field_code`；非 canonical 变体优先使用 category-style 后缀，例如 `_profitability`、`_cash_flow_analysis`；若同 category 内仍需区分，再在 category 前增加 qualifier
+- 字段目录的 `category` 既服务于经济含义分组，也服务于信息源分组。对于业绩快报、业绩预告字段，优先按信息源分到 `earnings_flash_report`、`earnings_preview`，而不是继续下沉到 `balance_sheet`、`income_statement`、`per_share`、`profitability`
 - 字段目录接口天然同时承担“公共字段字典”和“底层字段映射说明”职责，不再额外引入 `view`
 - 字段目录必须完整覆盖 `FINVALUE` / `FINONE` 的全部专业财务字段定义，而不是只覆盖首批常用字段
 
@@ -358,7 +366,7 @@
 
 - `403` 个 `source_field_id` 定义
 - appendix 以 `18` 个 source section 组织
-- 对外字段目录把这些字段归一到 `15` 个 public categories
+- 对外字段目录把这些字段归一到 `17` 个 public categories
 - `FINVALUE` 与 `FINONE` 共用同一套字段编号
 
 字段分组范围如下：
@@ -399,6 +407,8 @@
 - `single_quarter`
 - `shareholder`
 - `institutional_holding`
+- `earnings_preview`
+- `earnings_flash_report`
 
 ### Normative appendix
 
@@ -420,10 +430,16 @@
 - `/api/prof-finance/fields` 必须能列出全部已注册字段，而不只是当前可查询字段
 - 每个字段目录项都必须有稳定的 `field_code`，用于字段目录、映射追踪和覆盖状态表达
 - `supported` 只表示该字段当前是否进入查询接口 contract，不改变 `field_code` 作为字段目录稳定标识的语义
-- 每个字段目录项都必须能追溯到一个或多个 `source_field_id`
-- 对于同一经济含义存在多个 `source_field_id` 的情况，字段目录必须显式说明 `period_semantics`
+- 每个字段目录项都必须能追溯到唯一的 `source_field_id`
+- 对于同一经济含义存在多个 source-section / period semantics 变体的情况：
+  - 每个变体都必须有唯一 `field_code`
+  - base per-share / primary statement 变体优先使用 canonical 无后缀 `field_code`
+  - analysis / flash / preview / extended-statement 变体优先使用 category-style 后缀
+  - 若同 category 内仍需区分，再使用 `<base>_<qualifier>_<category>` 命名
+  - 需要通过 `period_semantics` 说明时间语义
+  - 可通过 `concept_code` 聚合为同一概念族
   - 例如报告期值、单季度值、TTM 值、快报值、预告值
-- 对于暂不进入查询接口的字段，也必须在字段目录中保留稳定 `field_code` 并明确标注 `supported=false`，而不是在设计层静默遗漏
+- 对于 source-section 重复项或暂不进入查询接口的字段，也必须在字段目录中保留稳定 `field_code` 并明确标注 `supported=false`，而不是在设计层静默遗漏
 
 ### Examples of same-concept multi-source fields
 
@@ -452,6 +468,7 @@
 
 - 不遗漏任何一个 `source_field_id`
 - 不模糊不同口径的时间语义
+- 不允许多个字段目录项复用同一个 `field_code`
 - 不把“未映射”误写成“无此字段”
 
 ---
@@ -511,7 +528,7 @@
       "total_shares": 1256197800,
       "float_a_shares": 1256197800,
       "net_profit_ttm": 89214300000,
-      "revenue_ttm_yuan": 186532000000,
+      "operating_revenue_ttm": 18653200,
       "weighted_roe": 31.2
     },
     "missing_fields": [],

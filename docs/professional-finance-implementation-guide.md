@@ -36,6 +36,7 @@ coding agent 必须遵守以下规则，不能自行发明新语义：
 - 字段目录接口必须暴露：
   - `field_code`
   - `source_field_id`
+  - `concept_code`
   - `field_name_cn`
   - `field_name_en`
   - `category`
@@ -188,6 +189,7 @@ coding agent 最终必须交付以下结果：
 
 - `field_code`
 - `source_field_id`
+- `concept_code`
 - `field_name_cn`
 - `field_name_en`
 - `category`
@@ -202,6 +204,12 @@ coding agent 最终必须交付以下结果：
 
 - `field_code` 对字段目录中的每一条注册记录都必填
 - `field_code` 是字段目录、映射追踪和覆盖状态表达使用的稳定标识
+- `field_code` 在 registry 中必须全局唯一，不能因为 source section 重复或近似同义而复用
+- 如果多个 source field 属于同一经济概念族，必须通过 `period_semantics` 和可选的 `concept_code` 来归组，而不是复用同一个 `field_code`
+- 基础 per-share / primary statement 字段优先使用 canonical 无后缀 `field_code`
+- analysis / flash / preview / extended-statement 变体优先使用 category-style 后缀
+- 若同 category 内仍需区分，使用 `<base>_<qualifier>_<category>` 命名
+- `category` 在大多数情况下表达经济含义分组；但对于业绩快报、业绩预告字段，`category` 优先表达信息源分组，分别归入 `earnings_flash_report`、`earnings_preview`
 - `supported` 只表示该字段当前是否进入查询接口 contract，不表示该字段是否存在 `field_code`
 
 可选但推荐：
@@ -255,7 +263,7 @@ coding agent 最终必须交付以下结果：
 必须验证：
 
 - 总字段数 = `403`
-- public category 数 = `15`
+- public category 数 = `17`
 - `source_field_id` 唯一
 - 不出现未注册的空洞字段
 
@@ -343,6 +351,7 @@ coding agent 最终必须交付以下结果：
 
 - 在目录里完全漏掉字段
 - 给同一经济含义的不同时间语义字段强行复用一个模糊 `field_code`
+- 给 source-section 重复项继续复用同一个 `field_code`
 - 不写 `period_semantics`
 
 特别要注意多口径字段，例如：
@@ -368,6 +377,24 @@ coding agent 最终必须交付以下结果：
 
 这些不能偷懒合并。
 
+对于 source-section 重复但又需要保留 source coverage 的字段，采用以下规则：
+
+- 选择一个 canonical `field_code` 进入查询 contract
+- 其他重复来源保留独立、唯一的 `field_code`
+- 如果重复来源来自基础 per-share / primary statement section，则基础字段占用 canonical 无后缀 `field_code`
+- analysis / flash / preview / extended-statement 重复来源的 `field_code` 优先使用 category-style 后缀
+- 若同 category 内仍需区分，再使用 `<base>_<qualifier>_<category>` 命名
+- 重复来源默认 `supported=false`
+
+当前 baseline 中应按这个原则处理的典型例子：
+
+- `6 -> roe`
+- `197 -> roe_profitability`
+- `7 -> operating_cash_flow_per_share`
+- `219 -> operating_cash_flow_per_share_cash_flow_analysis`
+- `59 -> provisions`
+- `423 -> provisions_extended_balance_sheet`
+
 ---
 
 ## Testing Plan
@@ -381,7 +408,7 @@ coding agent 最终必须交付以下结果：
 必须覆盖：
 
 - 字段总数为 `403`
-- public category 总数为 `15`
+- public category 总数为 `17`
 - 所有 `source_field_id` 唯一
 - 关键字段存在：
   - `4`

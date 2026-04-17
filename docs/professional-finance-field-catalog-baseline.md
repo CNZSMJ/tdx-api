@@ -9,12 +9,16 @@
 
 ## Full Field Universe
 
-Completed normalization batches are recorded as tables with `source_field_id`, `field_code`, `field_name_cn`, `field_name_en`, and `category`. Unfinished batches remain listed by source field only.
+Completed normalization batches are recorded as tables with `source_field_id`, `field_code`, `field_name_cn`, `field_name_en`, and `category`.
+`field_code` is unique within this appendix. If multiple sections contain near-identical concepts, the baseline gives the canonical unsuffixed `field_code` to the base per-share or primary statement field. Non-canonical variants use category-style suffixes, and if a same-category duplicate still needs to be preserved, it uses an extra qualifier before the category suffix.
 Row-level `category` follows public field-catalog classification by professional financial data semantics, not the source appendix section heading.
+For earnings preview and earnings flash report fields, `category` follows information-source semantics first. These fields should be grouped under dedicated preview/flash categories even when the underlying economic meaning resembles balance-sheet, income-statement, per-share, or profitability fields.
 
 ### 元数据 (`0-0`)
 
-- `0` `返回报告期(YYMMDD格式),150930表示为2015年第三季`
+| source_field_id | field_code | field_name_cn | field_name_en | category |
+| --- | --- | --- | --- | --- |
+| `0` | `report_date` | `返回报告期` | `Report Date` | `meta` |
 
 ### 每股指标 (`1-7`)
 
@@ -242,7 +246,7 @@ Row-level `category` follows public field-catalog classification by professional
 | `190` | `basic_earnings_per_share_after_deducting_non_recurring_profit_and_loss_growth_rate` | `扣非每股收益同比(%)` | `Growth Rate of Basic Earnings per Share after Deducting Non-recurring Profit and Loss` | `growth` |
 | `191` | `net_profit_after_deducting_non_recurring_profit_and_loss_growth_rate` | `扣非净利润同比(%)` | `Growth Rate of Net Profit after Deducting Non-recurring Profit and Loss` | `growth` |
 
-- `192` `暂无`
+| `192` | `reserved_growth_metric_192` | `暂无` | `Reserved Growth Metric 192` | `growth` |
 
 ### 获利能力分析 (`193-209`)
 
@@ -252,7 +256,7 @@ Row-level `category` follows public field-catalog classification by professional
 | `194` | `operating_profit_margin` | `营业利润率(非金融类指标)` | `Operating Profit Margin` | `profitability` |
 | `195` | `taxes_and_surcharges_ratio` | `营业税金率(非金融类指标)` | `Taxes and Surcharges Ratio` | `profitability` |
 | `196` | `operating_cost_ratio` | `营业成本率(非金融类指标)` | `Operating Cost Ratio` | `profitability` |
-| `197` | `roe` | `净资产收益率` | `Return on Equity` | `profitability` |
+| `197` | `roe_profitability` | `净资产收益率` | `Return on Equity (Profitability Variant)` | `profitability` |
 | `198` | `return_on_investment` | `投资收益率` | `Return on Investment` | `profitability` |
 | `199` | `sales_net_profit_margin` | `销售净利率(%)` | `Sales Net Profit Margin` | `profitability` |
 | `200` | `return_on_total_assets` | `总资产净利率` | `Return on Total Assets` | `profitability` |
@@ -284,13 +288,13 @@ Row-level `category` follows public field-catalog classification by professional
 
 | source_field_id | field_code | field_name_cn | field_name_en | category |
 | --- | --- | --- | --- | --- |
-| `219` | `operating_cash_flow_per_share` | `每股经营性现金流(元)` | `Operating Cash Flow per Share` | `per_share` |
+| `219` | `operating_cash_flow_per_share_cash_flow_analysis` | `每股经营性现金流(元)` | `Operating Cash Flow per Share (Cash Flow Analysis Variant)` | `cash_flow_analysis` |
 | `220` | `cash_content_of_operating_revenue` | `营业收入现金含量(%)(非金融类指标)` | `Cash Content of Operating Revenue` | `cash_flow_analysis` |
 | `221` | `net_cash_flow_from_operating_activities_to_net_operating_income_ratio` | `经营活动产生的现金流量净额/经营活动净收益(%)` | `Net Cash Flow from Operating Activities to Net Operating Income Ratio` | `cash_flow_analysis` |
 | `222` | `cash_received_from_goods_sales_and_services_to_operating_revenue_ratio` | `销售商品提供劳务收到的现金/营业收入(%)` | `Cash Received from Sale of Goods and Rendering of Services to Operating Revenue Ratio` | `cash_flow_analysis` |
 | `223` | `net_cash_flow_from_operating_activities_to_operating_revenue_ratio` | `经营活动产生的现金流量净额/营业收入` | `Net Cash Flow from Operating Activities to Operating Revenue Ratio` | `cash_flow_analysis` |
 | `224` | `capital_expenditure_to_depreciation_and_amortization_ratio` | `资本支出/折旧和摊销` | `Capital Expenditure to Depreciation and Amortization Ratio` | `cash_flow_analysis` |
-| `225` | `net_increase_in_cash_and_cash_equivalents_per_share` | `每股现金流量净额(元)` | `Net Increase in Cash and Cash Equivalents per Share` | `per_share` |
+| `225` | `net_increase_in_cash_and_cash_equivalents_per_share` | `每股现金流量净额(元)` | `Net Increase in Cash and Cash Equivalents per Share` | `cash_flow_analysis` |
 | `226` | `net_cash_flow_from_operating_activities_to_short_term_debt_ratio` | `经营净现金比率（短期债务）(非金融类指标)` | `Net Cash Flow from Operating Activities to Short-term Debt Ratio` | `cash_flow_analysis` |
 | `227` | `net_cash_flow_from_operating_activities_to_total_debt_ratio` | `经营净现金比率（全部债务）` | `Net Cash Flow from Operating Activities to Total Debt Ratio` | `cash_flow_analysis` |
 | `228` | `net_cash_flow_from_operating_activities_to_net_profit_ratio` | `经营活动现金净流量与净利润比率` | `Net Cash Flow from Operating Activities to Net Profit Ratio` | `cash_flow_analysis` |
@@ -370,16 +374,16 @@ Row-level `category` follows public field-catalog classification by professional
 | `282` | `basic_earnings_per_share_after_deducting_non_recurring_profit_and_loss_single_quarter` | `扣非每股收益(单季度财务指标)` | `Basic Earnings per Share after Deducting Non-recurring Profit and Loss (Single Quarter)` | `single_quarter` |
 | `283` | `operating_revenue_ttm` | `最近一年营业收入（万元）` | `Operating Revenue (TTM)` | `income_statement` |
 | `284` | `state_backed_institution_shares_held` | `国家队持股数量（万股)[注：本指标统计包含汇金公司、证金公司、外汇管理局旗下投资平台、国家队基金、国开、养老金以及中科汇通等国家队机构持股数量]` | `Shares Held by State-backed Institutions` | `institutional_holding` |
-| `285` | `earnings_preview_net_profit_yoy_growth_lower_bound` | `业绩预告-本期净利润同比增幅下限%[注：指标285至294展示未来一个报告期的数据。例，3月31日至6月29日这段时间内展示的是中报的数据；如果最新的财务报告后面有多个报告期的业绩预告/快报，只能展示最新的财务报告后面的一个报告期的业绩预告/快报]` | `Lower Bound of YoY Growth in Net Profit for Earnings Preview` | `growth` |
-| `286` | `earnings_preview_net_profit_yoy_growth_upper_bound` | `业绩预告-本期净利润同比增幅上限%` | `Upper Bound of YoY Growth in Net Profit for Earnings Preview` | `growth` |
-| `287` | `flash_report_net_profit_attributable_to_owners_of_parent` | `业绩快报-归母净利润` | `Net Profit Attributable to Owners of the Parent in Earnings Flash Report` | `income_statement` |
-| `288` | `flash_report_net_profit_after_deducting_non_recurring_profit_and_loss` | `业绩快报-扣非净利润` | `Net Profit after Deducting Non-recurring Profit and Loss in Earnings Flash Report` | `income_statement` |
-| `289` | `flash_report_total_assets` | `业绩快报-总资产` | `Total Assets in Earnings Flash Report` | `balance_sheet` |
-| `290` | `flash_report_net_assets` | `业绩快报-净资产` | `Net Assets in Earnings Flash Report` | `balance_sheet` |
-| `291` | `flash_report_earnings_per_share` | `业绩快报-每股收益` | `Earnings per Share in Earnings Flash Report` | `per_share` |
-| `292` | `flash_report_diluted_roe` | `业绩快报-摊薄净资产收益率` | `Diluted Return on Equity in Earnings Flash Report` | `profitability` |
-| `293` | `flash_report_weighted_roe` | `业绩快报-加权净资产收益率` | `Weighted Return on Equity in Earnings Flash Report` | `profitability` |
-| `294` | `flash_report_book_value_per_share` | `业绩快报-每股净资产` | `Book Value per Share in Earnings Flash Report` | `per_share` |
+| `285` | `earnings_preview_net_profit_yoy_growth_lower_bound` | `业绩预告-本期净利润同比增幅下限%[注：指标285至294展示未来一个报告期的数据。例，3月31日至6月29日这段时间内展示的是中报的数据；如果最新的财务报告后面有多个报告期的业绩预告/快报，只能展示最新的财务报告后面的一个报告期的业绩预告/快报]` | `Lower Bound of YoY Growth in Net Profit for Earnings Preview` | `earnings_preview` |
+| `286` | `earnings_preview_net_profit_yoy_growth_upper_bound` | `业绩预告-本期净利润同比增幅上限%` | `Upper Bound of YoY Growth in Net Profit for Earnings Preview` | `earnings_preview` |
+| `287` | `flash_report_net_profit_attributable_to_owners_of_parent` | `业绩快报-归母净利润` | `Net Profit Attributable to Owners of the Parent in Earnings Flash Report` | `earnings_flash_report` |
+| `288` | `flash_report_net_profit_after_deducting_non_recurring_profit_and_loss` | `业绩快报-扣非净利润` | `Net Profit after Deducting Non-recurring Profit and Loss in Earnings Flash Report` | `earnings_flash_report` |
+| `289` | `flash_report_total_assets` | `业绩快报-总资产` | `Total Assets in Earnings Flash Report` | `earnings_flash_report` |
+| `290` | `flash_report_net_assets` | `业绩快报-净资产` | `Net Assets in Earnings Flash Report` | `earnings_flash_report` |
+| `291` | `flash_report_earnings_per_share` | `业绩快报-每股收益` | `Earnings per Share in Earnings Flash Report` | `earnings_flash_report` |
+| `292` | `flash_report_diluted_roe` | `业绩快报-摊薄净资产收益率` | `Diluted Return on Equity in Earnings Flash Report` | `earnings_flash_report` |
+| `293` | `flash_report_weighted_roe` | `业绩快报-加权净资产收益率` | `Weighted Return on Equity in Earnings Flash Report` | `earnings_flash_report` |
+| `294` | `flash_report_book_value_per_share` | `业绩快报-每股净资产` | `Book Value per Share in Earnings Flash Report` | `earnings_flash_report` |
 | `295` | `notes_and_accounts_payable` | `应付票据及应付账款(资产负债表)` | `Notes and Accounts Payable` | `balance_sheet` |
 | `296` | `notes_and_accounts_receivable` | `应收票据及应收账款(资产负债表)` | `Notes and Accounts Receivable` | `balance_sheet` |
 | `297` | `non_current_deferred_income` | `递延收益(资产负债表-非流动负债)` | `Non-current Deferred Income` | `balance_sheet` |
@@ -398,12 +402,12 @@ Row-level `category` follows public field-catalog classification by professional
 | `310` | `net_increase_in_cash_and_cash_equivalents_ttm` | `近一年现金净流量（万元）` | `Net Increase in Cash and Cash Equivalents (TTM)` | `cash_flow_statement` |
 | `311` | `basic_earnings_per_share_single_quarter` | `基本每股收益（单季度）` | `Basic Earnings per Share (Single Quarter)` | `single_quarter` |
 | `312` | `total_operating_revenue_single_quarter` | `营业总收入(单季度)(万元)` | `Total Operating Revenue (Single Quarter)` | `single_quarter` |
-| `313` | `earnings_preview_announcement_date` | `业绩预告公告日期 [注：本指标展示未来一个报告期的数据。例,3月31日至6月29日这段时间内展示的是中报的数据；如果最新的财务报告后面有多个报告期的业绩预告/快报，只能展示最新的财务报告后面的一个报告期的业绩预告/快报的数据；公告日期格式为YYMMDD，例：190101代表2019年1月1日]` | `Earnings Preview Announcement Date` | `disclosure` |
+| `313` | `earnings_preview_announcement_date` | `业绩预告公告日期 [注：本指标展示未来一个报告期的数据。例,3月31日至6月29日这段时间内展示的是中报的数据；如果最新的财务报告后面有多个报告期的业绩预告/快报，只能展示最新的财务报告后面的一个报告期的业绩预告/快报的数据；公告日期格式为YYMMDD，例：190101代表2019年1月1日]` | `Earnings Preview Announcement Date` | `earnings_preview` |
 | `314` | `financial_report_announcement_date` | `财报公告日期 [注：日期格式为YYMMDD,例：190101代表2019年1月1日]` | `Financial Report Announcement Date` | `disclosure` |
-| `315` | `flash_report_announcement_date` | `业绩快报公告日期 [注：本指标展示未来一个报告期的数据。例,3月31日至6月29日这段时间内展示的是中报的数据；如果最新的财务报告后面有多个报告期的业绩预告/快报，只能展示最新的财务报告后面的一个报告期的业绩预告/快报的数据；公告日期格式为YYMMDD，例：190101代表2019年1月1日]` | `Earnings Flash Report Announcement Date` | `disclosure` |
+| `315` | `flash_report_announcement_date` | `业绩快报公告日期 [注：本指标展示未来一个报告期的数据。例,3月31日至6月29日这段时间内展示的是中报的数据；如果最新的财务报告后面有多个报告期的业绩预告/快报，只能展示最新的财务报告后面的一个报告期的业绩预告/快报的数据；公告日期格式为YYMMDD，例：190101代表2019年1月1日]` | `Earnings Flash Report Announcement Date` | `earnings_flash_report` |
 | `316` | `net_cash_flow_from_investing_activities_ttm` | `近一年投资活动现金流净额(万元)` | `Net Cash Flow from Investing Activities (TTM)` | `cash_flow_statement` |
-| `317` | `earnings_preview_net_profit_lower_bound` | `业绩预告-本期净利润下限(万元)[注：指标317至318展示未来一个报告期的数据。例，3月31日至6月29日这段时间内展示的是中报的数据；如果最新的财务报告后面有多个报告期的业绩预告/快报，只能展示最新的财务报告后面的一个报告期的业绩预告/快报]` | `Lower Bound of Net Profit for Earnings Preview` | `income_statement` |
-| `318` | `earnings_preview_net_profit_upper_bound` | `业绩预告-本期净利润上限(万元)` | `Upper Bound of Net Profit for Earnings Preview` | `income_statement` |
+| `317` | `earnings_preview_net_profit_lower_bound` | `业绩预告-本期净利润下限(万元)[注：指标317至318展示未来一个报告期的数据。例，3月31日至6月29日这段时间内展示的是中报的数据；如果最新的财务报告后面有多个报告期的业绩预告/快报，只能展示最新的财务报告后面的一个报告期的业绩预告/快报]` | `Lower Bound of Net Profit for Earnings Preview` | `earnings_preview` |
+| `318` | `earnings_preview_net_profit_upper_bound` | `业绩预告-本期净利润上限(万元)` | `Upper Bound of Net Profit for Earnings Preview` | `earnings_preview` |
 | `319` | `total_operating_revenue_ttm` | `营业总收入TTM(万元)` | `Total Operating Revenue (TTM)` | `income_statement` |
 | `320` | `employee_count` | `员工总数(人)` | `Employee Count` | `disclosure` |
 | `321` | `free_cash_flow_to_firm_per_share` | `每股企业自由现金流` | `Free Cash Flow to Firm per Share` | `per_share` |
@@ -435,7 +439,7 @@ Row-level `category` follows public field-catalog classification by professional
 | `420` | `funds_received_as_agent_of_stock_exchange` | `代理买卖证券款(万元)` | `Funds Received as Agent of Stock Exchange` | `balance_sheet` |
 | `421` | `funds_received_as_securities_underwriter` | `代理承销证券款(万元)` | `Funds Received as Securities Underwriter` | `balance_sheet` |
 | `422` | `liabilities_held_for_sale` | `划分为持有待售的负债(万元)` | `Liabilities Held for Sale` | `balance_sheet` |
-| `423` | `provisions` | `预计负债(万元)` | `Provisions` | `balance_sheet` |
+| `423` | `provisions_extended_balance_sheet` | `预计负债(万元)` | `Provisions (Extended Balance Sheet Variant)` | `balance_sheet` |
 | `424` | `deferred_income_current` | `递延收益(万元)（流动负债科目，公告此科目的股票较少，大部分公司没有此数据）` | `Deferred Income under Current Liabilities` | `balance_sheet` |
 | `425` | `preferred_shares_non_current_liabilities` | `其中:优先股(万元)(非流动负债科目)` | `Preferred Shares under Non-current Liabilities` | `balance_sheet` |
 | `426` | `perpetual_bonds_non_current_liabilities` | `永续债(万元)(非流动负债科目)` | `Perpetual Bonds under Non-current Liabilities` | `balance_sheet` |
