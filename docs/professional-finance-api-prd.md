@@ -167,7 +167,7 @@
 
 **Core params**
 
-- `category=meta|per_share|balance_sheet|income_statement|cash_flow_statement|solvency|operating_efficiency|growth|profitability|capital_structure|cash_flow_analysis|single_quarter|shareholder|institutional_holding|extended|balance_sheet_extended|income_statement_extended|cash_flow_statement_extended|all`
+- `category=meta|disclosure|per_share|balance_sheet|income_statement|cash_flow_statement|solvency|operating_efficiency|growth|profitability|capital_structure|cash_flow_analysis|single_quarter|shareholder|institutional_holding|all`
 - `query=...`
 
 **Response fields**
@@ -316,6 +316,7 @@
 - `full_code`
 - `name`
 - `latest_report_date`
+- `knowledge_cutoff`
 - `available_reports`
 - `available_field_codes`
 - `missing_fields`
@@ -356,7 +357,8 @@
 当前公开可确认的专业财务字段基线为：
 
 - `403` 个 `source_field_id` 定义
-- `18` 个逻辑分组
+- appendix 以 `18` 个 source section 组织
+- 对外字段目录把这些字段归一到 `15` 个 public categories
 - `FINVALUE` 与 `FINONE` 共用同一套字段编号
 
 字段分组范围如下：
@@ -380,6 +382,24 @@
 - 利润表新增指标：`501-521`
 - 现金流量表新增指标：`561-580`
 
+对外字段目录使用如下 public categories：
+
+- `meta`
+- `disclosure`
+- `per_share`
+- `balance_sheet`
+- `income_statement`
+- `cash_flow_statement`
+- `solvency`
+- `operating_efficiency`
+- `growth`
+- `profitability`
+- `capital_structure`
+- `cash_flow_analysis`
+- `single_quarter`
+- `shareholder`
+- `institutional_holding`
+
 ### Normative appendix
 
 完整字段清单见：
@@ -397,11 +417,13 @@
 
 对外仍然只暴露一套稳定的 `field_code` 体系，但这不等于只覆盖少数字段。
 
-- `/api/prof-finance/fields` 必须能列出全部已支持公共字段
-- 每个公共字段都必须能追溯到一个或多个 `source_field_id`
+- `/api/prof-finance/fields` 必须能列出全部已注册字段，而不只是当前可查询字段
+- 每个字段目录项都必须有稳定的 `field_code`，用于字段目录、映射追踪和覆盖状态表达
+- `supported` 只表示该字段当前是否进入查询接口 contract，不改变 `field_code` 作为字段目录稳定标识的语义
+- 每个字段目录项都必须能追溯到一个或多个 `source_field_id`
 - 对于同一经济含义存在多个 `source_field_id` 的情况，字段目录必须显式说明 `period_semantics`
   - 例如报告期值、单季度值、TTM 值、快报值、预告值
-- 对于暂不做公共字段收敛的原始定义，也必须在字段目录中明确标注 `supported=false` 或类似状态，而不是在设计层静默遗漏
+- 对于暂不进入查询接口的字段，也必须在字段目录中保留稳定 `field_code` 并明确标注 `supported=false`，而不是在设计层静默遗漏
 
 ### Examples of same-concept multi-source fields
 
@@ -558,23 +580,68 @@
 
 ### Phase 1
 
-- 建完整字段字典层
-- 覆盖全部 `403` 个 `source_field_id` 定义
-- 建公共字段名与 `gpcw source_field_id` 映射
-- 落 `/api/prof-finance/fields`
-- 落 `/api/prof-finance/history`
+- 建立专业财务字段注册层
+- 完整收录 `FINVALUE / FINONE` 全部 `403` 个 `source_field_id`
+- 为每个字段补齐：
+  - `field_code`
+  - `source_field_id`
+  - `field_name_cn`
+  - `field_name_en`
+  - `category`
+  - `statement`
+  - `period_semantics`
+  - `unit`
+  - `value_type`
+  - `source`
+  - `supported`
+- 明确同一经济含义下不同时间语义字段的公共命名
+- 明确 `report_date`、`announce_date`、`as_of_date`、`knowledge_cutoff` 的统一时间语义
+- 落地 `/api/prof-finance/fields`
 
 ### Phase 2
 
-- 落 `/api/prof-finance/snapshot`
-- 落 `/api/prof-finance/cross-section`
-- 把 `/api/profile` 的专业财务字段切到统一标准化层
+- 建立专业财务统一查询层
+- 基于统一字段注册层实现：
+  - 单证券快照查询
+  - 单证券历史序列查询
+  - 多证券横截面查询
+- 所有查询接口统一遵守：
+  - 请求只接受 `full_code` / `full_codes`、`field_codes`
+  - 响应只返回 `field_values`
+  - 响应显式返回 `knowledge_cutoff`
+  - 按 `as_of_date` 控制可见性
+  - 不返回未来可见的数据
+  - 不用 `0` 表示缺失
+  - 显式返回 `missing_fields`
+- 落地：
+  - `/api/prof-finance/history`
+  - `/api/prof-finance/snapshot`
+  - `/api/prof-finance/cross-section`
 
 ### Phase 3
 
-- 落 `/api/prof-finance/coverage`
-- 补公告日期与时点控制
-- 补全未标准化字段的公共字段映射与状态标注
+- 实现专业财务覆盖状态查询
+- 明确字段级、报告期级、证券级可用性
+- 返回最新报告覆盖、可用报告列表、可用字段列表和缺失字段
+- 响应显式返回 `knowledge_cutoff`
+- 落地 `/api/prof-finance/coverage`
+
+### Phase 4
+
+- 让 `/api/profile` 复用统一专业财务查询层
+- 保证专业财务字段来源、命名和时间语义与 `/api/prof-finance/*` 保持一致
+- 完成字段注册测试、查询层测试、handler 测试和回归测试
+- 更新 API 文档与示例
+
+## Completion Standard
+
+- `/api/prof-finance/fields` 可列出完整 `403` 个专业财务字段定义
+- `/api/prof-finance/history`、`/api/prof-finance/snapshot`、`/api/prof-finance/cross-section`、`/api/prof-finance/coverage` 全部可用
+- 所有查询接口严格使用 `full_code` / `full_codes`、`field_codes`、`field_values`
+- 所有查询接口具备明确时间语义，不产生未来函数
+- 所有缺失值与覆盖状态显式表达
+- `/api/profile` 与统一专业财务层保持一致
+- 测试通过，文档完成更新
 
 ---
 
@@ -588,10 +655,11 @@
 
 **Acceptance Criteria**
 
-- [ ] 可以按分类列出全部 `403` 个专业财务 `source_field_id` 定义
-- [ ] 每个字段返回 `field_code`、`source_field_id`、`field_name_cn`、`field_name_en`、单位、时间语义
-- [ ] 字段目录显式区分已标准化公共字段与尚未标准化但已知的原始字段定义
-- [ ] 调用方不需要阅读源码即可知道字段来源和口径
+- [ ] `/api/prof-finance/fields` 可列出全部 `403` 个专业财务 `source_field_id` 定义
+- [ ] 字段目录支持按 `category` 过滤，支持按 `query` 搜索
+- [ ] 每个字段目录项必须返回 `field_code`、`source_field_id`、`field_name_cn`、`field_name_en`、`category`、`statement`、`period_semantics`、`unit`、`value_type`、`source`、`supported`
+- [ ] 所有 `source_field_id` 在字段目录中唯一且可追溯，不允许静默遗漏
+- [ ] 尚未进入公开查询 contract 的字段仍必须在字段目录中出现，并显式标记 `supported=false`
 
 ### Story 2: 单证券快照
 
@@ -601,11 +669,11 @@
 
 **Acceptance Criteria**
 
-- [ ] 支持按 `full_code + report_date/as_of_date + field_codes` 查询
-- [ ] 返回 `field_values`、`missing_fields`、`coverage`
-- [ ] 响应显式返回 `knowledge_cutoff`
-- [ ] 不用 `0` 伪装缺失值
-- [ ] 任意一个已公开 `field_code` 都必须来自完整字段目录，而不是临时硬编码字段子集
+- [ ] `/api/prof-finance/snapshot` 的请求只接受 `full_code`、`report_date`、`as_of_date`、`field_codes`、`period_mode`
+- [ ] 响应必须返回 `full_code`、`name`、`report_date`、`announce_date`、`as_of_date`、`knowledge_cutoff`、`source`、`field_values`、`missing_fields`、`coverage`
+- [ ] `field_values` 的 key 必须全部来自字段目录中的公开 `field_code`
+- [ ] 查询结果必须受 `as_of_date` 约束，不得返回在 `knowledge_cutoff` 之后才可见的数据
+- [ ] 缺失值不得用 `0` 代替，字段缺失必须通过 `missing_fields` 与 `coverage` 显式表达
 
 ### Story 3: 横截面比较
 
@@ -615,10 +683,11 @@
 
 **Acceptance Criteria**
 
-- [ ] 支持多证券批量查询
-- [ ] 支持同一请求内多个 `field_codes`
-- [ ] 返回逐证券覆盖状态
-- [ ] 横截面接口与字段目录接口使用同一套 `field_code` 命名，不允许出现只在某个接口存在的私有字段名
+- [ ] `/api/prof-finance/cross-section` 的请求只接受 `full_codes`、`report_date`、`as_of_date`、`field_codes`、`period_mode`
+- [ ] 响应必须返回 `report_date`、`as_of_date`、`knowledge_cutoff`、`field_codes`、`items`
+- [ ] `items[]` 中每个证券项必须返回 `full_code`、`name`、`field_values`、`missing_fields`、`coverage`
+- [ ] 横截面接口与字段目录接口必须使用同一套 `field_code` 命名，不允许出现只在某个接口存在的私有字段名
+- [ ] 无覆盖证券或字段缺失不得被静默丢弃，必须在对应证券项中显式表达
 
 ### Story 4: 历史报告序列
 
@@ -628,10 +697,26 @@
 
 **Acceptance Criteria**
 
-- [ ] 支持按报告期范围查询
-- [ ] 返回倒序多期列表
-- [ ] 每期都带 `source_report_file`
-- [ ] 历史接口可覆盖全部已公开 `field_code`，而不是只覆盖当前已接入的少数字段
+- [ ] `/api/prof-finance/history` 的请求只接受 `full_code`、`field_codes`、`as_of_date`、`start_report_date`、`end_report_date`、`limit`、`period`
+- [ ] 响应必须返回 `full_code`、`name`、`as_of_date`、`knowledge_cutoff`、`field_codes`、`list`
+- [ ] `list[]` 中每期必须返回 `report_date`、`announce_date`、`field_values`、`missing_fields`、`source_report_file`
+- [ ] 历史列表必须按 `report_date` 倒序返回
+- [ ] 历史查询必须受 `as_of_date` 约束，不得返回在 `knowledge_cutoff` 之后才可见的报告值
+- [ ] 历史接口必须覆盖全部已公开 `field_code`，而不是只覆盖当前已接入的少数字段
+
+### Story 5: 覆盖状态查询
+
+**As a** 研究系统调用方
+**I want to** 明确知道某只证券在专业财务链路上的可用性和缺失原因
+**So that** 我能区分无覆盖、字段缺失和时点不可见
+
+**Acceptance Criteria**
+
+- [ ] `/api/prof-finance/coverage` 的请求只接受 `full_code`、`report_date`
+- [ ] 响应必须返回 `full_code`、`name`、`latest_report_date`、`available_reports`、`available_field_codes`、`missing_fields`、`status`、`knowledge_cutoff`
+- [ ] `status` 必须能够区分有覆盖、无覆盖、字段缺失或报告期不可用等状态
+- [ ] 覆盖状态不得用 `0`、空对象或静默缺字段来表达
+- [ ] 对于不可用结果，响应必须能让调用方直接判断不可用原因，而不是依赖额外推断
 
 ---
 

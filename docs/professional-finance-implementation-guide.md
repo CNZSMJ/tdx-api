@@ -198,6 +198,12 @@ coding agent 最终必须交付以下结果：
 - `source`
 - `supported`
 
+约束：
+
+- `field_code` 对字段目录中的每一条注册记录都必填
+- `field_code` 是字段目录、映射追踪和覆盖状态表达使用的稳定标识
+- `supported` 只表示该字段当前是否进入查询接口 contract，不表示该字段是否存在 `field_code`
+
 可选但推荐：
 
 - `notes`
@@ -214,8 +220,8 @@ coding agent 最终必须交付以下结果：
 - **目录覆盖**
   - 全部 `403` 个字段在 `/api/prof-finance/fields` 可见
 - **查询覆盖**
-  - 已标准化并暴露 `field_code` 的字段可被查询接口读取
-  - 暂未标准化的字段也必须在目录里显式标明 `supported=false`
+  - `supported=true` 的字段可被查询接口读取
+  - `supported=false` 的字段仍保留稳定 `field_code`，但不能作为查询接口的可用字段返回
 
 ### 3. FINVALUE vs FINONE
 
@@ -249,7 +255,7 @@ coding agent 最终必须交付以下结果：
 必须验证：
 
 - 总字段数 = `403`
-- 分类数 = `18`
+- public category 数 = `15`
 - `source_field_id` 唯一
 - 不出现未注册的空洞字段
 
@@ -320,7 +326,7 @@ coding agent 最终必须交付以下结果：
 
 ## Public Field Mapping Strategy
 
-完整覆盖所有 `source_field_id`，不等于每个字段都必须立刻拥有最终公共字段名。
+完整覆盖所有 `source_field_id`，不等于每个字段都必须立刻进入查询接口。
 
 允许两层状态：
 
@@ -329,8 +335,9 @@ coding agent 最终必须交付以下结果：
   - 可进入查询接口
 - `supported=false`
   - 已知原始字段定义
+  - 已有稳定 `field_code`
   - 已在目录中暴露
-  - 但暂未形成最终公共字段 contract
+  - 暂不进入查询接口 contract
 
 但以下做法不允许：
 
@@ -374,7 +381,7 @@ coding agent 最终必须交付以下结果：
 必须覆盖：
 
 - 字段总数为 `403`
-- 分类总数为 `18`
+- public category 总数为 `15`
 - 所有 `source_field_id` 唯一
 - 关键字段存在：
   - `4`
