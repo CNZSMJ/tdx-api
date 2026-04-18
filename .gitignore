@@ -3,6 +3,7 @@ web/data/
 .env
 *.db
 *.db-journal
+*.log
 __pycache__/
 *.py[cod]
 docs/ROADMAP.md

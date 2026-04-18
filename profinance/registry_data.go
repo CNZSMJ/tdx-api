@@ -1,4 +1,4 @@
-// Code generated from docs/professional-finance-field-catalog-baseline.md; DO NOT EDIT.
+// Code generated from docs/professional-finance/professional-finance-field-catalog-baseline.md; DO NOT EDIT.
 package profinance
 
 var fieldCatalogCoreData = []fieldCatalogCore{

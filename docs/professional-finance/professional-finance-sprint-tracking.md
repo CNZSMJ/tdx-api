@@ -4,17 +4,17 @@
 
 已完整读取并确认以下 4 份 SSOT 文档：
 
-1. `docs/professional-finance-api-prd.md`
-2. `docs/professional-finance-field-catalog-baseline.md`
-3. `docs/professional-finance-data-architecture.md`
-4. `docs/professional-finance-implementation-guide.md`
+1. `docs/professional-finance/professional-finance-api-prd.md`
+2. `docs/professional-finance/professional-finance-field-catalog-baseline.md`
+3. `docs/professional-finance/professional-finance-data-architecture.md`
+4. `docs/professional-finance/professional-finance-implementation-guide.md`
 
 当前未发现需要先修正才能继续编码的显式 contract 冲突。若后续发现冲突，按以下优先级修正文档后再继续实现：
 
-1. `professional-finance-api-prd.md`
-2. `professional-finance-data-architecture.md`
-3. `professional-finance-field-catalog-baseline.md`
-4. `professional-finance-implementation-guide.md`
+1. `docs/professional-finance/professional-finance-api-prd.md`
+2. `docs/professional-finance/professional-finance-data-architecture.md`
+3. `docs/professional-finance/professional-finance-field-catalog-baseline.md`
+4. `docs/professional-finance/professional-finance-implementation-guide.md`
 
 ## Final Contract Snapshot
 
@@ -185,7 +185,7 @@
 
 ## Important Implementation Decisions
 
-- 字段 registry 以 `docs/professional-finance-field-catalog-baseline.md` 为生成源，生成静态 Go 数据文件，避免运行时依赖文档路径
+- 字段 registry 以 `docs/professional-finance/professional-finance-field-catalog-baseline.md` 为生成源，生成静态 Go 数据文件，避免运行时依赖文档路径
 - `statement` 按 category 映射到受控集合：
   - `shareholder` / `institutional_holding -> disclosure`
   - `earnings_preview -> preview`
@@ -234,13 +234,13 @@
   - `GET /api/v1/prof-finance/history?full_code=sz300750&field_codes=book_value_per_share&limit=1&period=all`
 - 最终工作树检查：
   - 当前变更仅位于 `repos/tdx-api`
-  - 存在一个预先存在的未跟踪日志文件 `web/stock-web.local.log`，未纳入本任务变更
+  - 本地日志文件已通过 repo 级 `.gitignore` 的 `*.log` 规则忽略，不纳入本任务变更
 
 ## Current Blockers
 
 - 无 blocker
 
-## Next Steps
+## Next Steps (Completed)
 
-1. 如需提交，先仅 stage 本任务相关文件
-2. 明确保留或清理非本任务未跟踪文件 `web/stock-web.local.log`
+1. 提交边界已明确：仅 stage 本任务相关文件
+2. 非本任务本地日志文件已明确保留，并通过 repo 级 `.gitignore` 的 `*.log` 规则忽略

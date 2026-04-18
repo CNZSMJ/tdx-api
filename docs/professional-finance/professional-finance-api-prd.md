@@ -526,8 +526,8 @@
 
 完整字段清单见：
 
-- [professional-finance-field-catalog-baseline.md](/Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance-field-catalog-baseline.md)
-- [professional-finance-data-architecture.md](/Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance-data-architecture.md)
+- [professional-finance-field-catalog-baseline.md](/Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance/professional-finance-field-catalog-baseline.md)
+- [professional-finance-data-architecture.md](/Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance/professional-finance-data-architecture.md)
 
 这份附录是本设计的规范性组成部分，用来定义：
 
@@ -779,8 +779,8 @@
 
 交付节奏与工程拆解见：
 
-- [professional-finance-implementation-guide.md](/Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance-implementation-guide.md)
-- [professional-finance-data-architecture.md](/Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance-data-architecture.md)
+- [professional-finance-implementation-guide.md](/Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance/professional-finance-implementation-guide.md)
+- [professional-finance-data-architecture.md](/Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance/professional-finance-data-architecture.md)
 
 无论内部按多少个 Sprint 推进，对外始终只有这一套最终接口语义：
 

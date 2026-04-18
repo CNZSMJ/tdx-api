@@ -6,8 +6,8 @@
 
 本指南配套两份上游文档：
 
-- [professional-finance-api-prd.md](/Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance-api-prd.md)
-- [professional-finance-field-catalog-baseline.md](/Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance-field-catalog-baseline.md)
+- [professional-finance-api-prd.md](/Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance/professional-finance-api-prd.md)
+- [professional-finance-field-catalog-baseline.md](/Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance/professional-finance-field-catalog-baseline.md)
 
 职责边界：
 
@@ -120,9 +120,9 @@ coding agent 不要盲目找位置，当前主落点已经明确：
 
 ### Documentation source of truth
 
-- [professional-finance-api-prd.md](/Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance-api-prd.md)
-- [professional-finance-field-catalog-baseline.md](/Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance-field-catalog-baseline.md)
-- [professional-finance-data-architecture.md](/Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance-data-architecture.md)
+- [professional-finance-api-prd.md](/Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance/professional-finance-api-prd.md)
+- [professional-finance-field-catalog-baseline.md](/Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance/professional-finance-field-catalog-baseline.md)
+- [professional-finance-data-architecture.md](/Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance/professional-finance-data-architecture.md)
 
 约束：
 
@@ -840,9 +840,9 @@ coding agent 建议严格按 Sprint 顺序推进：
 请在 /Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api 内实现 professional finance API。
 
 你必须同时遵守以下三份文档：
-1. /Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance-api-prd.md
-2. /Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance-field-catalog-baseline.md
-3. /Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance-implementation-guide.md
+1. /Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance/professional-finance-api-prd.md
+2. /Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance/professional-finance-field-catalog-baseline.md
+3. /Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance/professional-finance-implementation-guide.md
 
 要求：
 - 新增 /api/v1/prof-finance/fields

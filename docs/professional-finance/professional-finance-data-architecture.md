@@ -27,11 +27,11 @@
 
 本文件与另外三份文档的边界如下：
 
-- [professional-finance-api-prd.md](/Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance-api-prd.md)
+- [professional-finance-api-prd.md](/Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance/professional-finance-api-prd.md)
   - 对外接口 contract
-- [professional-finance-field-catalog-baseline.md](/Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance-field-catalog-baseline.md)
+- [professional-finance-field-catalog-baseline.md](/Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance/professional-finance-field-catalog-baseline.md)
   - 字段宇宙与字段命名基线
-- [professional-finance-implementation-guide.md](/Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance-implementation-guide.md)
+- [professional-finance-implementation-guide.md](/Users/huangjiahao/workspace/industry-investment-suite/repos/tdx-api/docs/professional-finance/professional-finance-implementation-guide.md)
   - 内部实现顺序、测试要求、Sprint 拆解
 - **本文件**
   - 最终数据层架构
