@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -70,17 +71,26 @@ type Snapshot struct {
 }
 
 type Service struct {
-	baseURL    string
-	userAgent  string
-	cacheDir   string
-	httpClient *http.Client
-	now        func() time.Time
+	baseURL      string
+	userAgent    string
+	cacheDir     string
+	rootDir      string
+	artifactsDir string
+	zipDir       string
+	dbPath       string
+	httpClient   *http.Client
+	now          func() time.Time
+	registry     *Registry
 
 	mu                   sync.RWMutex
 	listFetchedAt        time.Time
 	reportFiles          []ReportFile
 	reportCache          map[string]map[string]Snapshot
 	codeCache            map[string]Snapshot
+	syncMu               sync.Mutex
+	dbOnce               sync.Once
+	db                   *sql.DB
+	dbErr                error
 	task                 cronStopper
 	prefetchRetry        time.Duration
 	autoPrefetchSchedule string
@@ -111,6 +121,7 @@ func NewService(cacheDir string, cfg Config) *Service {
 	if cacheDir == "" {
 		cacheDir = filepath.Join(os.TempDir(), "tdx-profinance")
 	}
+	rootDir := cacheDir
 
 	autoPrefetchSchedule := strings.TrimSpace(cfg.AutoPrefetchSchedule)
 	if autoPrefetchSchedule == "" {
@@ -125,8 +136,13 @@ func NewService(cacheDir string, cfg Config) *Service {
 		baseURL:              baseURL,
 		userAgent:            userAgent,
 		cacheDir:             cacheDir,
+		rootDir:              rootDir,
+		artifactsDir:         filepath.Join(rootDir, "artifacts"),
+		zipDir:               filepath.Join(rootDir, "artifacts", "zips"),
+		dbPath:               filepath.Join(rootDir, "prof_finance.db"),
 		httpClient:           httpClient,
 		now:                  now,
+		registry:             DefaultRegistry(),
 		reportCache:          make(map[string]map[string]Snapshot),
 		codeCache:            make(map[string]Snapshot),
 		prefetchRetry:        autoPrefetchRetry,
@@ -137,7 +153,7 @@ func NewService(cacheDir string, cfg Config) *Service {
 	return svc
 }
 
-func (s *Service) LatestForCode(ctx context.Context, code string) (*Snapshot, error) {
+func (s *Service) latestForCodeFromZIP(ctx context.Context, code string) (*Snapshot, error) {
 	normalized := normalizeCode(code)
 	if normalized == "" {
 		return nil, errors.New("professional finance requires code")
@@ -177,7 +193,7 @@ func (s *Service) LatestForCode(ctx context.Context, code string) (*Snapshot, er
 	return nil, fmt.Errorf("professional finance snapshot not found for code %s", normalized)
 }
 
-func (s *Service) ListForCode(ctx context.Context, code string, limit int, startDate, endDate string) ([]Snapshot, error) {
+func (s *Service) listForCodeFromZIP(ctx context.Context, code string, limit int, startDate, endDate string) ([]Snapshot, error) {
 	normalized := normalizeCode(code)
 	if normalized == "" {
 		return nil, errors.New("professional finance requires code")
@@ -251,6 +267,9 @@ func (s *Service) listReports(ctx context.Context, forceRefresh bool) ([]ReportF
 	if err != nil {
 		return nil, err
 	}
+	if err := os.MkdirAll(s.artifactsDir, 0o755); err == nil {
+		_ = os.WriteFile(filepath.Join(s.artifactsDir, "gpcw.txt"), body, 0o644)
+	}
 	reports, err := parseReportList(body)
 	if err != nil {
 		return nil, err
@@ -270,23 +289,10 @@ func (s *Service) listReports(ctx context.Context, forceRefresh bool) ([]ReportF
 }
 
 func (s *Service) PrefetchAll(ctx context.Context) error {
-	reports, err := s.listReports(ctx, true)
-	if err != nil {
+	if err := s.Sync(ctx); err != nil {
 		return err
 	}
-
-	nowDate := s.now().Format("20060102")
-	var downloaded int
-	for _, report := range reports {
-		if report.ReportDate == "" || report.ReportDate > nowDate {
-			continue
-		}
-		if _, err := s.ensureReportZip(ctx, report); err != nil {
-			return fmt.Errorf("prefetch %s: %w", report.Filename, err)
-		}
-		downloaded++
-	}
-	log.Printf("profinance: prefetched %d report zip files", downloaded)
+	log.Printf("profinance: synced professional finance artifacts and serving data")
 	return nil
 }
 
@@ -322,15 +328,21 @@ func (s *Service) startAutoPrefetch() {
 }
 
 func (s *Service) Close() {
-	if s == nil || s.task == nil {
+	if s == nil {
 		return
 	}
-	ctx := s.task.Stop()
-	select {
-	case <-ctx.Done():
-	case <-time.After(5 * time.Second):
+	if s.task != nil {
+		ctx := s.task.Stop()
+		select {
+		case <-ctx.Done():
+		case <-time.After(5 * time.Second):
+		}
+		s.task = nil
 	}
-	s.task = nil
+	if s.db != nil {
+		_ = s.db.Close()
+		s.db = nil
+	}
 }
 
 func (s *Service) loadReport(ctx context.Context, report ReportFile) (map[string]Snapshot, error) {
@@ -357,16 +369,25 @@ func (s *Service) loadReport(ctx context.Context, report ReportFile) (map[string
 }
 
 func (s *Service) ensureReportZip(ctx context.Context, report ReportFile) ([]byte, error) {
-	if err := os.MkdirAll(s.cacheDir, 0o755); err != nil {
+	if err := os.MkdirAll(s.zipDir, 0o755); err != nil {
 		return nil, err
 	}
 
-	filename := filepath.Join(s.cacheDir, report.Filename)
+	filename := filepath.Join(s.zipDir, report.Filename)
+	hashFilename := filename + ".hash"
 	if bs, err := os.ReadFile(filename); err == nil {
-		if err := validateZip(bs); err == nil {
+		hashMatches := true
+		if strings.TrimSpace(report.Hash) != "" {
+			hashMatches = false
+			if hashValue, hashErr := os.ReadFile(hashFilename); hashErr == nil && strings.TrimSpace(string(hashValue)) == strings.TrimSpace(report.Hash) {
+				hashMatches = true
+			}
+		}
+		if hashMatches && validateZip(bs) == nil {
 			return bs, nil
 		}
 		_ = os.Remove(filename)
+		_ = os.Remove(hashFilename)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.baseURL+"/"+report.Filename, nil)
@@ -400,6 +421,9 @@ func (s *Service) ensureReportZip(ctx context.Context, report ReportFile) ([]byt
 	}
 	if err := os.Rename(tmp, filename); err != nil {
 		return nil, err
+	}
+	if strings.TrimSpace(report.Hash) != "" {
+		_ = os.WriteFile(hashFilename, []byte(strings.TrimSpace(report.Hash)), 0o644)
 	}
 	return bs, nil
 }

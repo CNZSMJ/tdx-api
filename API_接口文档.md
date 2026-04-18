@@ -1989,6 +1989,217 @@ curl -X POST http://localhost:8080/api/batch-quote \
 
 ---
 
+## 📘 Professional Finance API
+
+### 统一前缀
+
+- `GET /api/v1/prof-finance/fields`
+- `GET /api/v1/prof-finance/history`
+- `GET /api/v1/prof-finance/snapshot`
+- `GET /api/v1/prof-finance/coverage`
+- `GET /api/v1/prof-finance/cross-section`
+
+### 设计要点
+
+- 查询参数只接受：
+  - `full_code`
+  - `full_codes`
+  - `field_codes`
+- `full_code` / `full_codes` 必须带市场前缀，当前支持：
+  - `sh`
+  - `sz`
+  - `bj`
+- 查询结果只返回：
+  - `field_values`
+- 所有响应都包含：
+  - `request_id`
+- 所有响应使用统一 envelope：
+  - success: `code=0`
+  - error: `error.error_code` 可稳定用于程序分支判断
+  - error body 还会返回：
+    - `error.error_type`
+    - `error.http_status`
+    - `error.retryable`
+    - `error.details`
+- `latest_available` 需要 `as_of_date`，且严格受 `knowledge_cutoff=min(as_of_date, watermark_date)` 约束
+- 缺失值不会被序列化成 `0` / `0.0`，而是进入 `missing_fields`
+- `/api/v1/prof-finance/cross-section` 必须分页：
+  - 默认 `limit=100`
+  - 最大 `limit=500`
+  - `full_codes` 单次请求最大 `500`
+  - 使用不透明 `cursor`
+
+### `GET /api/v1/prof-finance/fields`
+
+用途：返回完整 Professional Finance 字段目录，完整覆盖 `403` 个 `source_field_id`。
+
+关键参数：
+
+- `category`
+- `query`
+
+每个字段目录项至少返回：
+
+- `field_code`
+- `source_field_id`
+- `concept_code`
+- `field_name_cn`
+- `field_name_en`
+- `category`
+- `statement`
+- `period_semantics`
+- `unit`
+- `value_type`
+- `storage_precision`
+- `display_precision`
+- `rounding_mode`
+- `nullable`
+- `source`
+- `supported`
+
+### `GET /api/v1/prof-finance/history`
+
+用途：单证券多报告期历史序列。
+
+关键参数：
+
+- `full_code`
+- `field_codes`
+- `as_of_date`
+- `start_report_date`
+- `end_report_date`
+- `limit`
+- `period=quarterly|annual|all`
+
+实现约束：
+
+- `field_codes` 必填
+- `full_code` 必须使用带市场前缀的 8 位代码，例如 `sh600000`
+- `limit` 默认 `40`，最大 `40`
+- `period` 缺省为 `all`
+
+响应要点：
+
+- 顶层返回 `full_code`、`name`、`as_of_date`、`knowledge_cutoff`、`field_codes`
+- `list[]` 每项返回：
+  - `report_date`
+  - `announce_date`
+  - `field_values`
+  - `missing_fields`
+  - `source_report_file`
+
+### `GET /api/v1/prof-finance/snapshot`
+
+用途：单证券单期快照。
+
+关键参数：
+
+- `full_code`
+- `field_codes`
+- `period_mode=exact|latest_report|latest_available`
+- `report_date`
+- `as_of_date`
+
+实现约束：
+
+- `field_codes` 必填
+- `full_code` 必须使用带市场前缀的 8 位代码，例如 `sh600000`
+- `period_mode` 缺省为 `latest_available`
+- `period_mode=exact` 时，`report_date` 必填
+- `period_mode=latest_available` 时，`as_of_date` 必填
+
+响应要点：
+
+- 返回 `full_code`、`name`、`report_date`、`announce_date`、`as_of_date`、`knowledge_cutoff`、`source`
+- `coverage` 明确给出：
+  - `available`
+  - `announce_date_source`
+  - `effective_announce_date`
+  - `source_report_file`
+
+### `GET /api/v1/prof-finance/coverage`
+
+用途：覆盖状态与缺失原因诊断。
+
+关键参数：
+
+- `full_code`
+- `field_codes`
+- `report_date`
+- `as_of_date`
+
+实现约束：
+
+- `field_codes` 必填
+- `full_code` 必须使用带市场前缀的 8 位代码，例如 `sh600000`
+- 若不传 `report_date`：
+  - 传了 `as_of_date` 时，按 `latest_available` 语义评估
+  - 未传 `as_of_date` 时，按 `latest_report` 语义评估
+
+响应要点：
+
+- `full_code`
+- `name`
+- `latest_report_date`
+- `requested_field_codes`
+- `evaluated_field_codes`
+- `available_reports`
+- `available_field_codes`
+- `missing_fields`
+- `status`
+- `status_reason`
+- `knowledge_cutoff`
+
+### `GET /api/v1/prof-finance/cross-section`
+
+用途：多证券、同语义横截面查询。
+
+关键参数：
+
+- `full_codes`
+- `field_codes`
+- `period_mode=exact|latest_report|latest_available`
+- `report_date`
+- `as_of_date`
+- `limit`
+- `cursor`
+
+实现约束：
+
+- `field_codes` 必填
+- `full_codes` 必填，单次请求最多 `500` 个
+- `full_codes` 中每个元素都必须是带市场前缀的 8 位代码
+- `period_mode` 缺省为 `latest_available`
+- `period_mode=exact` 时，`report_date` 必填
+- `period_mode=latest_available` 时，`as_of_date` 必填
+- `limit` 默认 `100`，最大 `500`
+
+响应要点：
+
+- 顶层返回 `report_date`、`as_of_date`、`knowledge_cutoff`、`field_codes`、`next_cursor`
+- `items[]` 每项返回：
+  - `full_code`
+  - `name`
+  - `report_date`
+  - `announce_date`
+  - `field_values`
+  - `missing_fields`
+  - `coverage`
+
+### 错误码
+
+Professional Finance API 最小稳定错误代码集合：
+
+- `INVALID_ARGUMENT`
+- `NOT_FOUND`
+- `UNSUPPORTED_FIELD`
+- `UNSUPPORTED_PERIOD_MODE`
+- `SOURCE_NOT_READY`
+- `RATE_LIMITED`
+- `INTERNAL_ERROR`
+
+---
+
 ## 🔒 错误码说明
 
 | code | message | 说明 |

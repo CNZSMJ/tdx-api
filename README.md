@@ -102,6 +102,11 @@ go run .
 | `/api/etf` | ETF列表 |
 | `/api/finance` | 财务数据 |
 | `/api/financial-reports` | 多期财报摘要 |
+| `/api/v1/prof-finance/fields` | Professional Finance 字段目录（403 个 source_field_id） |
+| `/api/v1/prof-finance/history` | Professional Finance 单证券多期历史 |
+| `/api/v1/prof-finance/snapshot` | Professional Finance 单证券快照 |
+| `/api/v1/prof-finance/coverage` | Professional Finance 覆盖状态 |
+| `/api/v1/prof-finance/cross-section` | Professional Finance 多证券横截面 |
 | `/api/f10/categories` | F10目录 |
 | `/api/f10/content` | F10正文 |
 | `/api/trade-history` | 历史成交 |
@@ -113,6 +118,29 @@ go run .
 | `/api/income` | 收益数据 |
 | `/api/tasks/pull-kline` | 创建K线拉取任务 |
 | `/api/tasks/pull-trade` | 创建成交拉取任务 |
+
+### Professional Finance API
+
+`/api/v1/prof-finance/*` 是面向 `gpcw` 专业财务数据的正式接口族，和旧的 `/api/financial-reports`、`/api/profile` 有明确分工：
+
+- `/api/v1/prof-finance/fields`
+  - 返回完整字段目录，覆盖 `403` 个 `source_field_id`
+- `/api/v1/prof-finance/history`
+  - 单证券多期历史序列
+- `/api/v1/prof-finance/snapshot`
+  - 单证券在 `exact | latest_report | latest_available` 语义下的单期快照
+- `/api/v1/prof-finance/coverage`
+  - 返回覆盖状态、可见报告和缺失字段
+- `/api/v1/prof-finance/cross-section`
+  - 多证券横截面查询，默认 `limit=100`，最大 `limit=500`，使用 `cursor` 分页
+
+约束摘要：
+
+- 新接口只接受 `full_code` / `full_codes` 与 `field_codes`
+- 新接口只返回 `field_values`
+- 所有响应都包含 `request_id`
+- 缺失值不会被伪装成 `0`
+- `latest_available` 严格受 `as_of_date` 和 `knowledge_cutoff` 约束
 | `/api/tasks` | 任务列表 |
 | `/api/server-status` | 服务器状态 |
 | `/api/health` | 健康检查 |
