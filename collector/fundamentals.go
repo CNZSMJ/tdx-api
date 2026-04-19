@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -83,7 +85,35 @@ func (s *FundamentalsService) RefreshFinance(ctx context.Context, code string) e
 	if payload == nil {
 		return errors.New("finance payload is nil")
 	}
+	return s.persistFinancePayload(code, payload)
+}
 
+func (s *FundamentalsService) RefreshFinanceIfUpdated(ctx context.Context, code string) (bool, string, error) {
+	if code == "" {
+		return false, "", errors.New("finance refresh requires code")
+	}
+	payload, err := s.provider.Finance(ctx, code)
+	if err != nil {
+		return false, "", err
+	}
+	if payload == nil {
+		return false, "", errors.New("finance payload is nil")
+	}
+
+	current, err := s.store.GetCollectCursor("finance", MetadataAssetType, code, "")
+	if err != nil {
+		return false, "", err
+	}
+	if current != nil && current.Cursor != "" && current.Cursor == payload.UpdatedDate {
+		return false, payload.UpdatedDate, nil
+	}
+	if err := s.persistFinancePayload(code, payload); err != nil {
+		return false, payload.UpdatedDate, err
+	}
+	return true, payload.UpdatedDate, nil
+}
+
+func (s *FundamentalsService) persistFinancePayload(code string, payload *FinanceSnapshot) error {
 	s.financeMu.Lock()
 	defer s.financeMu.Unlock()
 
@@ -140,7 +170,32 @@ func (s *FundamentalsService) SyncF10(ctx context.Context, code string) error {
 	if err != nil {
 		return err
 	}
+	return s.syncF10Categories(ctx, code, categories, f10CategorySignature(categories))
+}
 
+func (s *FundamentalsService) SyncF10IfChanged(ctx context.Context, code string) (bool, string, error) {
+	if code == "" {
+		return false, "", errors.New("f10 sync requires code")
+	}
+	categories, err := s.provider.F10Categories(ctx, code)
+	if err != nil {
+		return false, "", err
+	}
+	signature := f10CategorySignature(categories)
+	current, err := s.store.GetCollectCursor("f10", MetadataAssetType, code, "")
+	if err != nil {
+		return false, "", err
+	}
+	if current != nil && current.Cursor != "" && current.Cursor == signature {
+		return false, signature, nil
+	}
+	if err := s.syncF10Categories(ctx, code, categories, signature); err != nil {
+		return false, signature, err
+	}
+	return true, signature, nil
+}
+
+func (s *FundamentalsService) syncF10Categories(ctx context.Context, code string, categories []F10Category, signature string) error {
 	s.f10Mu.Lock()
 	defer s.f10Mu.Unlock()
 
@@ -211,7 +266,7 @@ func (s *FundamentalsService) SyncF10(ctx context.Context, code string) error {
 		Domain:     "f10",
 		AssetType:  MetadataAssetType,
 		Instrument: code,
-		Cursor:     fmt.Sprintf("%d", len(categories)),
+		Cursor:     signature,
 	}); err != nil {
 		return err
 	}
@@ -235,6 +290,33 @@ func (s *FundamentalsService) openFundamentalsEngine(filename string) (*xorm.Eng
 
 func hashContent(text string) string {
 	sum := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(sum[:])
+}
+
+func f10CategorySignature(categories []F10Category) string {
+	normalized := append([]F10Category(nil), categories...)
+	sort.Slice(normalized, func(i, j int) bool {
+		if normalized[i].Filename == normalized[j].Filename {
+			if normalized[i].Start == normalized[j].Start {
+				if normalized[i].Length == normalized[j].Length {
+					return normalized[i].Name < normalized[j].Name
+				}
+				return normalized[i].Length < normalized[j].Length
+			}
+			return normalized[i].Start < normalized[j].Start
+		}
+		return normalized[i].Filename < normalized[j].Filename
+	})
+
+	var buf bytes.Buffer
+	for _, category := range normalized {
+		buf.WriteString(category.Name)
+		buf.WriteByte('|')
+		buf.WriteString(category.Filename)
+		buf.WriteByte('|')
+		buf.WriteString(fmt.Sprintf("%d|%d\n", category.Start, category.Length))
+	}
+	sum := sha256.Sum256(buf.Bytes())
 	return hex.EncodeToString(sum[:])
 }
 

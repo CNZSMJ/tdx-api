@@ -20,8 +20,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/robfig/cron/v3"
 )
 
 const (
@@ -92,9 +90,19 @@ type Service struct {
 	db                   *sql.DB
 	dbErr                error
 	task                 cronStopper
+	startupPrefetchWG    sync.WaitGroup
 	prefetchRetry        time.Duration
 	autoPrefetchSchedule string
 	disableAutoPrefetch  bool
+}
+
+type SourceWatermarkState struct {
+	Found                    bool
+	ManifestFetchedAt        string
+	LatestReportDateSeen     string
+	LatestReportDateIngested string
+	WatermarkDate            string
+	UpdatedAt                string
 }
 
 type cronStopper interface {
@@ -296,31 +304,92 @@ func (s *Service) PrefetchAll(ctx context.Context) error {
 	return nil
 }
 
+func (s *Service) SyncIfNeeded(ctx context.Context) (bool, string, error) {
+	needsSync, reason, err := s.NeedsSync(ctx)
+	if err != nil {
+		return false, "", err
+	}
+	if !needsSync {
+		return false, reason, nil
+	}
+	if err := s.Sync(ctx); err != nil {
+		return false, reason, err
+	}
+	return true, reason, nil
+}
+
+func (s *Service) NeedsSync(ctx context.Context) (bool, string, error) {
+	db, err := s.openDB()
+	if err != nil {
+		return false, "", err
+	}
+	state, err := s.sourceWatermarkState(ctx, db)
+	if err != nil {
+		return false, "", err
+	}
+
+	reports, err := s.listReports(ctx, true)
+	if err != nil {
+		return false, "", err
+	}
+	today := s.now().UTC().Format("20060102")
+	latestVisible := latestVisibleReportDate(reports, today)
+
+	switch {
+	case !state.Found:
+		return true, "source_watermark_missing", nil
+	case latestVisible != "" && latestVisible > strings.TrimSpace(state.LatestReportDateIngested):
+		return true, "source_report_advanced", nil
+	case strings.TrimSpace(state.WatermarkDate) < today:
+		return true, "serving_watermark_stale", nil
+	default:
+		return false, "up_to_date", nil
+	}
+}
+
+func (s *Service) sourceWatermarkState(ctx context.Context, db *sql.DB) (*SourceWatermarkState, error) {
+	state := &SourceWatermarkState{}
+	err := db.QueryRowContext(ctx, `
+SELECT manifest_fetched_at, latest_report_date_seen, latest_report_date_ingested, watermark_date, updated_at
+FROM prof_finance_source_watermark
+WHERE source_name = ?`, "gpcw").Scan(
+		&state.ManifestFetchedAt,
+		&state.LatestReportDateSeen,
+		&state.LatestReportDateIngested,
+		&state.WatermarkDate,
+		&state.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return state, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	state.Found = true
+	return state, nil
+}
+
+func latestVisibleReportDate(reports []ReportFile, nowDate string) string {
+	latest := ""
+	for _, report := range reports {
+		if report.ReportDate == "" || report.ReportDate > nowDate {
+			continue
+		}
+		if report.ReportDate > latest {
+			latest = report.ReportDate
+		}
+	}
+	return latest
+}
+
 func (s *Service) startAutoPrefetch() {
 	if s == nil || s.disableAutoPrefetch {
 		return
 	}
 
-	task := cron.New(cron.WithSeconds())
-	if _, err := task.AddFunc(s.autoPrefetchSchedule, func() {
-		for attempt := 0; attempt < 3; attempt++ {
-			if err := s.PrefetchAll(context.Background()); err == nil {
-				return
-			} else {
-				log.Printf("profinance: auto prefetch attempt %d/3 failed: %v", attempt+1, err)
-			}
-			if attempt < 2 {
-				time.Sleep(s.prefetchRetry)
-			}
-		}
-	}); err != nil {
-		log.Printf("profinance: register auto prefetch failed: %v", err)
-		return
-	}
-	task.Start()
-	s.task = task
-
+	s.startupPrefetchWG.Add(1)
 	go func() {
+		defer s.startupPrefetchWG.Done()
 		if err := s.PrefetchAll(context.Background()); err != nil {
 			log.Printf("profinance: startup prefetch failed: %v", err)
 		}
@@ -339,6 +408,7 @@ func (s *Service) Close() {
 		}
 		s.task = nil
 	}
+	s.startupPrefetchWG.Wait()
 	if s.db != nil {
 		_ = s.db.Close()
 		s.db = nil

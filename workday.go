@@ -69,19 +69,6 @@ func NewWorkday(c *Client, db *xorm.Engine) (*Workday, error) {
 		db:     db,
 		cache:  maps.NewBit(),
 	}
-	//设置定时器,每天早上9点更新数据,8点多获取不到今天的数据
-	task := cron.New(cron.WithSeconds())
-	task.AddFunc("0 0 9 * * *", func() {
-		for i := 0; i < 3; i++ {
-			err := w.Update()
-			if err == nil {
-				return
-			}
-			logs.Err(err)
-			<-time.After(time.Minute * 5)
-		}
-	})
-	task.Start()
 	cacheCount, err := w.loadCache()
 	if err != nil {
 		return nil, err
@@ -100,6 +87,7 @@ type Workday struct {
 	db         *xorm.Engine
 	cache      maps.Bit
 	latestUnix int64
+	task       *cron.Cron
 }
 
 func (this *Workday) loadCache() (int, error) {

@@ -2,16 +2,32 @@ package collector
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 )
 
 type throttleTestProvider struct {
+	mu        sync.Mutex
 	callTimes []time.Time
 }
 
 func (p *throttleTestProvider) record() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.callTimes = append(p.callTimes, time.Now())
+}
+
+func (p *throttleTestProvider) callCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.callTimes)
+}
+
+func (p *throttleTestProvider) snapshotCallTimes() []time.Time {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]time.Time(nil), p.callTimes...)
 }
 
 func (p *throttleTestProvider) Instruments(ctx context.Context, query InstrumentQuery) ([]Instrument, error) {
@@ -85,10 +101,11 @@ func TestThrottledProviderSpacesRequests(t *testing.T) {
 		t.Fatalf("second trading-days call: %v", err)
 	}
 
-	if len(upstream.callTimes) != 2 {
-		t.Fatalf("expected 2 provider calls, got %d", len(upstream.callTimes))
+	callTimes := upstream.snapshotCallTimes()
+	if len(callTimes) != 2 {
+		t.Fatalf("expected 2 provider calls, got %d", len(callTimes))
 	}
-	if delay := upstream.callTimes[1].Sub(upstream.callTimes[0]); delay < 18*time.Millisecond {
+	if delay := callTimes[1].Sub(callTimes[0]); delay < 18*time.Millisecond {
 		t.Fatalf("expected throttled provider delay >= 18ms, got %s", delay)
 	}
 }
@@ -110,8 +127,8 @@ func TestThrottledProviderConcurrentSlots(t *testing.T) {
 	}
 	elapsed := time.Since(start)
 
-	if len(upstream.callTimes) != 4 {
-		t.Fatalf("expected 4 provider calls, got %d", len(upstream.callTimes))
+	if upstream.callCount() != 4 {
+		t.Fatalf("expected 4 provider calls, got %d", upstream.callCount())
 	}
 	if elapsed > 40*time.Millisecond {
 		t.Fatalf("expected 4 concurrent calls to complete within ~0ms (first batch), took %s", elapsed)

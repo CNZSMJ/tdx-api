@@ -166,7 +166,13 @@ func startCollectorExecution(mode string, startNow bool) (*collectorStartResult,
 
 	result.Launched = true
 	go func() {
-		if err := runCollectorCatchUp(trigger); err != nil {
+		var err error
+		if collectorTriggerUsesStartupProfile(trigger) {
+			_, err = runStartupRecovery(trigger)
+		} else {
+			err = runCollectorCatchUp(trigger)
+		}
+		if err != nil {
 			log.Printf("collector 手动启动失败: trigger=%s err=%v", trigger, err)
 		}
 	}()
@@ -388,6 +394,63 @@ func handleCollectorKlineGapReconcile(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func handleCollectorKlineGapDowngrade(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		errorResponse(w, "只支持POST请求")
+		return
+	}
+	if collectorRuntime == nil {
+		errorResponse(w, "collector runtime 未初始化")
+		return
+	}
+
+	var req struct {
+		AssetType  string `json:"asset_type"`
+		Instrument string `json:"instrument"`
+		Period     string `json:"period"`
+		Limit      int    `json:"limit"`
+		Reason     string `json:"reason"`
+		DryRun     *bool  `json:"dry_run"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+
+	dryRun := true
+	if req.DryRun != nil {
+		dryRun = *req.DryRun
+	}
+	if !dryRun {
+		if !collectorControl.isPaused() {
+			errorResponse(w, "正式降级前必须先暂停 collector")
+			return
+		}
+		if collectorRunActive.Load() {
+			errorResponse(w, "collector 任务仍在运行，不能执行正式降级")
+			return
+		}
+	}
+
+	opts, err := buildKlineGapDowngradeOptions(req.AssetType, req.Instrument, req.Period, req.Limit, req.Reason, dryRun)
+	if err != nil {
+		errorResponse(w, "构建降级参数失败: "+err.Error())
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
+	defer cancel()
+	report, err := collectorRuntime.DowngradeKlineGaps(ctx, opts)
+	if err != nil {
+		errorResponse(w, "执行 kline gap 降级失败: "+err.Error())
+		return
+	}
+
+	successResponse(w, map[string]any{
+		"control": collectorControl.snapshot(),
+		"report":  report,
+	})
+}
+
 func buildKlineGapCleanupOptions(assetTypeRaw, instrument, periodRaw string, limit int, dryRun bool) (collectorpkg.KlineGapCleanupOptions, error) {
 	opts := collectorpkg.KlineGapCleanupOptions{
 		Instrument: strings.TrimSpace(instrument),
@@ -462,6 +525,21 @@ func buildKlineGapReconcileOptions(assetTypeRaw, instrument, periodRaw, dateRaw,
 		StartDate:  startDate,
 		EndDate:    endDate,
 		Limit:      limit,
+		DryRun:     dryRun,
+	}, nil
+}
+
+func buildKlineGapDowngradeOptions(assetTypeRaw, instrument, periodRaw string, limit int, reason string, dryRun bool) (collectorpkg.KlineGapDowngradeOptions, error) {
+	cleanupOpts, err := buildKlineGapCleanupOptions(assetTypeRaw, instrument, periodRaw, limit, dryRun)
+	if err != nil {
+		return collectorpkg.KlineGapDowngradeOptions{}, err
+	}
+	return collectorpkg.KlineGapDowngradeOptions{
+		AssetType:  cleanupOpts.AssetType,
+		Instrument: cleanupOpts.Instrument,
+		Period:     cleanupOpts.Period,
+		Limit:      cleanupOpts.Limit,
+		Reason:     strings.TrimSpace(reason),
 		DryRun:     dryRun,
 	}, nil
 }

@@ -22,6 +22,7 @@ import (
 	"github.com/injoyai/tdx"
 	collectorpkg "github.com/injoyai/tdx/collector"
 	"github.com/injoyai/tdx/extend"
+	systemgov "github.com/injoyai/tdx/governance"
 	"github.com/injoyai/tdx/profinance"
 	"github.com/injoyai/tdx/protocol"
 )
@@ -32,6 +33,12 @@ var (
 	taskManager         = NewTaskManager()
 	databaseDir         string
 	collectorRuntime    *collectorpkg.Runtime
+	governanceStore     *collectorpkg.GovernanceStore
+	governancePaths     collectorpkg.GovernancePaths
+	dailyOpenRefresh    *systemgov.DailyOpenRefreshRunner
+	dailyCloseSync      *systemgov.DailyCloseSyncRunner
+	dailyAudit          *systemgov.DailyAuditRunner
+	startupRecovery     *systemgov.StartupRecoveryRunner
 	proFinanceService   *profinance.Service
 	collectorRunActive  atomic.Bool
 	serviceShuttingDown atomic.Bool
@@ -40,6 +47,7 @@ var (
 )
 
 const (
+	collectorDailyOpenRefreshSpec      = "0 0 9 * * *"
 	collectorDailySyncSpec             = "0 0 18 * * *"
 	collectorDailyReconcileSpec        = "0 0 19 * * *"
 	collectorRunTimeout                = 6 * time.Hour // default for daily_full_sync / reconcile; override with COLLECTOR_RUN_TIMEOUT
@@ -253,6 +261,16 @@ func shutdownCollectorRuntime() {
 	}
 }
 
+func shutdownGovernanceStore() {
+	if governanceStore == nil {
+		return
+	}
+	if err := governanceStore.Close(); err != nil {
+		log.Printf("governance: close store failed: %v", err)
+	}
+	governanceStore = nil
+}
+
 func configureDatabaseDir() {
 	targetDir := tdx.DefaultDatabaseDir
 	if targetDir == "" {
@@ -362,6 +380,7 @@ func init() {
 	if err = os.MkdirAll(databaseDir, 0755); err != nil {
 		log.Printf("创建数据目录失败: %v", err)
 	}
+	initGovernanceControlPlane()
 	proFinanceService = profinance.NewService(filepath.Join(databaseDir, "fundamentals", "professional_finance"), profinance.Config{})
 	if codes, err := tdx.NewCodesSqlite(client, filepath.Join(databaseDir, "codes.db")); err != nil {
 		log.Printf("初始化代码库失败: %v", err)
@@ -387,6 +406,16 @@ func init() {
 	}
 	manager.Cron.Start()
 	initCollectorRuntime()
+}
+
+func initGovernanceControlPlane() {
+	governancePaths = collectorpkg.ResolveGovernancePaths(databaseDir)
+	store, err := collectorpkg.OpenGovernanceStore(governancePaths.DBPath)
+	if err != nil {
+		log.Printf("初始化 governance store 失败: %v", err)
+		return
+	}
+	governanceStore = store
 }
 
 func initCollectorRuntime() {
@@ -427,6 +456,12 @@ func initCollectorRuntime() {
 		return
 	}
 	collectorRuntime = runtime
+	initDailyOpenRefreshRunner()
+	initDailyCloseSyncRunner()
+	initDailyAuditRunner()
+	initStartupRecoveryRunner()
+	initGovernanceRepairWorker()
+	initDeepAuditBackfillRunner()
 	if err := collectorRuntime.RecoverInterruptedRuns(); err != nil {
 		log.Printf("collector 运行记录恢复失败: %v", err)
 	}
@@ -437,18 +472,61 @@ func initCollectorRuntime() {
 		log.Printf("collector live 覆盖起点恢复失败: %v", err)
 	}
 
-	if _, err := manager.Cron.AddFunc(collectorDailySyncSpec, func() {
-		go runCollectorCatchUp("daily-18:00")
-	}); err != nil {
-		log.Printf("注册 collector 每日 18:00 全量同步失败: %v", err)
-		return
+	if dailyOpenRefresh != nil {
+		if _, err := manager.Cron.AddFunc(collectorDailyOpenRefreshSpec, func() {
+			go func() {
+				if _, err := runDailyOpenRefresh("daily-09:00"); err != nil {
+					log.Printf("daily_open_refresh 失败: %v", err)
+				}
+			}()
+		}); err != nil {
+			log.Printf("注册 daily_open_refresh 失败: %v", err)
+			return
+		}
 	}
 
-	if _, err := manager.Cron.AddFunc(collectorDailyReconcileSpec, func() {
-		go runCollectorReconcile("daily-19:00", time.Now().Format("20060102"))
-	}); err != nil {
-		log.Printf("注册 collector 每日 19:00 对账失败: %v", err)
-		return
+	if dailyCloseSync != nil {
+		if _, err := manager.Cron.AddFunc(collectorDailySyncSpec, func() {
+			go func() {
+				if _, err := runDailyCloseSync("daily-18:00"); err != nil {
+					log.Printf("daily_close_sync 失败: %v", err)
+				}
+			}()
+		}); err != nil {
+			log.Printf("注册 daily_close_sync 失败: %v", err)
+			return
+		}
+	}
+
+	if dailyAudit != nil {
+		if _, err := manager.Cron.AddFunc(collectorDailyReconcileSpec, func() {
+			go func() {
+				if _, err := runDailyAudit("daily-19:00"); err != nil {
+					log.Printf("daily_audit 失败: %v", err)
+				}
+			}()
+		}); err != nil {
+			log.Printf("注册 daily_audit 失败: %v", err)
+			return
+		}
+	}
+
+	if deepAuditBackfill != nil {
+		if schedule := collectorDeepAuditBackfillSchedule(); schedule != "" {
+			if _, err := manager.Cron.AddFunc(schedule, func() {
+				go func() {
+					if _, err := runDeepAuditBackfill("scheduled-deep-audit", systemgov.DeepAuditBackfillRequest{
+						BacklogOnly: true,
+						Limit:       50,
+					}); err != nil {
+						log.Printf("deep_audit_backfill 失败: %v", err)
+					}
+				}()
+			}); err != nil {
+				log.Printf("注册 deep_audit_backfill 失败: %v", err)
+				return
+			}
+		}
 	}
 
 	bootstrapStart := strings.TrimSpace(os.Getenv("COLLECTOR_BOOTSTRAP_START"))
@@ -458,6 +536,261 @@ func initCollectorRuntime() {
 	log.Printf("已启用 collector 计划: startup catch-up + 每日 18:00 全量同步 + 每日 19:00 对账，本地时区=%s bootstrap_start=%s min_request_interval=%s catch_up_workers=%d", time.Now().Location(), bootstrapStart, collectorRequestMinInterval(), collectorCatchUpWorkers())
 
 	go runCollectorStartupSequence()
+}
+
+func initDailyOpenRefreshRunner() {
+	if governanceStore == nil || manager == nil || manager.Codes == nil || manager.Workday == nil || collectorRuntime == nil {
+		return
+	}
+	runner, err := systemgov.NewDailyOpenRefreshRunner(systemgov.DailyOpenRefreshConfig{
+		Store:         governanceStore,
+		Paths:         governancePaths,
+		Now:           time.Now,
+		RetryInterval: 5 * time.Minute,
+		CalendarGate: func(day time.Time) (bool, error) {
+			return resolveTradingDay(day)
+		},
+		CodesRefresh: func(ctx context.Context) error {
+			if err := manager.Codes.Update(); err != nil {
+				return err
+			}
+			if tdx.DefaultCodes != nil && tdx.DefaultCodes != manager.Codes {
+				if err := tdx.DefaultCodes.Update(true); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		WorkdayRefresh: func(ctx context.Context) error {
+			return manager.Workday.Update()
+		},
+		BlockRefresh: func(ctx context.Context) error {
+			return collectorRuntime.BlockService().SyncBlocks(ctx)
+		},
+		ProFinanceRefresh: func(ctx context.Context) error {
+			if proFinanceService == nil {
+				return nil
+			}
+			_, _, err := proFinanceService.SyncIfNeeded(ctx)
+			return err
+		},
+	})
+	if err != nil {
+		log.Printf("初始化 daily_open_refresh runner 失败: %v", err)
+		return
+	}
+	dailyOpenRefresh = runner
+}
+
+func initDailyCloseSyncRunner() {
+	if governanceStore == nil || collectorRuntime == nil {
+		return
+	}
+	runner, err := systemgov.NewDailyCloseSyncRunner(systemgov.DailyCloseSyncConfig{
+		Store: governanceStore,
+		Paths: governancePaths,
+		Now:   time.Now,
+		CalendarGate: func(day time.Time) (bool, error) {
+			return resolveTradingDay(day)
+		},
+		ResolveTargetDates: func(ctx context.Context, now time.Time) ([]string, error) {
+			return collectorRuntime.ResolveRecentTradingDates(ctx, 2)
+		},
+		Execute: func(ctx context.Context, dates []string) ([]collectorpkg.CloseSyncFailure, error) {
+			return collectorRuntime.ExecuteDailyCloseSync(ctx, dates)
+		},
+	})
+	if err != nil {
+		log.Printf("初始化 daily_close_sync runner 失败: %v", err)
+		return
+	}
+	dailyCloseSync = runner
+}
+
+func initDailyAuditRunner() {
+	if governanceStore == nil || collectorRuntime == nil {
+		return
+	}
+	runner, err := systemgov.NewDailyAuditRunner(systemgov.DailyAuditConfig{
+		Store: governanceStore,
+		Paths: governancePaths,
+		Now:   time.Now,
+		CalendarGate: func(day time.Time) (bool, error) {
+			return resolveTradingDay(day)
+		},
+		ResolveTargetDates: func(ctx context.Context, now time.Time) ([]string, error) {
+			return collectorRuntime.ResolveRecentTradingDates(ctx, 2)
+		},
+		Execute: func(ctx context.Context, date string, trigger string) (*systemgov.AuditResult, error) {
+			report, err := collectorRuntime.ReconcileDateWithTrigger(ctx, date, trigger)
+			if err != nil {
+				return nil, err
+			}
+			return auditResultFromReconcileReport(report), nil
+		},
+	})
+	if err != nil {
+		log.Printf("初始化 daily_audit runner 失败: %v", err)
+		return
+	}
+	dailyAudit = runner
+}
+
+func initStartupRecoveryRunner() {
+	if governanceStore == nil || collectorRuntime == nil {
+		return
+	}
+	runner, err := systemgov.NewStartupRecoveryRunner(systemgov.StartupRecoveryConfig{
+		Store: governanceStore,
+		Paths: governancePaths,
+		Now:   time.Now,
+		Inspect: func(ctx context.Context, now time.Time) (systemgov.StartupRecoverySnapshot, error) {
+			return collectStartupRecoverySnapshot(ctx, now, governanceStore, resolveTradingDay, collectorRuntime.ResolveRecentTradingDatesAt)
+		},
+	})
+	if err != nil {
+		log.Printf("初始化 startup_recovery runner 失败: %v", err)
+		return
+	}
+	startupRecovery = runner
+}
+
+func collectStartupRecoverySnapshot(
+	ctx context.Context,
+	now time.Time,
+	store *collectorpkg.GovernanceStore,
+	tradingDayGate func(time.Time) (bool, error),
+	recentTradingDates func(context.Context, time.Time, int) ([]string, error),
+) (systemgov.StartupRecoverySnapshot, error) {
+	snapshot := systemgov.StartupRecoverySnapshot{}
+	openTasks, err := store.ListTasksByStatus(
+		collectorpkg.GovernanceTaskStatusOpen,
+		collectorpkg.GovernanceTaskStatusInProgress,
+		collectorpkg.GovernanceTaskStatusBlocked,
+		collectorpkg.GovernanceTaskStatusDegraded,
+		collectorpkg.GovernanceTaskStatusUnsupported,
+	)
+	if err != nil {
+		return snapshot, err
+	}
+	snapshot.OpenBacklogCount = len(openTasks)
+
+	recentRuns, err := store.ListRecentRuns(200)
+	if err != nil {
+		return snapshot, err
+	}
+	for _, run := range recentRuns {
+		if run.Status != collectorpkg.GovernanceRunStatusInterrupted {
+			continue
+		}
+		if startupReplaySupportedJob(collectorpkg.GovernanceJob(run.JobName)) {
+			snapshot.InterruptedRuns = append(snapshot.InterruptedRuns, run.RunID)
+		}
+	}
+
+	isTradingDay, err := tradingDayGate(now)
+	if err != nil || !isTradingDay {
+		return snapshot, err
+	}
+
+	for _, job := range []collectorpkg.GovernanceJob{
+		collectorpkg.GovernanceJobDailyOpenRefresh,
+		collectorpkg.GovernanceJobDailyCloseSync,
+		collectorpkg.GovernanceJobDailyAudit,
+	} {
+		targetWindow, due, err := governanceExpectedTargetWindow(ctx, job, now, tradingDayGate, recentTradingDates)
+		if err != nil {
+			return snapshot, err
+		}
+		if !due || targetWindow == "" || governanceRunExists(recentRuns, job, targetWindow) {
+			continue
+		}
+		snapshot.MissedJobs = append(snapshot.MissedJobs, systemgov.StartupRecoveryMissedJob{
+			Job:          job,
+			TargetWindow: targetWindow,
+		})
+	}
+
+	return snapshot, nil
+}
+
+func startupReplaySupportedJob(job collectorpkg.GovernanceJob) bool {
+	switch job {
+	case collectorpkg.GovernanceJobDailyOpenRefresh,
+		collectorpkg.GovernanceJobDailyCloseSync,
+		collectorpkg.GovernanceJobDailyAudit:
+		return true
+	default:
+		return false
+	}
+}
+
+func governanceExpectedTargetWindow(
+	ctx context.Context,
+	job collectorpkg.GovernanceJob,
+	now time.Time,
+	tradingDayGate func(time.Time) (bool, error),
+	recentTradingDates func(context.Context, time.Time, int) ([]string, error),
+) (string, bool, error) {
+	switch job {
+	case collectorpkg.GovernanceJobDailyOpenRefresh:
+		if now.Hour() < 9 {
+			return "", false, nil
+		}
+		return now.Format("20060102"), true, nil
+	case collectorpkg.GovernanceJobDailyCloseSync:
+		return governanceRecentTradingWindow(ctx, now, 18, tradingDayGate, recentTradingDates)
+	case collectorpkg.GovernanceJobDailyAudit:
+		return governanceRecentTradingWindow(ctx, now, 19, tradingDayGate, recentTradingDates)
+	default:
+		return "", false, nil
+	}
+}
+
+func governanceRecentTradingWindow(
+	ctx context.Context,
+	now time.Time,
+	hour int,
+	tradingDayGate func(time.Time) (bool, error),
+	recentTradingDates func(context.Context, time.Time, int) ([]string, error),
+) (string, bool, error) {
+	if recentTradingDates == nil {
+		return "", false, fmt.Errorf("recent trading date resolver unavailable")
+	}
+	anchor, err := mostRecentTradingScheduleAnchor(now, hour, tradingDayGate)
+	if err != nil {
+		return "", false, err
+	}
+	if anchor.IsZero() {
+		return "", false, nil
+	}
+	dates, err := recentTradingDates(ctx, anchor, 2)
+	if err != nil {
+		return "", false, err
+	}
+	if len(dates) == 0 {
+		return "", false, nil
+	}
+	return strings.Join(dates, ","), true, nil
+}
+
+func mostRecentTradingScheduleAnchor(
+	now time.Time,
+	hour int,
+	tradingDayGate func(time.Time) (bool, error),
+) (time.Time, error) {
+	anchor := mostRecentScheduleAnchor(now, hour)
+	for attempts := 0; attempts < 10; attempts++ {
+		tradingDay, err := tradingDayGate(anchor)
+		if err != nil {
+			return time.Time{}, err
+		}
+		if tradingDay {
+			return anchor, nil
+		}
+		anchor = anchor.Add(-24 * time.Hour)
+	}
+	return time.Time{}, nil
 }
 
 func collectorRequestMinInterval() time.Duration {
@@ -530,15 +863,8 @@ func runCollectorStartupSequence() {
 		log.Printf("collector: startup sequence skipped because collector is paused")
 		return
 	}
-	if err := runCollectorCatchUp("startup"); err != nil {
-		log.Printf("collector startup catch-up 失败: %v", err)
-	}
-	if isServiceShuttingDown() {
-		log.Printf("collector: shutdown in progress, skip missed maintenance after startup")
-		return
-	}
-	if err := runCollectorMissedMaintenance(); err != nil {
-		log.Printf("collector 漏跑补偿失败: %v", err)
+	if _, err := runStartupRecovery("startup"); err != nil {
+		log.Printf("startup_recovery 失败: %v", err)
 	}
 }
 
@@ -627,6 +953,124 @@ func runCollectorReconcile(trigger, date string) (*collectorpkg.ReconcileReport,
 	return report, nil
 }
 
+func runDailyOpenRefresh(trigger string) (*collectorpkg.GovernanceRunRecord, error) {
+	if isServiceShuttingDown() {
+		return nil, fmt.Errorf("service shutdown in progress, skip daily_open_refresh: trigger=%s", trigger)
+	}
+	if dailyOpenRefresh == nil {
+		return nil, fmt.Errorf("daily_open_refresh runner 未初始化")
+	}
+	run, err := dailyOpenRefresh.Run(context.Background(), trigger)
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("daily_open_refresh 完成: trigger=%s status=%s target=%s", trigger, run.Status, run.TargetWindow)
+	return run, nil
+}
+
+func runDailyCloseSync(trigger string) (*collectorpkg.GovernanceRunRecord, error) {
+	return runDailyCloseSyncWithDates(trigger, nil)
+}
+
+func runDailyCloseSyncWithDates(trigger string, targetDates []string) (*collectorpkg.GovernanceRunRecord, error) {
+	if isServiceShuttingDown() {
+		return nil, fmt.Errorf("service shutdown in progress, skip daily_close_sync: trigger=%s", trigger)
+	}
+	if dailyCloseSync == nil {
+		return nil, fmt.Errorf("daily_close_sync runner 未初始化")
+	}
+	var (
+		run *collectorpkg.GovernanceRunRecord
+		err error
+	)
+	if len(targetDates) > 0 {
+		run, err = dailyCloseSync.RunWithDates(context.Background(), trigger, targetDates)
+	} else {
+		run, err = dailyCloseSync.Run(context.Background(), trigger)
+	}
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("daily_close_sync 完成: trigger=%s status=%s target=%s", trigger, run.Status, run.TargetWindow)
+	return run, nil
+}
+
+func runDailyAudit(trigger string) (*collectorpkg.GovernanceRunRecord, error) {
+	return runDailyAuditWithDates(trigger, nil)
+}
+
+func runDailyAuditWithDates(trigger string, targetDates []string) (*collectorpkg.GovernanceRunRecord, error) {
+	if isServiceShuttingDown() {
+		return nil, fmt.Errorf("service shutdown in progress, skip daily_audit: trigger=%s", trigger)
+	}
+	if dailyAudit == nil {
+		return nil, fmt.Errorf("daily_audit runner 未初始化")
+	}
+	var (
+		run *collectorpkg.GovernanceRunRecord
+		err error
+	)
+	if len(targetDates) > 0 {
+		run, err = dailyAudit.RunWithDates(context.Background(), trigger, targetDates)
+	} else {
+		run, err = dailyAudit.Run(context.Background(), trigger)
+	}
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("daily_audit 完成: trigger=%s status=%s target=%s", trigger, run.Status, run.TargetWindow)
+	return run, nil
+}
+
+func runStartupRecovery(trigger string) (*collectorpkg.GovernanceRunRecord, error) {
+	if isServiceShuttingDown() {
+		return nil, fmt.Errorf("service shutdown in progress, skip startup_recovery: trigger=%s", trigger)
+	}
+	if startupRecovery == nil {
+		return nil, fmt.Errorf("startup_recovery runner 未初始化")
+	}
+	run, err := startupRecovery.Run(context.Background(), trigger)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := runGovernanceRepairWorker(trigger, 8); err != nil && !strings.Contains(err.Error(), "未初始化") {
+		return nil, err
+	}
+	log.Printf("startup_recovery 完成: trigger=%s status=%s target=%s", trigger, run.Status, run.TargetWindow)
+	return run, nil
+}
+
+func governanceRunExists(runs []collectorpkg.GovernanceRunRecord, job collectorpkg.GovernanceJob, targetWindow string) bool {
+	for _, run := range runs {
+		if run.JobName == string(job) && run.TargetWindow == targetWindow {
+			return true
+		}
+	}
+	return false
+}
+
+func auditResultFromReconcileReport(report *collectorpkg.ReconcileReport) *systemgov.AuditResult {
+	if report == nil {
+		return nil
+	}
+	result := &systemgov.AuditResult{
+		Date:       report.Date,
+		Status:     report.Status,
+		ReportPath: report.ReportPath,
+		Domains:    make([]systemgov.AuditDomainResult, 0, len(report.Domains)),
+	}
+	for _, domain := range report.Domains {
+		result.Domains = append(result.Domains, systemgov.AuditDomainResult{
+			Domain:          domain.Domain,
+			Status:          domain.Status,
+			RepairAttempted: domain.RepairAttempted,
+			Details:         domain.Details,
+			Errors:          append([]string(nil), domain.Errors...),
+		})
+	}
+	return result
+}
+
 func runCollectorMissedMaintenance() error {
 	if isServiceShuttingDown() {
 		return nil
@@ -692,15 +1136,26 @@ func handleCollectorStatus(w http.ResponseWriter, r *http.Request) {
 		errorResponse(w, "读取collector状态失败: "+err.Error())
 		return
 	}
-	successResponse(w, map[string]any{
+	payload := map[string]any{
 		"runtime": status,
 		"jobs":    collectorJobState.snapshot(),
 		"control": collectorControl.snapshot(),
 		"schedule": map[string]string{
-			"daily_full_sync": collectorDailySyncSpec,
-			"daily_reconcile": collectorDailyReconcileSpec,
+			"daily_open_refresh":  collectorDailyOpenRefreshSpec,
+			"daily_close_sync":    collectorDailySyncSpec,
+			"daily_audit":         collectorDailyReconcileSpec,
+			"deep_audit_backfill": collectorDeepAuditBackfillSchedule(),
 		},
-	})
+	}
+	if governanceStore != nil {
+		governance, err := collectorRuntime.UnifiedGovernanceStatus(governanceStore, governancePaths)
+		if err != nil {
+			log.Printf("读取 governance 状态失败: %v", err)
+		} else {
+			payload["governance"] = governance
+		}
+	}
+	successResponse(w, payload)
 }
 
 func handleCollectorReconcile(w http.ResponseWriter, r *http.Request) {
@@ -1653,6 +2108,7 @@ func main() {
 	http.HandleFunc("/api/v1/prof-finance/cross-section", handleProfFinanceCrossSection)
 	http.HandleFunc("/api/f10/categories", handleGetF10Categories)
 	http.HandleFunc("/api/f10/content", handleGetF10Content)
+	http.HandleFunc("/api/collector/deep-audit", handleCollectorDeepAudit)
 	http.HandleFunc("/api/codes", handleGetCodes)
 	http.HandleFunc("/api/batch-quote", handleBatchQuote)
 	http.HandleFunc("/api/kline-history", handleGetKlineHistory)
@@ -1674,6 +2130,7 @@ func main() {
 	http.HandleFunc("/api/collector/reconcile", handleCollectorReconcile)
 	http.HandleFunc("/api/collector/kline-gap-cleanup", handleCollectorKlineGapCleanup)
 	http.HandleFunc("/api/collector/kline-gap-reconcile", handleCollectorKlineGapReconcile)
+	http.HandleFunc("/api/collector/kline-gap-downgrade", handleCollectorKlineGapDowngrade)
 	http.HandleFunc("/api/etf", handleGetETFList)
 	http.HandleFunc("/api/trade-history", handleGetTradeHistory)
 	http.HandleFunc("/api/order-history", handleGetOrderHistory)
@@ -1734,6 +2191,7 @@ func main() {
 		cancel()
 
 		shutdownCollectorRuntime()
+		shutdownGovernanceStore()
 	}
 }
 

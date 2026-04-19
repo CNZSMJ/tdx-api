@@ -107,7 +107,6 @@ func NewBlockService(store *Store, provider Provider, cfg BlockConfig) (*BlockSe
 	if err := svc.loadCacheFromDB(); err != nil {
 		log.Printf("block service: cold start, DB not ready yet: %v", err)
 	}
-	svc.startAutoRefresh()
 	return svc, nil
 }
 

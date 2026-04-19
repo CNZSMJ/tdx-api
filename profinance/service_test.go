@@ -269,6 +269,166 @@ func TestPrefetchAllDownloadsHistoricalZipsAndSkipsFuturePlaceholders(t *testing
 	}
 }
 
+func TestSyncIfNeededSkipsWhenArtifactsAndServingWatermarkAreCurrent(t *testing.T) {
+	var (
+		listRequests int32
+		zipRequests  int32
+	)
+	listBody := "gpcw20260331.zip,newhash,100\n"
+	reportZip := buildZIPFixture(t, "gpcw20260331.dat", buildDATFixture(t, "600000", map[int]float32{
+		fieldBookValuePerShare: 13.5,
+		fieldTotalShares:       2000000000,
+		fieldFloatAShares:      1500000000,
+		fieldNetProfitTTM:      1500000000,
+		fieldRevenueTTM:        500000,
+		fieldWeightedROE:       12.1,
+	}))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/gpcw.txt":
+			atomic.AddInt32(&listRequests, 1)
+			_, _ = w.Write([]byte(listBody))
+		case "/gpcw20260331.zip":
+			atomic.AddInt32(&zipRequests, 1)
+			w.Header().Set("Content-Type", "application/zip")
+			_, _ = w.Write(reportZip)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	now := time.Date(2026, 4, 18, 9, 0, 0, 0, time.UTC)
+	service := NewService(t.TempDir(), Config{
+		BaseURL:             server.URL,
+		HTTPClient:          server.Client(),
+		DisableAutoPrefetch: true,
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	if err := service.Sync(context.Background()); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if atomic.LoadInt32(&zipRequests) != 1 {
+		t.Fatalf("zip requests after initial sync = %d, want 1", atomic.LoadInt32(&zipRequests))
+	}
+
+	synced, reason, err := service.SyncIfNeeded(context.Background())
+	if err != nil {
+		t.Fatalf("SyncIfNeeded: %v", err)
+	}
+	if synced {
+		t.Fatalf("SyncIfNeeded synced=%v, want false", synced)
+	}
+	if reason != "up_to_date" {
+		t.Fatalf("SyncIfNeeded reason = %s, want up_to_date", reason)
+	}
+	if atomic.LoadInt32(&zipRequests) != 1 {
+		t.Fatalf("zip requests after SyncIfNeeded = %d, want still 1", atomic.LoadInt32(&zipRequests))
+	}
+}
+
+func TestSyncIfNeededRunsWhenVisibleReportAdvances(t *testing.T) {
+	var (
+		listBody    = "gpcw20251231.zip,oldhash,100\n"
+		zipRequests int32
+	)
+	fy2025 := buildZIPFixture(t, "gpcw20251231.dat", buildDATFixture(t, "600000", map[int]float32{
+		fieldBookValuePerShare: 12.0,
+		fieldTotalShares:       2000000000,
+		fieldFloatAShares:      1500000000,
+		fieldNetProfitTTM:      1230000000,
+		fieldRevenueTTM:        450000,
+		fieldWeightedROE:       11.2,
+	}))
+	q12026 := buildZIPFixture(t, "gpcw20260331.dat", buildDATFixture(t, "600000", map[int]float32{
+		fieldBookValuePerShare: 13.5,
+		fieldTotalShares:       2000000000,
+		fieldFloatAShares:      1500000000,
+		fieldNetProfitTTM:      1500000000,
+		fieldRevenueTTM:        500000,
+		fieldWeightedROE:       12.1,
+	}))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/gpcw.txt":
+			_, _ = w.Write([]byte(listBody))
+		case "/gpcw20251231.zip":
+			atomic.AddInt32(&zipRequests, 1)
+			w.Header().Set("Content-Type", "application/zip")
+			_, _ = w.Write(fy2025)
+		case "/gpcw20260331.zip":
+			atomic.AddInt32(&zipRequests, 1)
+			w.Header().Set("Content-Type", "application/zip")
+			_, _ = w.Write(q12026)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	now := time.Date(2026, 4, 18, 9, 0, 0, 0, time.UTC)
+	service := NewService(t.TempDir(), Config{
+		BaseURL:             server.URL,
+		HTTPClient:          server.Client(),
+		DisableAutoPrefetch: true,
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	if err := service.Sync(context.Background()); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if atomic.LoadInt32(&zipRequests) != 1 {
+		t.Fatalf("zip requests after initial sync = %d, want 1", atomic.LoadInt32(&zipRequests))
+	}
+
+	listBody = "gpcw20260331.zip,newhash,100\n" + listBody
+	synced, reason, err := service.SyncIfNeeded(context.Background())
+	if err != nil {
+		t.Fatalf("SyncIfNeeded: %v", err)
+	}
+	if !synced {
+		t.Fatalf("SyncIfNeeded synced=%v, want true", synced)
+	}
+	if reason != "source_report_advanced" {
+		t.Fatalf("SyncIfNeeded reason = %s, want source_report_advanced", reason)
+	}
+	if atomic.LoadInt32(&zipRequests) != 2 {
+		t.Fatalf("zip requests after report advance = %d, want 2", atomic.LoadInt32(&zipRequests))
+	}
+}
+
+func TestNewServiceDoesNotStartDailyAutoPrefetchCron(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/gpcw.txt":
+			_, _ = w.Write([]byte(""))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	service := NewService(t.TempDir(), Config{
+		BaseURL:    server.URL,
+		HTTPClient: server.Client(),
+		Now: func() time.Time {
+			return time.Date(2026, 4, 19, 9, 0, 0, 0, time.Local)
+		},
+	})
+	defer service.Close()
+
+	if service.task != nil {
+		t.Fatalf("expected constructor not to register daily auto-prefetch cron")
+	}
+}
+
 func TestSyncPersistsRawFactsServingPayloadAndWatermark(t *testing.T) {
 	listBody := "gpcw20251231.zip,oldhash,100\n"
 	reportZip := buildZIPFixture(t, "gpcw20251231.dat", buildDATFixture(t, "600000", map[int]float32{

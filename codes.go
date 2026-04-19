@@ -122,21 +122,6 @@ func NewCodes(c *Client, db *xorm.Engine) (*Codes, error) {
 	}
 	cc.indexes, cc.indexFrom = cloneIndexModels(defaultIndexModels), "builtin"
 
-	{ //设置定时器,每天早上9点更新数据
-		task := cron.New(cron.WithSeconds())
-		task.AddFunc("10 0 9 * * *", func() {
-			for i := 0; i < 3; i++ {
-				err := cc.Update()
-				if err == nil {
-					return
-				}
-				logs.Err(err)
-				<-time.After(time.Minute * 5)
-			}
-		})
-		task.Start()
-	}
-
 	{ //判断是否更新过,更新过则不更新
 		now := time.Now()
 		node := time.Date(now.Year(), now.Month(), now.Day(), 9, 0, 0, 0, time.Local)
@@ -184,6 +169,7 @@ type Codes struct {
 	exchanges map[string][]string   //交易所缓存
 	indexes   []*CodeModel          //核心指数缓存
 	indexFrom string                //指数来源
+	task      *cron.Cron
 }
 
 // GetName 获取股票名称

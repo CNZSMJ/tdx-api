@@ -9,9 +9,12 @@ import (
 )
 
 type fundamentalsStubProvider struct {
-	finance    *FinanceSnapshot
-	categories []F10Category
-	contents   map[string]string
+	finance          *FinanceSnapshot
+	categories       []F10Category
+	contents         map[string]string
+	financeCalls     int
+	f10CategoryCalls int
+	f10ContentCalls  int
 }
 
 func (s *fundamentalsStubProvider) Instruments(ctx context.Context, query InstrumentQuery) ([]Instrument, error) {
@@ -47,14 +50,17 @@ func (s *fundamentalsStubProvider) OrderHistory(ctx context.Context, query Order
 }
 
 func (s *fundamentalsStubProvider) Finance(ctx context.Context, code string) (*FinanceSnapshot, error) {
+	s.financeCalls++
 	return s.finance, nil
 }
 
 func (s *fundamentalsStubProvider) F10Categories(ctx context.Context, code string) ([]F10Category, error) {
+	s.f10CategoryCalls++
 	return s.categories, nil
 }
 
 func (s *fundamentalsStubProvider) F10Content(ctx context.Context, query F10ContentQuery) (*F10Content, error) {
+	s.f10ContentCalls++
 	return &F10Content{
 		Code:     query.Code,
 		Filename: query.Filename,
@@ -132,5 +138,92 @@ func TestFundamentalsRefreshFinanceAndF10AreReplaySafe(t *testing.T) {
 	}
 	if len(contentRows) != 1 || contentRows[0].ContentHash == "" {
 		t.Fatalf("expected one hashed F10 content row, got %+v", contentRows)
+	}
+}
+
+func TestFundamentalsRefreshFinanceIfUpdatedSkipsUnchangedSnapshots(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := OpenStore(filepath.Join(tmp, "collector.db"))
+	if err != nil {
+		t.Fatalf("open collector store: %v", err)
+	}
+	defer store.Close()
+
+	provider := &fundamentalsStubProvider{
+		finance: &FinanceSnapshot{
+			Code:        "sh600000",
+			UpdatedDate: "20260401",
+		},
+	}
+	service, err := NewFundamentalsService(store, provider, FundamentalsConfig{
+		BaseDir: filepath.Join(tmp, "fundamentals"),
+	})
+	if err != nil {
+		t.Fatalf("new fundamentals service: %v", err)
+	}
+
+	changed, updatedDate, err := service.RefreshFinanceIfUpdated(context.Background(), "sh600000")
+	if err != nil {
+		t.Fatalf("refresh finance if updated first run: %v", err)
+	}
+	if !changed || updatedDate != "20260401" {
+		t.Fatalf("first refresh changed=%v updated_date=%s, want true/20260401", changed, updatedDate)
+	}
+
+	changed, updatedDate, err = service.RefreshFinanceIfUpdated(context.Background(), "sh600000")
+	if err != nil {
+		t.Fatalf("refresh finance if updated second run: %v", err)
+	}
+	if changed || updatedDate != "20260401" {
+		t.Fatalf("second refresh changed=%v updated_date=%s, want false/20260401", changed, updatedDate)
+	}
+	if provider.financeCalls != 2 {
+		t.Fatalf("finance calls = %d, want 2", provider.financeCalls)
+	}
+}
+
+func TestFundamentalsSyncF10IfChangedSkipsUnchangedContentFetch(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := OpenStore(filepath.Join(tmp, "collector.db"))
+	if err != nil {
+		t.Fatalf("open collector store: %v", err)
+	}
+	defer store.Close()
+
+	provider := &fundamentalsStubProvider{
+		categories: []F10Category{
+			{Code: "sh600000", Name: "公司概况", Filename: "000001.txt", Start: 1, Length: 10},
+		},
+		contents: map[string]string{
+			"000001.txt": "平安银行股份有限公司",
+		},
+	}
+	service, err := NewFundamentalsService(store, provider, FundamentalsConfig{
+		BaseDir: filepath.Join(tmp, "fundamentals"),
+	})
+	if err != nil {
+		t.Fatalf("new fundamentals service: %v", err)
+	}
+
+	changed, signature, err := service.SyncF10IfChanged(context.Background(), "sh600000")
+	if err != nil {
+		t.Fatalf("sync f10 if changed first run: %v", err)
+	}
+	if !changed || signature == "" {
+		t.Fatalf("first sync changed=%v signature=%q, want true/non-empty", changed, signature)
+	}
+
+	changed, signature2, err := service.SyncF10IfChanged(context.Background(), "sh600000")
+	if err != nil {
+		t.Fatalf("sync f10 if changed second run: %v", err)
+	}
+	if changed || signature2 != signature {
+		t.Fatalf("second sync changed=%v signature=%q, want false/%q", changed, signature2, signature)
+	}
+	if provider.f10CategoryCalls != 2 {
+		t.Fatalf("f10 category calls = %d, want 2", provider.f10CategoryCalls)
+	}
+	if provider.f10ContentCalls != 1 {
+		t.Fatalf("f10 content calls = %d, want 1", provider.f10ContentCalls)
 	}
 }
