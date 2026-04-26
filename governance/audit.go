@@ -207,7 +207,7 @@ func classifyAuditTaskStatus(domain AuditDomainResult) collectorpkg.GovernanceTa
 	case "unsupported_historical_rebuild":
 		return collectorpkg.GovernanceTaskStatusUnsupported
 	case "acknowledged":
-		return collectorpkg.GovernanceTaskStatusDegraded
+		return collectorpkg.GovernanceTaskStatusClosed
 	case "reconciled":
 		if domain.RepairAttempted {
 			return collectorpkg.GovernanceTaskStatusRepaired

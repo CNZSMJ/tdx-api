@@ -205,7 +205,7 @@ func (r *Runtime) buildDomainSnapshot(domain string, now time.Time) (*DomainHeal
 		freshness = "stale"
 		coverage = "unknown"
 	}
-	if openGaps > 0 || degradedGaps > 0 {
+	if openGaps > 0 {
 		status = "degraded"
 		coverage = "gap_open"
 	}

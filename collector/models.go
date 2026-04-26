@@ -1,6 +1,10 @@
 package collector
 
-import "time"
+import (
+	"time"
+
+	"xorm.io/xorm/schemas"
+)
 
 const SchemaVersionCurrent = 1
 
@@ -97,6 +101,12 @@ type CollectCursorRecord struct {
 
 func (*CollectCursorRecord) TableName() string {
 	return "collector_cursor"
+}
+
+func (*CollectCursorRecord) TableIndices() []*schemas.Index {
+	index := schemas.NewIndex("lookup", schemas.IndexType)
+	index.AddColumn("Domain", "AssetType", "Instrument", "Period")
+	return []*schemas.Index{index}
 }
 
 type CollectGapRecord struct {

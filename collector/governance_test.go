@@ -674,6 +674,77 @@ func TestRuntimeUnifiedGovernanceStatusProjectsLegacyRunsAndDomains(t *testing.T
 	}
 }
 
+func TestBuildDomainSnapshotDoesNotTreatDegradedGapsAsOpenCoverage(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := OpenStore(filepath.Join(tmp, "collector.db"))
+	if err != nil {
+		t.Fatalf("open collector store: %v", err)
+	}
+	defer store.Close()
+
+	runtime, err := NewRuntime(store, &blockStubProvider{}, RuntimeConfig{
+		Kline: KlineConfig{BaseDir: filepath.Join(tmp, "kline")},
+	})
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+	defer runtime.Close()
+
+	if err := store.UpsertCollectCursor(&CollectCursorRecord{
+		Domain:     "kline",
+		AssetType:  string(AssetTypeETF),
+		Instrument: "sz159013",
+		Period:     "minute",
+		Cursor:     "1777014000",
+	}); err != nil {
+		t.Fatalf("seed kline cursor: %v", err)
+	}
+	if err := store.UpsertCollectGap(&CollectGapRecord{
+		Domain:     "kline",
+		AssetType:  string(AssetTypeETF),
+		Instrument: "sz159013",
+		Period:     "minute",
+		StartKey:   "1775525520",
+		EndKey:     "1775631600",
+		Status:     CollectGapStatusDegraded,
+		Reason:     "provider-unavailable terminal exception",
+	}); err != nil {
+		t.Fatalf("seed degraded kline gap: %v", err)
+	}
+
+	snapshot, err := runtime.buildDomainSnapshot("kline", time.Now())
+	if err != nil {
+		t.Fatalf("build snapshot: %v", err)
+	}
+	if snapshot.Status != "healthy" || snapshot.Coverage != "covered" {
+		t.Fatalf("snapshot with only degraded gaps = status %s coverage %s, want healthy covered", snapshot.Status, snapshot.Coverage)
+	}
+	if !strings.Contains(snapshot.Summary, "open_gaps=0 degraded_gaps=1") {
+		t.Fatalf("snapshot summary = %q, want degraded gap counted separately", snapshot.Summary)
+	}
+
+	if err := store.UpsertCollectGap(&CollectGapRecord{
+		Domain:     "kline",
+		AssetType:  string(AssetTypeETF),
+		Instrument: "sz159014",
+		Period:     "minute",
+		StartKey:   "1775525520",
+		EndKey:     "1775631600",
+		Status:     CollectGapStatusOpen,
+		Reason:     "repair pending",
+	}); err != nil {
+		t.Fatalf("seed open kline gap: %v", err)
+	}
+
+	snapshot, err = runtime.buildDomainSnapshot("kline", time.Now())
+	if err != nil {
+		t.Fatalf("build snapshot with open gap: %v", err)
+	}
+	if snapshot.Status != "degraded" || snapshot.Coverage != "gap_open" {
+		t.Fatalf("snapshot with open gap = status %s coverage %s, want degraded gap_open", snapshot.Status, snapshot.Coverage)
+	}
+}
+
 func TestBlockServiceConstructorDoesNotStartAutoRefreshCron(t *testing.T) {
 	tmp := t.TempDir()
 	store, err := OpenStore(filepath.Join(tmp, "collector.db"))

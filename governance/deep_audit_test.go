@@ -74,8 +74,8 @@ func TestDeepAuditBackfillStoresHistoricalEvidenceAndTasks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list tasks: %v", err)
 	}
-	if len(tasks) != 2 {
-		t.Fatalf("task count = %d, want 2", len(tasks))
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want 1", len(tasks))
 	}
 	statusByDomain := make(map[string]collectorpkg.GovernanceTaskStatus, len(tasks))
 	for _, task := range tasks {
@@ -84,7 +84,7 @@ func TestDeepAuditBackfillStoresHistoricalEvidenceAndTasks(t *testing.T) {
 	if statusByDomain["kline"] != collectorpkg.GovernanceTaskStatusOpen {
 		t.Fatalf("kline task status = %s, want open", statusByDomain["kline"])
 	}
-	if statusByDomain["collector_gap_degraded"] != collectorpkg.GovernanceTaskStatusDegraded {
-		t.Fatalf("collector_gap_degraded status = %s, want degraded", statusByDomain["collector_gap_degraded"])
+	if _, ok := statusByDomain["collector_gap_degraded"]; ok {
+		t.Fatalf("collector_gap_degraded acknowledged entry should not create a backlog task")
 	}
 }

@@ -12,18 +12,19 @@ import (
 	_ "github.com/glebarez/go-sqlite"
 )
 
-func TestParseConfigUsesTDXDataDirAndSafeDefaults(t *testing.T) {
+func TestParseConfigUsesTDXDataDirAndLifecycleDefaults(t *testing.T) {
 	stateDir := filepath.Join(t.TempDir(), "state")
 	t.Setenv("TDX_DATA_DIR", stateDir)
 	t.Setenv("TDX_LIFECYCLE_ENABLE", "")
 	t.Setenv("TDX_LIFECYCLE_ALLOW_PRUNE", "")
+	t.Setenv("TDX_LIFECYCLE_MAX_CANDIDATES", "")
 
-	cfg, err := parseConfig([]string{"--enable", "--allow-prune", "--min-verified-segments", "1"}, &bytes.Buffer{})
+	cfg, err := parseConfig([]string{"--min-verified-segments", "1"}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("parse config: %v", err)
 	}
 	if !cfg.Enable || !cfg.AllowPrune {
-		t.Fatalf("expected explicit enable and prune flags: %+v", cfg)
+		t.Fatalf("expected lifecycle and hot pruning enabled by default: %+v", cfg)
 	}
 	if cfg.DataDir != stateDir {
 		t.Fatalf("data dir should come from env before flags are applied, got %q", cfg.DataDir)
@@ -31,7 +32,7 @@ func TestParseConfigUsesTDXDataDirAndSafeDefaults(t *testing.T) {
 	if !strings.HasSuffix(cfg.ManifestPath, filepath.Join("state", "cold_manifest.db")) {
 		t.Fatalf("manifest default = %q", cfg.ManifestPath)
 	}
-	if cfg.MinVerifiedSegments != 1 || cfg.MaxCandidates != 1 || cfg.MaxArchiveDays != 366 {
+	if cfg.MinVerifiedSegments != 1 || cfg.MaxCandidates != 400 || cfg.MaxArchiveDays != 366 {
 		t.Fatalf("unexpected lifecycle defaults: %+v", cfg)
 	}
 }

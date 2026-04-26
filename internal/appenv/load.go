@@ -3,6 +3,7 @@ package appenv
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/joho/godotenv"
@@ -16,6 +17,9 @@ func init() {
 
 func EnsureLoaded() {
 	loadOnce.Do(func() {
+		if runningUnderGoTest() && strings.TrimSpace(os.Getenv("TDX_TEST_LOAD_DOTENV")) != "1" {
+			return
+		}
 		if envPath, ok := findDotEnv(); ok {
 			_ = godotenv.Load(envPath)
 			normalizeRelativeTDXDataDir(envPath)
@@ -41,4 +45,8 @@ func findDotEnv() (string, bool) {
 		}
 		dir = parent
 	}
+}
+
+func runningUnderGoTest() bool {
+	return strings.HasSuffix(os.Args[0], ".test")
 }

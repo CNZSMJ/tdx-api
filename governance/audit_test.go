@@ -109,8 +109,8 @@ func TestDailyAuditStoresEvidenceAndClassifiedTasks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list tasks: %v", err)
 	}
-	if len(tasks) != 4 {
-		t.Fatalf("task count = %d, want 4", len(tasks))
+	if len(tasks) != 3 {
+		t.Fatalf("task count = %d, want 3", len(tasks))
 	}
 
 	statusByDomain := make(map[string]collectorpkg.GovernanceTaskStatus, len(tasks))
@@ -120,8 +120,8 @@ func TestDailyAuditStoresEvidenceAndClassifiedTasks(t *testing.T) {
 	if statusByDomain["kline"] != collectorpkg.GovernanceTaskStatusOpen {
 		t.Fatalf("kline task status = %s, want open", statusByDomain["kline"])
 	}
-	if statusByDomain["collector_gap_degraded"] != collectorpkg.GovernanceTaskStatusDegraded {
-		t.Fatalf("collector_gap_degraded status = %s, want degraded", statusByDomain["collector_gap_degraded"])
+	if _, ok := statusByDomain["collector_gap_degraded"]; ok {
+		t.Fatalf("collector_gap_degraded acknowledged entry should not create a backlog task")
 	}
 	if statusByDomain["quote_snapshot"] != collectorpkg.GovernanceTaskStatusUnsupported {
 		t.Fatalf("quote_snapshot status = %s, want unsupported", statusByDomain["quote_snapshot"])

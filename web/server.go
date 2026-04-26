@@ -581,7 +581,7 @@ func initCollectorRuntime() {
 		if schedule := collectorLifecycleMaintenanceSchedule(); schedule != "" {
 			if _, err := manager.Cron.AddFunc(schedule, func() {
 				go func() {
-					if _, err := runDataLifecycleMaintenance("scheduled-lifecycle-maintenance"); err != nil {
+					if err := runScheduledDataLifecycleMaintenance("scheduled-lifecycle-maintenance"); err != nil {
 						log.Printf("data_lifecycle_maintenance 失败: %v", err)
 					}
 				}()

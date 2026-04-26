@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -32,8 +33,8 @@ func TestRunDataLifecycleMaintenanceArchivesAndPrunesTempHotStore(t *testing.T) 
 	}
 	defer store.Close()
 	governanceStore = store
-	t.Setenv("TDX_LIFECYCLE_ENABLE", "1")
-	t.Setenv("TDX_LIFECYCLE_ALLOW_PRUNE", "1")
+	t.Setenv("TDX_LIFECYCLE_ENABLE", "")
+	t.Setenv("TDX_LIFECYCLE_ALLOW_PRUNE", "")
 	t.Setenv("TDX_LIFECYCLE_ALLOW_PRUNE_MIN_VERIFIED_SEGMENTS", "1")
 	t.Setenv("TDX_LIFECYCLE_MAX_CANDIDATES", "1")
 	t.Setenv("TDX_LIFECYCLE_MIN_FREE_BYTES", "1")
@@ -64,6 +65,43 @@ func TestRunDataLifecycleMaintenanceArchivesAndPrunesTempHotStore(t *testing.T) 
 	}
 	if rows != 1 {
 		t.Fatalf("hot rows = %d, want 1", rows)
+	}
+}
+
+func TestLifecycleMaintenanceDefaultCandidateBudgetMatchesSteadyState(t *testing.T) {
+	t.Setenv("TDX_LIFECYCLE_MAX_CANDIDATES", "")
+
+	if got := lifecycleEnvInt("TDX_LIFECYCLE_MAX_CANDIDATES", 400); got != 400 {
+		t.Fatalf("default lifecycle candidates = %d, want 400", got)
+	}
+}
+
+func TestRunDataLifecycleMaintenanceWithRetryRetriesLockConflicts(t *testing.T) {
+	attempts := 0
+	delays := make([]time.Duration, 0, 2)
+	run := func(trigger string) (*collectorpkg.GovernanceRunRecord, error) {
+		attempts++
+		if attempts < 3 {
+			return nil, fmt.Errorf("%w: test lock", collectorpkg.ErrGovernanceLockHeld)
+		}
+		return &collectorpkg.GovernanceRunRecord{}, nil
+	}
+	after := func(delay time.Duration) <-chan time.Time {
+		delays = append(delays, delay)
+		ch := make(chan time.Time, 1)
+		ch <- time.Now()
+		return ch
+	}
+
+	err := runDataLifecycleMaintenanceWithRetry("scheduled-test", run, []time.Duration{time.Minute, 2 * time.Minute}, after)
+	if err != nil {
+		t.Fatalf("retry lifecycle maintenance: %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("attempts = %d, want 3", attempts)
+	}
+	if len(delays) != 2 || delays[0] != time.Minute || delays[1] != 2*time.Minute {
+		t.Fatalf("retry delays = %v, want [1m 2m]", delays)
 	}
 }
 

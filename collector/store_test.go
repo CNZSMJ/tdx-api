@@ -2,6 +2,7 @@ package collector
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -39,6 +40,35 @@ func TestStoreEnsureSchema(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("expected one schema version row, got %d", count)
+	}
+}
+
+func TestStoreEnsureSchemaCreatesCursorLookupIndex(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(filepath.Join(dir, "collector.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	indexRows, err := store.engine.QueryString(`SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND name = ?`, "collector_cursor", "IDX_collector_cursor_lookup")
+	if err != nil {
+		t.Fatalf("check cursor lookup index: %v", err)
+	}
+	if len(indexRows) != 1 {
+		t.Fatalf("expected collector cursor lookup index")
+	}
+
+	planRows, err := store.engine.QueryString(`EXPLAIN QUERY PLAN SELECT * FROM collector_cursor WHERE Domain = ? AND AssetType = ? AND Instrument = ? AND Period = ?`, "kline", "stock", "sh600000", "day")
+	if err != nil {
+		t.Fatalf("explain cursor lookup: %v", err)
+	}
+	plan := ""
+	for _, row := range planRows {
+		plan += row["detail"]
+	}
+	if !strings.Contains(plan, "IDX_collector_cursor_lookup") {
+		t.Fatalf("query plan = %q, want IDX_collector_cursor_lookup", plan)
 	}
 }
 

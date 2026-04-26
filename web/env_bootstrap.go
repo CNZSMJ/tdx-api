@@ -18,6 +18,9 @@ var envLoadOnce sync.Once
 
 func ensureDotEnvLoaded() {
 	envLoadOnce.Do(func() {
+		if runningUnderGoTest() && strings.TrimSpace(os.Getenv("TDX_TEST_LOAD_DOTENV")) != "1" {
+			return
+		}
 		cwd, err := os.Getwd()
 		if err != nil {
 			return
@@ -54,4 +57,8 @@ func normalizeRelativeEnvPath(envKey, envPath string) {
 	}
 	absolute := filepath.Clean(filepath.Join(filepath.Dir(envPath), value))
 	_ = os.Setenv(envKey, absolute)
+}
+
+func runningUnderGoTest() bool {
+	return strings.HasSuffix(os.Args[0], ".test")
 }
