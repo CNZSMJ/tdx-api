@@ -214,20 +214,8 @@ func (s *MetadataService) RefreshWorkdays(ctx context.Context) error {
 			return nil, fmt.Errorf("workday staging count mismatch: got %d want %d", count, len(staged))
 		}
 
-		if _, err := session.Exec("DELETE FROM workday"); err != nil {
+		if err := publishWorkdays(session, staged); err != nil {
 			return nil, err
-		}
-		if len(staged) > 0 {
-			published := make([]any, 0, len(staged))
-			for _, item := range staged {
-				published = append(published, &MetadataWorkdayRecord{
-					Unix: item.Unix,
-					Date: item.Date,
-				})
-			}
-			if _, err := session.Insert(published...); err != nil {
-				return nil, err
-			}
 		}
 
 		if _, err := session.Exec("DELETE FROM collector_workday_staging"); err != nil {
@@ -259,6 +247,36 @@ func (s *MetadataService) RefreshWorkdays(ctx context.Context) error {
 		CommandText: "metadata publish transaction",
 		OutputText:  fmt.Sprintf("published_workdays=%d", len(staged)),
 	})
+}
+
+func publishWorkdays(session *xorm.Session, staged []*MetadataWorkdayStagingRecord) error {
+	if session == nil {
+		return errors.New("publish workdays requires session")
+	}
+	if len(staged) == 0 {
+		if _, err := session.Exec("DELETE FROM workday"); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	for _, item := range staged {
+		if _, err := session.Exec("INSERT OR REPLACE INTO workday (`Unix`, `Date`) VALUES (?, ?)", item.Unix, item.Date); err != nil {
+			return err
+		}
+	}
+	if _, err := session.Exec("DELETE FROM workday WHERE NOT EXISTS (SELECT 1 FROM collector_workday_staging s WHERE s.`Date` = workday.`Date` AND s.`Unix` = workday.`Unix`)"); err != nil {
+		return err
+	}
+
+	count, err := session.Table(new(MetadataWorkdayRecord)).Count()
+	if err != nil {
+		return err
+	}
+	if count != int64(len(staged)) {
+		return fmt.Errorf("workday publish count mismatch: got %d want %d", count, len(staged))
+	}
+	return nil
 }
 
 func openMetadataEngine(filename string) (*xorm.Engine, error) {
@@ -315,6 +333,7 @@ func validateTradingDays(items []TradingDay) ([]*MetadataWorkdayStagingRecord, e
 		return nil, errors.New("trading day universe must not be empty")
 	}
 	seen := make(map[string]struct{}, len(items))
+	seenUnix := make(map[int64]struct{}, len(items))
 	rows := make([]*MetadataWorkdayStagingRecord, 0, len(items))
 	var last int64
 	for _, item := range items {
@@ -326,6 +345,10 @@ func validateTradingDays(items []TradingDay) ([]*MetadataWorkdayStagingRecord, e
 		}
 		seen[item.Date] = struct{}{}
 		unix := item.Time.Unix()
+		if _, ok := seenUnix[unix]; ok {
+			return nil, fmt.Errorf("duplicate trading day unix in staged workday set: %d", unix)
+		}
+		seenUnix[unix] = struct{}{}
 		if last > 0 && unix < last {
 			return nil, fmt.Errorf("trading days are not monotonic: %s", item.Date)
 		}

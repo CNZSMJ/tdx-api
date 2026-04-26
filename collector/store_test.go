@@ -196,3 +196,53 @@ func TestStoreSeedLiveCaptureCoverageStarts(t *testing.T) {
 		t.Fatalf("unexpected etf live coverage-start cursor: %#v", etfStart)
 	}
 }
+
+func TestStoreUpsertCollectGapPreservesDegradedStatus(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(filepath.Join(dir, "collector.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	if err := store.UpsertCollectGap(&CollectGapRecord{
+		Domain:     "kline",
+		AssetType:  string(AssetTypeETF),
+		Instrument: "sh513623",
+		Period:     string(Period15Minute),
+		StartKey:   "1",
+		EndKey:     "2",
+		Status:     CollectGapStatusDegraded,
+		Reason:     "manual downgrade",
+	}); err != nil {
+		t.Fatalf("seed degraded gap: %v", err)
+	}
+
+	if err := store.UpsertCollectGap(&CollectGapRecord{
+		Domain:     "kline",
+		AssetType:  string(AssetTypeETF),
+		Instrument: "sh513623",
+		Period:     string(Period15Minute),
+		StartKey:   "1",
+		EndKey:     "2",
+		Status:     CollectGapStatusOpen,
+		Reason:     "detected during kline replay",
+	}); err != nil {
+		t.Fatalf("rediscover degraded gap: %v", err)
+	}
+
+	record := new(CollectGapRecord)
+	has, err := store.engine.Where("Domain = ? AND Instrument = ?", "kline", "sh513623").Get(record)
+	if err != nil {
+		t.Fatalf("load gap: %v", err)
+	}
+	if !has {
+		t.Fatalf("expected preserved degraded gap")
+	}
+	if record.Status != CollectGapStatusDegraded {
+		t.Fatalf("gap status = %s, want degraded", record.Status)
+	}
+	if record.Reason == "" || record.Reason == "detected during kline replay" {
+		t.Fatalf("expected preserved downgrade reason, got %q", record.Reason)
+	}
+}

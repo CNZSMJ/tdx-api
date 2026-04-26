@@ -106,7 +106,11 @@ func (r *DailyAuditRunner) run(ctx context.Context, trigger string, targetDates 
 		run.EndedAt = r.cfg.Now()
 		switch {
 		case resultErr != nil:
-			run.Status = collectorpkg.GovernanceRunStatusFailed
+			if interruptedGovernanceError(resultErr) {
+				run.Status = collectorpkg.GovernanceRunStatusInterrupted
+			} else {
+				run.Status = collectorpkg.GovernanceRunStatusFailed
+			}
 			run.Reason = resultErr.Error()
 		case partial:
 			run.Status = collectorpkg.GovernanceRunStatusPartial
@@ -138,6 +142,10 @@ func (r *DailyAuditRunner) run(ctx context.Context, trigger string, targetDates 
 		}
 	}
 	run.TargetWindow = strings.Join(targetDates, ",")
+	if err := r.cfg.Store.UpdateRun(run); err != nil {
+		resultErr = err
+		return nil, err
+	}
 
 	for _, date := range targetDates {
 		result, err := r.cfg.Execute(ctx, date, trigger)

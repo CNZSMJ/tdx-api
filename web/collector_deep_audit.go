@@ -44,10 +44,20 @@ func runDeepAuditBackfill(trigger string, req systemgov.DeepAuditBackfillRequest
 	if isServiceShuttingDown() {
 		return nil, fmt.Errorf("service shutdown in progress, skip deep_audit_backfill: trigger=%s", trigger)
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	endRun := governanceActiveRun.begin("deep_audit_backfill", cancel)
+	defer func() {
+		cancel()
+		endRun()
+	}()
+	return runDeepAuditBackfillWithContext(ctx, trigger, req)
+}
+
+func runDeepAuditBackfillWithContext(ctx context.Context, trigger string, req systemgov.DeepAuditBackfillRequest) (*collectorpkg.GovernanceRunRecord, error) {
 	if deepAuditBackfill == nil {
 		return nil, fmt.Errorf("deep_audit_backfill runner 未初始化")
 	}
-	run, err := deepAuditBackfill.Run(context.Background(), trigger, req)
+	run, err := deepAuditBackfill.Run(ctx, trigger, req)
 	if err != nil {
 		return nil, err
 	}

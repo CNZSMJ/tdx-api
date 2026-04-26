@@ -215,7 +215,11 @@ func (s *Store) HasScheduleRunWithDetails(scheduleName, detailsNeedle string, st
 }
 
 func (s *Store) CountOpenCollectGaps() (int64, error) {
-	return s.engine.Where("Status = ?", "open").Count(new(CollectGapRecord))
+	return s.CountCollectGapsByStatus(CollectGapStatusOpen)
+}
+
+func (s *Store) CountCollectGapsByStatus(status string) (int64, error) {
+	return s.engine.Where("Status = ?", strings.TrimSpace(status)).Count(new(CollectGapRecord))
 }
 
 func (s *Store) GetCollectCursor(domain, assetType, instrument, period string) (*CollectCursorRecord, error) {
@@ -310,18 +314,22 @@ func (s *Store) UpsertCollectGap(record *CollectGapRecord) error {
 		record.CreatedAt = now
 	}
 	record.UpdatedAt = now
+	existing := new(CollectGapRecord)
 	has, err := s.engine.Where(
 		"Domain = ? AND AssetType = ? AND Instrument = ? AND Period = ? AND StartKey = ? AND EndKey = ?",
 		record.Domain, record.AssetType, record.Instrument, record.Period, record.StartKey, record.EndKey,
-	).Exist(new(CollectGapRecord))
+	).Get(existing)
 	if err != nil {
 		return err
 	}
 	if has {
-		_, err = s.engine.Where(
-			"Domain = ? AND AssetType = ? AND Instrument = ? AND Period = ? AND StartKey = ? AND EndKey = ?",
-			record.Domain, record.AssetType, record.Instrument, record.Period, record.StartKey, record.EndKey,
-		).AllCols().Update(record)
+		record.ID = existing.ID
+		record.CreatedAt = existing.CreatedAt
+		if existing.Status == CollectGapStatusDegraded && record.Status == CollectGapStatusOpen {
+			record.Status = existing.Status
+			record.Reason = appendGapReason(existing.Reason, record.Reason)
+		}
+		_, err = s.engine.ID(existing.ID).AllCols().Update(record)
 		return err
 	}
 	_, err = s.engine.Insert(record)
@@ -329,8 +337,12 @@ func (s *Store) UpsertCollectGap(record *CollectGapRecord) error {
 }
 
 func (s *Store) ListOpenCollectGaps(domain, assetType, instrument, period string) ([]CollectGapRecord, error) {
+	return s.ListCollectGapsByStatus(domain, assetType, instrument, period, CollectGapStatusOpen)
+}
+
+func (s *Store) ListCollectGapsByStatus(domain, assetType, instrument, period, status string) ([]CollectGapRecord, error) {
 	records := make([]CollectGapRecord, 0, 8)
-	session := s.engine.Where("Status = ?", "open")
+	session := s.engine.Where("Status = ?", strings.TrimSpace(status))
 	if domain != "" {
 		session = session.And("Domain = ?", domain)
 	}
@@ -359,8 +371,16 @@ func (s *Store) UpdateCollectGap(record *CollectGapRecord) error {
 }
 
 func (s *Store) CloseCollectGap(id int64, reason string) error {
+	return s.SetCollectGapStatus(id, CollectGapStatusClosed, reason)
+}
+
+func (s *Store) DegradeCollectGap(id int64, reason string) error {
+	return s.SetCollectGapStatus(id, CollectGapStatusDegraded, reason)
+}
+
+func (s *Store) SetCollectGapStatus(id int64, status, reason string) error {
 	record := &CollectGapRecord{
-		Status:    "closed",
+		Status:    strings.TrimSpace(status),
 		Reason:    reason,
 		UpdatedAt: time.Now(),
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -35,13 +36,17 @@ func initGovernanceRepairWorker() {
 }
 
 func runGovernanceRepairWorker(trigger string, limit int) ([]collectorpkg.GovernanceTaskRecord, error) {
+	return runGovernanceRepairWorkerWithContext(context.Background(), trigger, limit)
+}
+
+func runGovernanceRepairWorkerWithContext(ctx context.Context, trigger string, limit int) ([]collectorpkg.GovernanceTaskRecord, error) {
 	if isServiceShuttingDown() {
 		return nil, fmt.Errorf("service shutdown in progress, skip governance repair worker: trigger=%s", trigger)
 	}
 	if repairWorker == nil {
 		return nil, fmt.Errorf("governance repair worker 未初始化")
 	}
-	updated, err := repairWorker.Run(context.Background(), limit)
+	updated, err := repairWorker.Run(ctx, limit)
 	if err != nil {
 		return updated, err
 	}
@@ -69,23 +74,11 @@ func executeGovernanceRepairTask(ctx context.Context, task collectorpkg.Governan
 func executeStartupRecoveryTask(ctx context.Context, task collectorpkg.GovernanceTaskRecord) (collectorpkg.GovernanceTaskStatus, string, error) {
 	switch collectorpkg.GovernanceJob(task.Domain) {
 	case collectorpkg.GovernanceJobDailyOpenRefresh:
-		run, err := runDailyOpenRefresh("startup-recovery")
-		if err != nil {
-			return collectorpkg.GovernanceTaskStatusOpen, "", err
-		}
-		return collectorpkg.GovernanceTaskStatusRepaired, fmt.Sprintf("replayed missed %s run with status=%s", run.JobName, run.Status), nil
+		return collectorpkg.GovernanceTaskStatusDegraded, "missed daily_open_refresh window recorded; full replay is deferred to scheduled open-refresh window", nil
 	case collectorpkg.GovernanceJobDailyCloseSync:
-		run, err := runDailyCloseSyncWithDates("startup-recovery", governanceTargetDates(task.TargetWindow))
-		if err != nil {
-			return collectorpkg.GovernanceTaskStatusOpen, "", err
-		}
-		return collectorpkg.GovernanceTaskStatusRepaired, fmt.Sprintf("replayed missed %s run with status=%s", run.JobName, run.Status), nil
+		return collectorpkg.GovernanceTaskStatusDegraded, "missed daily_close_sync window recorded; full replay is deferred to bounded close-sync scheduling", nil
 	case collectorpkg.GovernanceJobDailyAudit:
-		run, err := runDailyAuditWithDates("startup-recovery", governanceTargetDates(task.TargetWindow))
-		if err != nil {
-			return collectorpkg.GovernanceTaskStatusOpen, "", err
-		}
-		return collectorpkg.GovernanceTaskStatusRepaired, fmt.Sprintf("replayed missed %s run with status=%s", run.JobName, run.Status), nil
+		return collectorpkg.GovernanceTaskStatusDegraded, "missed daily_audit window recorded; full replay is deferred to audit-only scheduling", nil
 	case "interrupted_run":
 		return executeInterruptedStartupRecoveryTask(ctx, task)
 	default:
@@ -111,23 +104,11 @@ func executeInterruptedStartupRecoveryTask(ctx context.Context, task collectorpk
 
 	switch collectorpkg.GovernanceJob(run.JobName) {
 	case collectorpkg.GovernanceJobDailyOpenRefresh:
-		replayedRun, err := runDailyOpenRefresh("startup-recovery-interrupted")
-		if err != nil {
-			return collectorpkg.GovernanceTaskStatusOpen, "", err
-		}
-		return collectorpkg.GovernanceTaskStatusRepaired, fmt.Sprintf("replayed interrupted %s run with status=%s", replayedRun.JobName, replayedRun.Status), nil
+		return collectorpkg.GovernanceTaskStatusDegraded, "interrupted daily_open_refresh run recorded; full replay is deferred to scheduled open-refresh window", nil
 	case collectorpkg.GovernanceJobDailyCloseSync:
-		replayedRun, err := runDailyCloseSyncWithDates("startup-recovery-interrupted", governanceTargetDates(run.TargetWindow))
-		if err != nil {
-			return collectorpkg.GovernanceTaskStatusOpen, "", err
-		}
-		return collectorpkg.GovernanceTaskStatusRepaired, fmt.Sprintf("replayed interrupted %s run with status=%s", replayedRun.JobName, replayedRun.Status), nil
+		return collectorpkg.GovernanceTaskStatusDegraded, "interrupted daily_close_sync run recorded; full replay is deferred to bounded close-sync scheduling", nil
 	case collectorpkg.GovernanceJobDailyAudit:
-		replayedRun, err := runDailyAuditWithDates("startup-recovery-interrupted", governanceTargetDates(run.TargetWindow))
-		if err != nil {
-			return collectorpkg.GovernanceTaskStatusOpen, "", err
-		}
-		return collectorpkg.GovernanceTaskStatusRepaired, fmt.Sprintf("replayed interrupted %s run with status=%s", replayedRun.JobName, replayedRun.Status), nil
+		return collectorpkg.GovernanceTaskStatusDegraded, "interrupted daily_audit run recorded; full replay is deferred to audit-only scheduling", nil
 	default:
 		return collectorpkg.GovernanceTaskStatusUnsupported, fmt.Sprintf("unsupported interrupted governance job: %s", run.JobName), nil
 	}
@@ -157,6 +138,9 @@ func executeOpenRefreshTask(ctx context.Context, task collectorpkg.GovernanceTas
 	case "professional_finance":
 		if proFinanceService == nil {
 			return collectorpkg.GovernanceTaskStatusBlocked, "professional finance service unavailable", nil
+		}
+		if decision := decideProFinanceAutoPrefetch(proFinanceDataDir); decision.Disable {
+			return collectorpkg.GovernanceTaskStatusBlocked, fmt.Sprintf("professional_finance background refresh paused: %s", decision.Reason), nil
 		}
 		synced, reason, syncErr := proFinanceService.SyncIfNeeded(ctx)
 		if syncErr != nil {
@@ -188,12 +172,34 @@ func executeCloseSyncTask(ctx context.Context, task collectorpkg.GovernanceTaskR
 }
 
 func executeDailyAuditRepairTask(ctx context.Context, task collectorpkg.GovernanceTaskRecord) (collectorpkg.GovernanceTaskStatus, string, error) {
-	if collectorRuntime == nil {
-		return collectorpkg.GovernanceTaskStatusBlocked, "collector runtime unavailable", nil
-	}
 	targetWindow := strings.TrimSpace(task.TargetWindow)
 	if targetWindow == "" {
 		return collectorpkg.GovernanceTaskStatusBlocked, "missing audit target window", nil
+	}
+	retryableErrors := splitAuditRepairErrors(task.Reason)
+	if hasOnlyRetryableAuditErrors(retryableErrors) {
+		return collectorpkg.GovernanceTaskStatusDegraded, task.Reason, nil
+	}
+
+	lock, err := collectorpkg.AcquireGovernanceLock(governancePaths.LockPath)
+	if err != nil {
+		return collectorpkg.GovernanceTaskStatusOpen, "", err
+	}
+	defer lock.Release()
+
+	if governanceStore != nil {
+		now := time.Now()
+		_ = governanceStore.RecordLockMetadata(&collectorpkg.GovernanceLockMetadataRecord{
+			LockName:        "system_governance",
+			HolderPID:       int64(os.Getpid()),
+			HolderJobName:   "repair_worker",
+			HolderRunID:     fmt.Sprintf("repair-worker:%s", task.TaskKey),
+			AcquiredAt:      now,
+			LastHeartbeatAt: now,
+		})
+	}
+	if collectorRuntime == nil {
+		return collectorpkg.GovernanceTaskStatusBlocked, "collector runtime unavailable", nil
 	}
 
 	report, err := collectorRuntime.ReconcileDateWithTrigger(ctx, targetWindow, "repair-worker")
@@ -208,7 +214,7 @@ func executeDailyAuditRepairTask(ctx context.Context, task collectorpkg.Governan
 		if domain.Domain != task.Domain {
 			continue
 		}
-		status := classifyRepairAuditDomainStatus(domain.Status, domain.RepairAttempted, len(domain.Errors) > 0)
+		status := classifyRepairAuditDomainStatus(domain.Status, domain.RepairAttempted, domain.Errors)
 		reason := strings.TrimSpace(domain.Details)
 		if len(domain.Errors) > 0 {
 			reason = strings.Join(domain.Errors, "; ")
@@ -262,7 +268,7 @@ func governanceTargetDates(targetWindow string) []string {
 	return dates
 }
 
-func classifyRepairAuditDomainStatus(status string, repairAttempted bool, hasErrors bool) collectorpkg.GovernanceTaskStatus {
+func classifyRepairAuditDomainStatus(status string, repairAttempted bool, errors []string) collectorpkg.GovernanceTaskStatus {
 	switch status {
 	case "unsupported_historical_rebuild":
 		return collectorpkg.GovernanceTaskStatusUnsupported
@@ -276,8 +282,52 @@ func classifyRepairAuditDomainStatus(status string, repairAttempted bool, hasErr
 	case "blocked":
 		return collectorpkg.GovernanceTaskStatusBlocked
 	}
-	if hasErrors || status == "partial" || status == "best_effort" {
+	if repairAttempted && hasOnlyRetryableAuditErrors(errors) {
+		return collectorpkg.GovernanceTaskStatusDegraded
+	}
+	if len(errors) > 0 || status == "partial" || status == "best_effort" {
 		return collectorpkg.GovernanceTaskStatusOpen
 	}
 	return collectorpkg.GovernanceTaskStatusRepaired
+}
+
+func hasOnlyRetryableAuditErrors(errors []string) bool {
+	if len(errors) == 0 {
+		return false
+	}
+	for _, item := range errors {
+		if !isRetryableAuditError(item) {
+			return false
+		}
+	}
+	return true
+}
+
+func splitAuditRepairErrors(reason string) []string {
+	parts := strings.Split(reason, ";")
+	errors := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		errors = append(errors, part)
+	}
+	return errors
+}
+
+func isRetryableAuditError(message string) bool {
+	text := strings.TrimSpace(strings.ToLower(message))
+	if text == "" {
+		return false
+	}
+	return strings.Contains(text, "timeout") ||
+		strings.Contains(text, "超时") ||
+		strings.Contains(text, "eof") ||
+		strings.Contains(text, "broken pipe") ||
+		strings.Contains(text, "connection reset") ||
+		strings.Contains(text, "use of closed network connection") ||
+		strings.Contains(text, "i/o timeout") ||
+		strings.Contains(text, "connection refused") ||
+		strings.Contains(text, "数据长度不足")
 }

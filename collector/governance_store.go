@@ -91,6 +91,33 @@ func (s *GovernanceStore) UpdateRun(record *GovernanceRunRecord) error {
 	return err
 }
 
+func (s *GovernanceStore) InterruptRunningRuns(reason string, endedAt time.Time) (int64, error) {
+	if endedAt.IsZero() {
+		endedAt = time.Now()
+	}
+
+	var updated int64
+	_, err := s.engine.Transaction(func(session *xorm.Session) (interface{}, error) {
+		var txUpdated int64
+		runs := make([]GovernanceRunRecord, 0, 8)
+		if err := session.Where("Status = ?", GovernanceRunStatusRunning).Find(&runs); err != nil {
+			return nil, err
+		}
+		for _, run := range runs {
+			run.Status = GovernanceRunStatusInterrupted
+			run.Reason = reason
+			run.EndedAt = endedAt
+			if _, err := session.ID(run.ID).AllCols().Update(&run); err != nil {
+				return nil, err
+			}
+			txUpdated++
+		}
+		updated = txUpdated
+		return nil, nil
+	})
+	return updated, err
+}
+
 func (s *GovernanceStore) ListRecentRuns(limit int) ([]GovernanceRunRecord, error) {
 	if limit <= 0 {
 		limit = 10

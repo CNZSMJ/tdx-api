@@ -312,3 +312,74 @@
 - Future follow-up, if requested:
   - add richer backlog derivation beyond `kline` gaps for deep-audit seed ranges
   - expose a dedicated governance UI panel over the unified `/api/collector/status` payload
+
+## Operational Follow-up (2026-04-20)
+
+- Current Sprint:
+  - Post-Sprint operational hardening
+- Completed:
+  - traced `block` domain regression to `collector.BlockService.SyncBlocks`
+  - confirmed `blocks.db` had historical inserts (`sqlite_sequence` present) but current rows were deleted
+  - identified the destructive path: provider could return `0 groups` without error, and the sync logic treated that as full success then deleted `block_group/block_member`
+  - added regression coverage so empty block refresh results fail closed and preserve existing persisted data
+  - restored live block dataset from TDX into `/Users/huangjiahao/workspace/industry-investment-suite/state/a-stock-market-tdx/block/blocks.db`
+- Important Decisions:
+  - `block` refresh now treats `len(infos) == 0` as a failed source refresh, preserving prior rows for that source instead of deleting published data
+  - `block` governance health now reads published group counts from `BlockService` / isolated `block/blocks.db`, not from `collector.db`
+  - operational recovery used offline `BlockService.SyncBlocks` against the live `TDX_DATA_DIR`, not ad-hoc SQL backfill
+- Verification:
+  - `go test ./collector -run TestBlockServiceSyncBlocksPreservesExistingDataOnEmptyRefresh -count=1`
+  - `go test ./collector -run TestBlockService -count=1`
+  - `go test ./collector`
+  - `sqlite3 .../block/blocks.db "select count(*) from block_group; select count(*) from block_member;"`
+  - restored counts: `646 groups / 87244 members`
+  - rebuilt `web/stock-web` and restarted via `./web/start.sh start`
+  - `/api/blocks?source=block_gn.dat&block_type=concept&limit=5` now returns populated concept blocks
+  - `/api/collector/status` now reports `block` as `healthy` with `published_block_groups=646`
+- Next Step:
+  - monitor the still-running `startup_recovery -> daily_close_sync` chain separately; block recovery is complete, but close-sync backlog remains unresolved
+
+## Operational Follow-up (2026-04-20 Daily Close Sync)
+
+- Current Sprint:
+  - Post-Sprint operational hardening
+- Completed:
+  - traced the apparent `daily_close_sync` "stuck" state to two separate issues:
+    - the live `startup_recovery -> daily_close_sync` chain was still actively executing `KlineService.ReconcileDate`, not deadlocked
+    - governance runs launched from startup recovery were not wired into shutdown cancellation, so process restarts left `governance_run.status=running` rows behind forever
+  - confirmed with a live `sample` capture that the running process was inside `Runtime.ExecuteDailyCloseSync -> KlineService.publishValidatedRows -> Store.UpsertCollectCursor`
+  - added store-level stale-run interruption support for governance control-plane rows
+  - added governance runner interruption semantics so `context canceled` / deadline cancellation persists `status=interrupted` instead of `failed`
+  - wired top-level governance jobs (`startup_recovery`, `daily_open_refresh`, `daily_close_sync`, `daily_audit`, `deep_audit_backfill`) into cancellable root contexts and shutdown wait logic
+  - wired startup recovery's nested repair-worker replay to reuse the parent governance context instead of spawning uncancelable background execution
+  - added startup-time recovery that marks leftover `running` governance runs as `interrupted` before new startup inspection begins
+  - updated `daily_close_sync` / `daily_audit` runners to persist the resolved target window before long-running execution starts, so live status no longer has to wait for final completion to show the correct replay window
+- Important Decisions:
+  - shutdown correctness is enforced at the web entrypoint layer, not by adding ad-hoc signal handling deep inside domain collectors
+  - stale `running` governance rows are treated as process-interrupted control-plane artifacts and are normalized to `interrupted` on the next startup
+  - startup recovery nested replays must reuse the parent `ctx`; otherwise the shutdown path cannot stop replayed `daily_close_sync` work cleanly
+- Verification:
+  - red -> green:
+    - `go test ./governance -run 'TestDailyCloseSyncMarksRunInterruptedWhenCanceled' -count=1`
+    - `go test ./collector -run 'TestGovernanceStoreInterruptRunningRuns' -count=1`
+    - `TDX_WEB_SKIP_INIT=1 go test ./... -run 'TestWaitForGovernanceRunStopCancelsActiveRun' -count=1` in `web/`
+  - package regression:
+    - `go test ./collector ./governance`
+    - `TDX_WEB_SKIP_INIT=1 go test ./...` in `web/`
+  - race verification:
+    - `go test -race ./collector ./governance`
+    - `TDX_WEB_SKIP_INIT=1 go test -race ./...` in `web/`
+- Next Step:
+  - rebuild and restart the local `stock-web` service so startup-time stale-run recovery can normalize the already-existing historical `running` governance rows in the live `system_governance.db`
+  - verify the next startup no longer reports repeated phantom `daily_close_sync` `running` rows from prior processes
+
+- Live Restart Verification:
+  - rebuilt `web/stock-web` and restarted via `./web/start.sh restart`
+  - new process log shows:
+    - `governance: marked 3 stale running runs as interrupted`
+  - live `system_governance.db` now shows prior stuck `daily_close_sync` runs `id=5/7/9` as `interrupted`
+  - new startup recovery run now reports:
+    - `details=missed_jobs=2 interrupted_runs=3 open_backlog=2`
+  - new replayed `daily_close_sync` run is active with the correct historical target window already persisted:
+    - `target_window=20260416,20260417`
+  - `/api/collector/status` now reflects the corrected replay window for the active `daily_close_sync` run instead of the old misleading startup date placeholder

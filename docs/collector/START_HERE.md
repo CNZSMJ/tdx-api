@@ -25,6 +25,10 @@ Read these files in order before doing any work:
 
 Do not skip files. Do not rely on memory from previous sessions.
 
+For post-acceptance system-governance redesign work, also read:
+
+- [SYSTEM_DATA_GOVERNANCE_PLAN.md](./SYSTEM_DATA_GOVERNANCE_PLAN.md)
+
 ## Non-Negotiable Rules
 
 1. Work only on the current phase in [STATE.yaml](./STATE.yaml).

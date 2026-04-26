@@ -94,7 +94,11 @@ func (r *DailyOpenRefreshRunner) Run(ctx context.Context, trigger string) (*coll
 	defer func() {
 		run.EndedAt = r.cfg.Now()
 		if resultErr != nil {
-			run.Status = collectorpkg.GovernanceRunStatusFailed
+			if interruptedGovernanceError(resultErr) {
+				run.Status = collectorpkg.GovernanceRunStatusInterrupted
+			} else {
+				run.Status = collectorpkg.GovernanceRunStatusFailed
+			}
 			run.Reason = resultErr.Error()
 		} else if len(domainFailures) > 0 {
 			run.Status = collectorpkg.GovernanceRunStatusPartial
@@ -120,10 +124,10 @@ func (r *DailyOpenRefreshRunner) Run(ctx context.Context, trigger string) (*coll
 	}
 
 	type domainStage struct {
-		name        string
-		priority    int
-		refresh     func(context.Context) error
-		fastRetry   bool
+		name      string
+		priority  int
+		refresh   func(context.Context) error
+		fastRetry bool
 	}
 	stages := []domainStage{
 		{name: "codes", priority: 1, refresh: r.cfg.CodesRefresh, fastRetry: true},

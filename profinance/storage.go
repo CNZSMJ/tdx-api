@@ -355,6 +355,9 @@ func (s *Service) Rebuild(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := ensureRebuildSourceFactsAvailable(ctx, tx); err != nil {
+		return err
+	}
 
 	if _, err := tx.Exec(`DELETE FROM prof_finance_report_payload`); err != nil {
 		return err
@@ -450,12 +453,47 @@ ORDER BY source_file_id ASC`)
 	return tx.Commit()
 }
 
-func (s *Service) ingestReport(ctx context.Context, db *sql.DB, report ReportFile, now time.Time, nowText string) error {
-	bs, err := s.ensureReportZip(ctx, report)
-	if err != nil {
+func ensureRebuildSourceFactsAvailable(ctx context.Context, tx *sql.Tx) error {
+	var archivedServingSources int
+	if err := tx.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM prof_finance_source_file sf
+WHERE sf.parse_status = 'archived'
+  AND EXISTS (
+    SELECT 1
+    FROM prof_finance_report_version rv
+    WHERE rv.source_file_id = sf.source_file_id
+  )`).Scan(&archivedServingSources); err != nil {
 		return err
 	}
+	if archivedServingSources > 0 {
+		return fmt.Errorf("professional finance raw source is archived for %d serving source files; restore raw source before rebuild", archivedServingSources)
+	}
 
+	var missingRawSources int
+	if err := tx.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM prof_finance_source_file sf
+WHERE sf.parse_status = 'success'
+  AND EXISTS (
+    SELECT 1
+    FROM prof_finance_report_version rv
+    WHERE rv.source_file_id = sf.source_file_id
+  )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM prof_finance_source_value_raw raw
+    WHERE raw.source_file_id = sf.source_file_id
+  )`).Scan(&missingRawSources); err != nil {
+		return err
+	}
+	if missingRawSources > 0 {
+		return fmt.Errorf("professional finance raw source is missing for %d serving source files; restore raw source before rebuild", missingRawSources)
+	}
+	return nil
+}
+
+func (s *Service) ingestReport(ctx context.Context, db *sql.DB, report ReportFile, now time.Time, nowText string) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -469,7 +507,14 @@ func (s *Service) ingestReport(ctx context.Context, db *sql.DB, report ReportFil
 	if sourceFile.ParseStatus == "success" {
 		return tx.Commit()
 	}
+	if sourceFile.ParseStatus == "archived" {
+		return tx.Commit()
+	}
 
+	bs, err := s.ensureReportZip(ctx, report)
+	if err != nil {
+		return err
+	}
 	parsed, err := parseZipReportRaw(bs, report, s.registry)
 	if err != nil {
 		_ = markSourceFileParseFailure(tx, sourceFile.SourceFileID, err.Error())

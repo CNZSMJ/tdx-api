@@ -429,6 +429,27 @@ func TestNewServiceDoesNotStartDailyAutoPrefetchCron(t *testing.T) {
 	}
 }
 
+func TestNewServiceDisableAutoPrefetchSkipsStartupPrefetch(t *testing.T) {
+	var requests int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	service := NewService(t.TempDir(), Config{
+		BaseURL:             server.URL,
+		HTTPClient:          server.Client(),
+		DisableAutoPrefetch: true,
+	})
+	defer service.Close()
+
+	time.Sleep(50 * time.Millisecond)
+	if atomic.LoadInt32(&requests) != 0 {
+		t.Fatalf("startup prefetch requests = %d, want 0", atomic.LoadInt32(&requests))
+	}
+}
+
 func TestSyncPersistsRawFactsServingPayloadAndWatermark(t *testing.T) {
 	listBody := "gpcw20251231.zip,oldhash,100\n"
 	reportZip := buildZIPFixture(t, "gpcw20251231.dat", buildDATFixture(t, "600000", map[int]float32{
@@ -917,6 +938,145 @@ func TestRebuildRestoresServingLayerFromRawFacts(t *testing.T) {
 		t.Fatalf("history count after rebuild = %d, want 1", len(result.List))
 	}
 	assertFloatApprox(t, result.List[0].FieldValues["book_value_per_share"].(float64), 13.88, "book_value_per_share after rebuild")
+}
+
+func TestRebuildRefusesWhenRawFactsAreArchived(t *testing.T) {
+	listBody := "gpcw20251231.zip,oldhash,100\n"
+	reportZip := buildZIPFixture(t, "gpcw20251231.dat", buildDATFixture(t, "600000", map[int]float32{
+		fieldBookValuePerShare: 13.88,
+		fieldTotalShares:       274006894,
+		fieldFloatAShares:      168084707,
+		fieldNetProfitTTM:      6123456789,
+		fieldRevenueTTM:        2456789,
+		314:                    260328,
+	}))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/gpcw.txt":
+			_, _ = w.Write([]byte(listBody))
+		case "/gpcw20251231.zip":
+			w.Header().Set("Content-Type", "application/zip")
+			_, _ = w.Write(reportZip)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	service := NewService(t.TempDir(), Config{
+		BaseURL:             server.URL,
+		HTTPClient:          server.Client(),
+		DisableAutoPrefetch: true,
+		Now: func() time.Time {
+			return time.Date(2026, 4, 18, 9, 0, 0, 0, time.UTC)
+		},
+	})
+
+	if err := service.Sync(context.Background()); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", service.dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("UPDATE prof_finance_source_file SET parse_status = 'archived'"); err != nil {
+		t.Fatalf("mark archived: %v", err)
+	}
+	if _, err := db.Exec("DELETE FROM prof_finance_source_value_raw"); err != nil {
+		t.Fatalf("delete raw facts: %v", err)
+	}
+
+	err = service.Rebuild(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "raw source is archived") {
+		t.Fatalf("Rebuild error = %v, want archived raw source refusal", err)
+	}
+
+	var payloadCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM prof_finance_report_payload").Scan(&payloadCount); err != nil {
+		t.Fatalf("count payload: %v", err)
+	}
+	if payloadCount == 0 {
+		t.Fatalf("serving payload was deleted despite archived raw source")
+	}
+}
+
+func TestSyncTreatsArchivedSourceAsAlreadyMaterialized(t *testing.T) {
+	listBody := "gpcw20251231.zip,oldhash,100\n"
+	reportZip := buildZIPFixture(t, "gpcw20251231.dat", buildDATFixture(t, "600000", map[int]float32{
+		fieldBookValuePerShare: 13.88,
+		fieldTotalShares:       274006894,
+		fieldFloatAShares:      168084707,
+		fieldNetProfitTTM:      6123456789,
+		fieldRevenueTTM:        2456789,
+		314:                    260328,
+	}))
+	var zipRequests atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/gpcw.txt":
+			_, _ = w.Write([]byte(listBody))
+		case "/gpcw20251231.zip":
+			zipRequests.Add(1)
+			w.Header().Set("Content-Type", "application/zip")
+			_, _ = w.Write(reportZip)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	service := NewService(t.TempDir(), Config{
+		BaseURL:             server.URL,
+		HTTPClient:          server.Client(),
+		DisableAutoPrefetch: true,
+		Now: func() time.Time {
+			return time.Date(2026, 4, 18, 9, 0, 0, 0, time.UTC)
+		},
+	})
+
+	if err := service.Sync(context.Background()); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if got := zipRequests.Load(); got != 1 {
+		t.Fatalf("zip requests after first sync = %d, want 1", got)
+	}
+
+	db, err := sql.Open("sqlite", service.dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("UPDATE prof_finance_source_file SET parse_status = 'archived'"); err != nil {
+		t.Fatalf("mark archived: %v", err)
+	}
+	if _, err := db.Exec("DELETE FROM prof_finance_source_value_raw"); err != nil {
+		t.Fatalf("delete raw facts: %v", err)
+	}
+
+	if err := os.Remove(filepath.Join(service.zipDir, "gpcw20251231.zip")); err != nil {
+		t.Fatalf("remove cached zip: %v", err)
+	}
+	if err := os.Remove(filepath.Join(service.zipDir, "gpcw20251231.zip.hash")); err != nil {
+		t.Fatalf("remove cached zip hash: %v", err)
+	}
+	if err := service.Sync(context.Background()); err != nil {
+		t.Fatalf("Sync archived: %v", err)
+	}
+	if got := zipRequests.Load(); got != 1 {
+		t.Fatalf("zip requests after archived sync = %d, want still 1", got)
+	}
+
+	var payloadCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM prof_finance_report_payload").Scan(&payloadCount); err != nil {
+		t.Fatalf("count payload: %v", err)
+	}
+	if payloadCount == 0 {
+		t.Fatalf("serving payload missing after archived sync")
+	}
 }
 
 func TestRebuildPreservesFallbackVisibilityAndWatermark(t *testing.T) {

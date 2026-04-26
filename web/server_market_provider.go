@@ -1633,6 +1633,9 @@ func resolveSingleCodeModel(raw string) (*tdx.CodeModel, error) {
 }
 
 func resolveSingleFullCodeModel(raw string) (*tdx.CodeModel, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, errors.New("full_code 为必填参数")
+	}
 	models, err := resolveFullCodeModels([]string{raw})
 	if err != nil {
 		return nil, err
@@ -1643,6 +1646,11 @@ func resolveSingleFullCodeModel(raw string) (*tdx.CodeModel, error) {
 func resolveFullCodeModels(rawCodes []string) ([]*tdx.CodeModel, error) {
 	if len(rawCodes) == 0 {
 		return nil, errors.New("full_codes 为必填参数")
+	}
+	for _, rawCode := range rawCodes {
+		if strings.TrimSpace(rawCode) == "" {
+			return nil, errors.New("full_codes 为必填参数")
+		}
 	}
 	allModels, err := getAllCodeModels()
 	if err != nil {

@@ -91,7 +91,11 @@ func (r *DailyCloseSyncRunner) run(ctx context.Context, trigger string, targetDa
 	defer func() {
 		run.EndedAt = r.cfg.Now()
 		if resultErr != nil {
-			run.Status = collectorpkg.GovernanceRunStatusFailed
+			if interruptedGovernanceError(resultErr) {
+				run.Status = collectorpkg.GovernanceRunStatusInterrupted
+			} else {
+				run.Status = collectorpkg.GovernanceRunStatusFailed
+			}
 			run.Reason = resultErr.Error()
 		} else if len(failures) > 0 {
 			run.Status = collectorpkg.GovernanceRunStatusPartial
@@ -125,6 +129,10 @@ func (r *DailyCloseSyncRunner) run(ctx context.Context, trigger string, targetDa
 		}
 	}
 	run.TargetWindow = strings.Join(targetDates, ",")
+	if err := r.cfg.Store.UpdateRun(run); err != nil {
+		resultErr = err
+		return nil, err
+	}
 
 	failures, err = r.cfg.Execute(ctx, targetDates)
 	if err != nil {

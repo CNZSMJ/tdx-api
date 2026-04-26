@@ -18,6 +18,80 @@ Do not summarize test results vaguely. Record exact commands and exact outcomes.
 
 ---
 
+## 2026-04-26 08:32 CST
+
+- Phase: `post-acceptance hot/cold lifecycle`
+- Goal: complete real-data hot/cold lifecycle catch-up for `trade`, `live`, and `order_history` without changing existing public API contracts
+- Files changed:
+  - `.env.example`
+  - `cmd/lifecycle-maintenance/main.go`
+  - `collector/lifecycle/*`
+  - `governance/lifecycle_maintenance.go`
+  - `governance/lifecycle_restore.go`
+  - `web/lifecycle_*.go`
+  - `web/cold_api.go`
+  - `web/prof_finance_config.go`
+  - `web/server.go`
+  - `web/collector_repair_worker.go`
+  - `docs/collector/HOT_COLD_DATA_LIFECYCLE_PLAN.md`
+  - `docs/collector/LIFECYCLE_SPRINT_PROGRESS.md`
+  - `docs/collector/PROGRESS.md`
+  - `docs/collector/WORK_LOG.md`
+- Commands run:
+  - `go test ./... -count=1`
+  - `cd web && TDX_WEB_SKIP_INIT=1 go test ./... -count=1`
+  - `go build -o /tmp/tdx-lifecycle-maintenance-resume ./cmd/lifecycle-maintenance`
+  - `/tmp/tdx-lifecycle-maintenance-resume --enable --allow-prune ...`
+  - `/tmp/tdx-lifecycle-maintenance-resume --dry-run --enable --allow-prune --max-candidates 0 --max-inventory-files 0 ...`
+  - `curl -s http://127.0.0.1:8080/api/collector/lifecycle/status`
+  - `sqlite3 -readonly .../cold_manifest.db "select status, count(*), coalesce(sum(row_count),0) ..."`
+  - `df -h .../state/a-stock-market-tdx`
+  - `du -sh .../trade .../live .../order_history .../fundamentals .../a-stock-market-tdx/cold`
+- Results:
+  - Implemented and exercised governance-recorded lifecycle maintenance, cold manifest tracking, explicit cold APIs, restore paths, and professional-finance background-refresh guards.
+  - Completed real catch-up for `trade`, `live`, and `order_history` against the local state directory.
+  - Final full dry-run returned `SelectedCandidates=0`, `SkippedCandidates=0`, and `FailedSegments=0`.
+  - `cold_manifest.db` records `11444` active segments and `1,513,194,080` archived rows.
+  - Final measured disk state was about `173GiB` free, `trade=34G`, `live=29G`, `order_history=1.6G`, local cold Parquet store `5.5G`, and `cold_restore=0B`.
+  - `fundamentals/professional_finance` remains about `70G` and is not pruned by Stage 1 because current API/rebuild semantics still require a separate professional-finance slimming implementation.
+- Commit sha: `not committed yet`
+- Blockers: none for Stage 1 hot/cold lifecycle; professional-finance raw/source slimming remains the next storage target.
+- Next step: run final regression tests after documentation update, then decide whether to proceed into professional-finance slimming implementation.
+
+## 2026-04-19 04:20 CST
+
+- Phase: `post-acceptance planning`
+- Goal: document a unified system-level data governance plan that consolidates startup recovery, 09:00 refresh, 18:00 sync, 19:00 audit, and long-tail backfill into one runtime model
+- Files changed:
+  - `docs/collector/SYSTEM_DATA_GOVERNANCE_PLAN.md`
+  - `docs/collector/START_HERE.md`
+  - `docs/collector/PROGRESS.md`
+  - `docs/collector/WORK_LOG.md`
+- Commands run:
+  - `rg --files docs | sort`
+  - `sed -n '1,220p' docs/collector/MASTER_PLAN.md`
+  - `sed -n '1,240p' docs/collector/PROGRESS.md`
+  - `sed -n '1,220p' docs/collector/WORK_LOG.md`
+  - `sed -n '1,220p' docs/collector/START_HERE.md`
+  - `sed -n '1,220p' docs/collector/FINAL_ACCEPTANCE_REPORT.md`
+  - `sed -n '1,220p' docs/professional-finance/professional-finance-data-architecture.md`
+  - `date '+%Y-%m-%d %H:%M %Z'`
+- Results:
+  - Added a dedicated design document that inventories current scheduled tasks and redefines them as five system-level governance jobs
+  - Defined task scope, timing, start conditions, end conditions, domain ownership, and unified outputs for the future governance runtime
+  - Clarified four edge decisions before Sprint 1:
+    - system governance lock must be a cross-process persistent file lock, not an in-memory mutex
+    - governance state must live in a dedicated `system_governance.db`
+    - `daily_open_refresh` needs pre-open fast-retry semantics for `codes/workday`
+    - daily scheduled jobs must pass a trading-calendar gate and explicitly `skip` on non-trading-day windows
+  - Split rollout into eight atomic sprints so each stage delivers independently usable behavior
+  - Linked the new design document from the collector handoff entrypoint and progress record
+- Commit sha: `not committed yet`
+- Blockers: none
+- Next step: review the plan with the user, then implement Sprint 1 as the first behavior-preserving control-plane change
+
+---
+
 ## 2026-04-02 23:59 CST
 
 - Phase: `7 - Final Acceptance`
@@ -509,3 +583,39 @@ Do not summarize test results vaguely. Record exact commands and exact outcomes.
 - Commit sha: `not committed yet`
 - Blockers: none
 - Next step: keep the service running; it will execute startup catch-up once, then one daily full synchronization at `18:00`, then one daily reconciliation/repair run at `19:00`
+
+## 2026-04-26 09:25 CST
+
+- Phase: `Post-acceptance hot/cold lifecycle`
+- Goal: complete local hot/cold lifecycle catch-up, professional-finance slimming, service restart, and final verification against `/Users/huangjiahao/workspace/industry-investment-suite/state/a-stock-market-tdx`
+- Files changed:
+  - `profinance/storage.go`
+  - `profinance/service_test.go`
+  - `docs/collector/PROGRESS.md`
+  - `docs/collector/LIFECYCLE_SPRINT_PROGRESS.md`
+  - `docs/collector/STATE.yaml`
+  - `docs/collector/WORK_LOG.md`
+- Commands run:
+  - `go build -o /tmp/tdx-lifecycle-maintenance-final ./cmd/lifecycle-maintenance`
+  - `/tmp/tdx-lifecycle-maintenance-final --dry-run --enable --allow-prune --min-verified-segments 1 --max-candidates 0 --max-archive-days 0 --max-inventory-files 0 --candidate-sort size_desc --min-free-bytes 10737418240 --safety-margin-bytes 134217728 --runtime-budget 60m`
+  - `go test ./profinance -run 'Test(SyncTreatsArchivedSourceAsAlreadyMaterialized|RebuildRefusesWhenRawFactsAreArchived|RebuildRestoresServingLayerFromRawFacts)' -count=1`
+  - `go test ./... -count=1`
+  - `cd web && TDX_WEB_SKIP_INIT=1 go test ./... -count=1`
+  - `cd web && go build -o stock-web . && ./start.sh start`
+  - `curl -fsS 'http://127.0.0.1:8080/api/v1/prof-finance/history?full_code=sh600000&field_codes=book_value_per_share&as_of_date=20260425&period=all&limit=1'`
+  - `curl -fsS http://127.0.0.1:8080/api/collector/lifecycle/status`
+- Results:
+  - Final lifecycle dry-run passed with `SelectedCandidates=0`, `SkippedCandidates=0`, `FailedSegments=0`, `ProcessedSegments=0`, and no free-space change.
+  - Stage 1 `trade`, `live`, and `order_history` hot stores remain within the 180-trading-day retention boundary.
+  - The original `69G` `fundamentals/professional_finance/prof_finance.db` was source-checksummed, compressed into an `11G` cold full-DB archive, verified with `zstd -t`, and registered in `cold_manifest.db`.
+  - The hot professional-finance DB was replaced by a `15G` serving-only SQLite DB preserving `915643` report versions, `915643` report payloads, `319` source files, `319` source reports, `403` field catalog rows, and `1` watermark row.
+  - `prof_finance_source_value_raw` is empty in hot storage; all copied source files are marked `archived`.
+  - `Rebuild()` now refuses to rebuild if raw facts are archived or missing, protecting serving tables from accidental deletion.
+  - `Sync()` now treats same-hash `archived` source files as already materialized, preventing old raw rows from being rehydrated into the hot DB.
+  - The web service was rebuilt, restarted, and verified on `127.0.0.1:8080`.
+  - `/api/v1/prof-finance/history` returned a valid hot-serving response for `sh600000` after replacement.
+  - Lifecycle status reports `11445` active cold segments and `1,514,109,723` archived rows.
+  - Disk free space recovered to about `210GiB`; `fundamentals/professional_finance` is about `16G`, and the professional-finance cold full-DB archive is about `11G`.
+- Commit sha: `not committed yet`
+- Blockers: none
+- Next step: observe scheduled steady-state retention over normal daily cycles; no immediate manual hot/cold catch-up debt remains.

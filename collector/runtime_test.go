@@ -3,6 +3,7 @@ package collector
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -260,6 +261,121 @@ func TestCollectorRuntimeStartupCatchUpBootstrapsAllTradingDays(t *testing.T) {
 	}
 	if len(syncRuns) != 1 {
 		t.Fatalf("expected one startup schedule run, got %d", len(syncRuns))
+	}
+}
+
+func TestCollectorRuntimeStartupCatchUpAutoReconcilesKlineGaps(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := OpenStore(filepath.Join(tmp, "collector.db"))
+	if err != nil {
+		t.Fatalf("open collector store: %v", err)
+	}
+	defer store.Close()
+
+	klineDir := filepath.Join(tmp, "kline")
+	seedProvider1 := &acceptanceProvider{
+		tradingDays: []TradingDay{
+			{Date: "20260401", Time: time.Date(2026, 4, 1, 15, 0, 0, 0, time.Local)},
+			{Date: "20260402", Time: time.Date(2026, 4, 2, 15, 0, 0, 0, time.Local)},
+			{Date: "20260403", Time: time.Date(2026, 4, 3, 15, 0, 0, 0, time.Local)},
+		},
+		klines: []KlineBar{newDayBar("sh000001", "20260401", 3200000, 3210000)},
+	}
+	seedService1, err := NewKlineService(store, seedProvider1, KlineConfig{BaseDir: klineDir})
+	if err != nil {
+		t.Fatalf("new initial kline service: %v", err)
+	}
+	if err := seedService1.Refresh(context.Background(), KlineCollectQuery{
+		Code:      "sh000001",
+		AssetType: AssetTypeIndex,
+		Period:    PeriodDay,
+	}); err != nil {
+		t.Fatalf("seed initial kline refresh: %v", err)
+	}
+
+	seedProvider2 := &acceptanceProvider{
+		tradingDays: seedProvider1.tradingDays,
+		klines:      []KlineBar{newDayBar("sh000001", "20260403", 3210000, 3220000)},
+	}
+	seedService2, err := NewKlineService(store, seedProvider2, KlineConfig{BaseDir: klineDir})
+	if err != nil {
+		t.Fatalf("new gap-seeding kline service: %v", err)
+	}
+	if err := seedService2.Refresh(context.Background(), KlineCollectQuery{
+		Code:      "sh000001",
+		AssetType: AssetTypeIndex,
+		Period:    PeriodDay,
+	}); err != nil {
+		t.Fatalf("seed gap kline refresh: %v", err)
+	}
+
+	openBefore, err := store.CountOpenCollectGaps()
+	if err != nil {
+		t.Fatalf("count open gaps before startup catch-up: %v", err)
+	}
+	if openBefore != 1 {
+		t.Fatalf("expected one seeded open gap, got %d", openBefore)
+	}
+
+	runtime, err := NewRuntime(store, &acceptanceProvider{
+		instruments: []Instrument{{Code: "sh000001", Name: "上证指数", Exchange: "sh", AssetType: AssetTypeIndex}},
+		tradingDays: []TradingDay{
+			{Date: "20260401", Time: time.Date(2026, 4, 1, 15, 0, 0, 0, time.Local)},
+			{Date: "20260402", Time: time.Date(2026, 4, 2, 15, 0, 0, 0, time.Local)},
+			{Date: "20260403", Time: time.Date(2026, 4, 3, 15, 0, 0, 0, time.Local)},
+			{Date: "20260404", Time: time.Date(2026, 4, 4, 15, 0, 0, 0, time.Local)},
+		},
+		klines: []KlineBar{
+			newDayBar("sh000001", "20260402", 3205000, 3215000),
+			newDayBar("sh000001", "20260403", 3210000, 3220000),
+			newDayBar("sh000001", "20260404", 3220000, 3230000),
+		},
+	}, RuntimeConfig{
+		Now:          func() time.Time { return time.Date(2026, 4, 4, 18, 0, 0, 0, time.Local) },
+		KlinePeriods: []KlinePeriod{PeriodDay},
+		Metadata: MetadataConfig{
+			CodesDBPath:   filepath.Join(tmp, "codes.db"),
+			WorkdayDBPath: filepath.Join(tmp, "workday.db"),
+		},
+		Kline:        KlineConfig{BaseDir: klineDir},
+		Trade:        TradeConfig{BaseDir: filepath.Join(tmp, "trade")},
+		OrderHistory: OrderHistoryConfig{BaseDir: filepath.Join(tmp, "order_history")},
+		Live:         LiveCaptureConfig{BaseDir: filepath.Join(tmp, "live")},
+		Fundamentals: FundamentalsConfig{BaseDir: filepath.Join(tmp, "fundamentals")},
+	})
+	if err != nil {
+		t.Fatalf("new collector runtime: %v", err)
+	}
+
+	if err := runtime.RunStartupCatchUp(context.Background()); err != nil {
+		t.Fatalf("startup catch-up with kline gap repair: %v", err)
+	}
+
+	openAfter, err := store.CountOpenCollectGaps()
+	if err != nil {
+		t.Fatalf("count open gaps after startup catch-up: %v", err)
+	}
+	if openAfter != 0 {
+		t.Fatalf("expected startup catch-up to close all kline gaps, got %d", openAfter)
+	}
+
+	rows := loadKlineRows(t, filepath.Join(klineDir, "sh000001.db"), "DayKline")
+	if len(rows) != 4 {
+		t.Fatalf("expected repaired kline history to include 4 rows, got %d", len(rows))
+	}
+	if got := time.Unix(rows[1].Date, 0).Format("20060102"); got != "20260402" {
+		t.Fatalf("expected repaired middle bar for 20260402, got %s", got)
+	}
+
+	run, err := store.LatestScheduleRun("collector_startup_catchup")
+	if err != nil {
+		t.Fatalf("load latest startup catch-up run: %v", err)
+	}
+	if run == nil || run.Status != "passed" {
+		t.Fatalf("expected passed startup catch-up run, got %+v", run)
+	}
+	if !strings.Contains(run.Details, "kline_gap_reconcile_planned=1") || !strings.Contains(run.Details, "remaining=0") {
+		t.Fatalf("expected startup catch-up details to include kline gap repair summary, got %q", run.Details)
 	}
 }
 

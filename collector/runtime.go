@@ -391,6 +391,10 @@ func (r *Runtime) runCatchUp(ctx context.Context, scheduleName, suiteName string
 	if err := r.runCatchUpInstruments(ctx, instruments, tradingDays, progress, counters); err != nil {
 		return err
 	}
+	klineGapDetails, err := r.runCatchUpKlineGapRepair(ctx, progress)
+	if err != nil {
+		return err
+	}
 
 	// K-line catch-up is done for all instruments; start the signal scanner now
 	// so that its first scan has complete K-line data and the ticker has had time
@@ -405,6 +409,9 @@ func (r *Runtime) runCatchUp(ctx context.Context, scheduleName, suiteName string
 	if errSummary := counters.errorSummary(5); errSummary != "" {
 		details += " errors=[" + errSummary + "]"
 	}
+	if klineGapDetails != "" {
+		details = appendScheduleRunDetails(details, klineGapDetails)
+	}
 	if skipped > 0 {
 		progress("catch-up finished with %d skipped items; see details for error summary", skipped)
 	}
@@ -417,6 +424,56 @@ func (r *Runtime) runCatchUp(ctx context.Context, scheduleName, suiteName string
 		CommandText: scheduleName,
 		OutputText:  details,
 	})
+}
+
+func (r *Runtime) runCatchUpKlineGapRepair(ctx context.Context, progress func(string, ...any)) (string, error) {
+	if r == nil || r.kline == nil {
+		return "", nil
+	}
+
+	progress("phase=kline_gap_cleanup status=starting")
+	cleanupReport, err := r.CleanupKlineGaps(ctx, KlineGapCleanupOptions{})
+	if err != nil {
+		return "", err
+	}
+	progress(
+		"phase=kline_gap_cleanup status=done scanned=%d matched=%d closed=%d updated=%d unchanged=%d",
+		cleanupReport.Scanned,
+		cleanupReport.Matched,
+		cleanupReport.Closed,
+		cleanupReport.Updated,
+		cleanupReport.Unchanged,
+	)
+	if cleanupReport.Scanned == 0 {
+		return "", nil
+	}
+
+	progress("phase=kline_gap_reconcile status=starting open=%d", cleanupReport.Scanned-cleanupReport.Closed)
+	reconcileReport, err := r.ReconcileKlineGaps(ctx, KlineGapReconcileOptions{})
+	if err != nil {
+		return "", err
+	}
+	progress(
+		"phase=kline_gap_reconcile status=done scanned=%d planned=%d executed=%d succeeded=%d failed=%d remaining=%d",
+		reconcileReport.Scanned,
+		reconcileReport.Planned,
+		reconcileReport.Executed,
+		reconcileReport.Succeeded,
+		reconcileReport.Failed,
+		reconcileReport.RemainingOpenGaps,
+	)
+	return fmt.Sprintf(
+		"kline_gap_cleanup_scanned=%d closed=%d updated=%d unchanged=%d kline_gap_reconcile_planned=%d executed=%d succeeded=%d failed=%d remaining=%d",
+		cleanupReport.Scanned,
+		cleanupReport.Closed,
+		cleanupReport.Updated,
+		cleanupReport.Unchanged,
+		reconcileReport.Planned,
+		reconcileReport.Executed,
+		reconcileReport.Succeeded,
+		reconcileReport.Failed,
+		reconcileReport.RemainingOpenGaps,
+	), nil
 }
 
 type catchUpCounters struct {

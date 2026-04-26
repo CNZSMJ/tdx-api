@@ -3,17 +3,22 @@ package collector
 import "time"
 
 type RuntimeStatus struct {
-	Now            time.Time           `json:"now"`
-	OpenGapCount   int64               `json:"open_gap_count"`
-	LastStartupRun *ScheduleRunRecord  `json:"last_startup_run,omitempty"`
-	LastFullSync   *ScheduleRunRecord  `json:"last_full_sync,omitempty"`
-	LastReconcile  *ScheduleRunRecord  `json:"last_reconcile,omitempty"`
-	RecentRuns     []ScheduleRunRecord `json:"recent_runs,omitempty"`
-	NextActions    []string            `json:"next_actions,omitempty"`
+	Now              time.Time           `json:"now"`
+	OpenGapCount     int64               `json:"open_gap_count"`
+	DegradedGapCount int64               `json:"degraded_gap_count"`
+	LastStartupRun   *ScheduleRunRecord  `json:"last_startup_run,omitempty"`
+	LastFullSync     *ScheduleRunRecord  `json:"last_full_sync,omitempty"`
+	LastReconcile    *ScheduleRunRecord  `json:"last_reconcile,omitempty"`
+	RecentRuns       []ScheduleRunRecord `json:"recent_runs,omitempty"`
+	NextActions      []string            `json:"next_actions,omitempty"`
 }
 
 func (r *Runtime) Status() (*RuntimeStatus, error) {
 	openGapCount, err := r.store.CountOpenCollectGaps()
+	if err != nil {
+		return nil, err
+	}
+	degradedGapCount, err := r.store.CountCollectGapsByStatus(CollectGapStatusDegraded)
 	if err != nil {
 		return nil, err
 	}
@@ -35,16 +40,20 @@ func (r *Runtime) Status() (*RuntimeStatus, error) {
 	}
 
 	status := &RuntimeStatus{
-		Now:            r.cfg.Now(),
-		OpenGapCount:   openGapCount,
-		LastStartupRun: lastStartupRun,
-		LastFullSync:   lastFullSync,
-		LastReconcile:  lastReconcile,
-		RecentRuns:     recentRuns,
-		NextActions:    make([]string, 0, 2),
+		Now:              r.cfg.Now(),
+		OpenGapCount:     openGapCount,
+		DegradedGapCount: degradedGapCount,
+		LastStartupRun:   lastStartupRun,
+		LastFullSync:     lastFullSync,
+		LastReconcile:    lastReconcile,
+		RecentRuns:       recentRuns,
+		NextActions:      make([]string, 0, 3),
 	}
 	if openGapCount > 0 {
 		status.NextActions = append(status.NextActions, "collector_gap has open records; inspect /api/collector/status and run reconciliation")
+	}
+	if degradedGapCount > 0 {
+		status.NextActions = append(status.NextActions, "collector_gap has degraded records; inspect collector_reports task list and track them separately")
 	}
 	if lastFullSync == nil {
 		status.NextActions = append(status.NextActions, "daily full sync has not succeeded yet")

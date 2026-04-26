@@ -2,6 +2,7 @@ package collector
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -196,6 +197,113 @@ func TestGovernanceStorePersistsControlPlaneRecords(t *testing.T) {
 	}
 }
 
+func TestGovernanceStoreInterruptRunningRuns(t *testing.T) {
+	paths := ResolveGovernancePaths(t.TempDir())
+	store, err := OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 4, 20, 3, 30, 0, 0, time.Local)
+	for _, run := range []GovernanceRunRecord{
+		{
+			RunID:        "run-running",
+			JobName:      string(GovernanceJobDailyCloseSync),
+			Status:       GovernanceRunStatusRunning,
+			TargetWindow: "20260416,20260417",
+			StartedAt:    now.Add(-time.Hour),
+		},
+		{
+			RunID:        "run-passed",
+			JobName:      string(GovernanceJobDailyAudit),
+			Status:       GovernanceRunStatusPassed,
+			TargetWindow: "20260416,20260417",
+			StartedAt:    now.Add(-2 * time.Hour),
+			EndedAt:      now.Add(-90 * time.Minute),
+		},
+	} {
+		run := run
+		if err := store.AddRun(&run); err != nil {
+			t.Fatalf("seed run %s: %v", run.RunID, err)
+		}
+	}
+
+	count, err := store.InterruptRunningRuns("collector process restarted before governance run finished", now)
+	if err != nil {
+		t.Fatalf("interrupt running governance runs: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("interrupt count = %d, want 1", count)
+	}
+
+	runs, err := store.ListRecentRuns(10)
+	if err != nil {
+		t.Fatalf("list recent runs: %v", err)
+	}
+	runByID := make(map[string]GovernanceRunRecord, len(runs))
+	for _, run := range runs {
+		runByID[run.RunID] = run
+	}
+	if runByID["run-running"].Status != GovernanceRunStatusInterrupted {
+		t.Fatalf("running run status = %s, want interrupted", runByID["run-running"].Status)
+	}
+	if runByID["run-running"].Reason != "collector process restarted before governance run finished" {
+		t.Fatalf("running run reason = %q", runByID["run-running"].Reason)
+	}
+	if runByID["run-passed"].Status != GovernanceRunStatusPassed {
+		t.Fatalf("passed run status = %s, want passed", runByID["run-passed"].Status)
+	}
+}
+
+func TestGovernanceStoreInterruptRunningRunsRollsBackOnUpdateFailure(t *testing.T) {
+	paths := ResolveGovernancePaths(t.TempDir())
+	store, err := OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 4, 20, 3, 30, 0, 0, time.Local)
+	for _, run := range []GovernanceRunRecord{
+		{
+			RunID:        "run-a",
+			JobName:      string(GovernanceJobDailyCloseSync),
+			Status:       GovernanceRunStatusRunning,
+			TargetWindow: "20260416",
+			StartedAt:    now.Add(-time.Hour),
+		},
+		{
+			RunID:        "run-b",
+			JobName:      string(GovernanceJobDailyAudit),
+			Status:       GovernanceRunStatusRunning,
+			TargetWindow: "20260417",
+			StartedAt:    now.Add(-2 * time.Hour),
+		},
+	} {
+		run := run
+		if err := store.AddRun(&run); err != nil {
+			t.Fatalf("seed run %s: %v", run.RunID, err)
+		}
+	}
+	if _, err := store.engine.Exec(`CREATE TRIGGER fail_interrupt_run_b BEFORE UPDATE ON governance_run WHEN OLD.RunID = 'run-b' BEGIN SELECT RAISE(ABORT, 'interrupt failed'); END`); err != nil {
+		t.Fatalf("create failure trigger: %v", err)
+	}
+
+	if _, err := store.InterruptRunningRuns("collector restarted", now); err == nil {
+		t.Fatalf("expected interrupt failure")
+	}
+	for _, runID := range []string{"run-a", "run-b"} {
+		run, err := store.GetRunByRunID(runID)
+		if err != nil {
+			t.Fatalf("get run %s: %v", runID, err)
+		}
+		if run == nil || run.Status != GovernanceRunStatusRunning || !run.EndedAt.IsZero() {
+			t.Fatalf("run %s was partially interrupted: %+v", runID, run)
+		}
+	}
+}
+
 func TestGovernanceStoreUpsertTaskPreservesDegradedStatus(t *testing.T) {
 	paths := ResolveGovernancePaths(t.TempDir())
 	store, err := OpenGovernanceStore(paths.DBPath)
@@ -358,6 +466,8 @@ func TestGovernanceJobCatalogAndLegacyMapping(t *testing.T) {
 		GovernanceJobDailyCloseSync,
 		GovernanceJobDailyAudit,
 		GovernanceJobDeepAuditBackfill,
+		GovernanceJobDataLifecycleRestore,
+		GovernanceJobDataLifecycleMaintenance,
 	}
 	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("job catalog = %+v, want %+v", names, want)
@@ -392,7 +502,26 @@ func TestRuntimeUnifiedGovernanceStatusProjectsLegacyRunsAndDomains(t *testing.T
 	defer store.Close()
 
 	now := time.Date(2026, 4, 19, 20, 0, 0, 0, time.Local)
-	runtime, err := NewRuntime(store, &stubProvider{}, RuntimeConfig{
+	runtime, err := NewRuntime(store, &blockStubProvider{
+		blockFiles: map[string][]BlockInfo{
+			"block_gn.dat": {
+				{
+					Name:      "白酒概念",
+					BlockType: BlockTypeConcept,
+					Source:    "block_gn.dat",
+					Codes:     []string{"600519", "000568"},
+				},
+			},
+			"block_fg.dat": {
+				{
+					Name:      "白酒",
+					BlockType: BlockTypeIndustry,
+					Source:    "block_fg.dat",
+					Codes:     []string{"600519"},
+				},
+			},
+		},
+	}, RuntimeConfig{
 		Now: func() time.Time { return now },
 		Metadata: MetadataConfig{
 			CodesDBPath:   filepath.Join(tmp, "codes.db"),
@@ -409,6 +538,10 @@ func TestRuntimeUnifiedGovernanceStatusProjectsLegacyRunsAndDomains(t *testing.T
 		t.Fatalf("new runtime: %v", err)
 	}
 	defer runtime.Close()
+
+	if err := runtime.BlockService().SyncBlocks(context.Background()); err != nil {
+		t.Fatalf("seed block sync: %v", err)
+	}
 
 	for _, record := range []ScheduleRunRecord{
 		{
@@ -499,8 +632,8 @@ func TestRuntimeUnifiedGovernanceStatusProjectsLegacyRunsAndDomains(t *testing.T
 	if status.Paths.DBPath != paths.DBPath {
 		t.Fatalf("db path = %s, want %s", status.Paths.DBPath, paths.DBPath)
 	}
-	if len(status.Jobs) != 5 {
-		t.Fatalf("job count = %d, want 5", len(status.Jobs))
+	if len(status.Jobs) != 7 {
+		t.Fatalf("job count = %d, want 7", len(status.Jobs))
 	}
 
 	jobMap := make(map[GovernanceJob]GovernanceJobStatus, len(status.Jobs))
@@ -526,6 +659,9 @@ func TestRuntimeUnifiedGovernanceStatusProjectsLegacyRunsAndDomains(t *testing.T
 	}
 	if domainMap["workday"].LatestCursor != "20260418" {
 		t.Fatalf("workday snapshot = %+v, want latest cursor 20260418", domainMap["workday"])
+	}
+	if domainMap["block"].Status != "healthy" || domainMap["block"].Summary != "published_block_groups=2" {
+		t.Fatalf("block snapshot = %+v, want healthy published block data", domainMap["block"])
 	}
 	if domainMap["professional_finance"].Status != "healthy" || domainMap["professional_finance"].Summary != "seeded by open-refresh governance" {
 		t.Fatalf("professional_finance snapshot was overwritten: %+v", domainMap["professional_finance"])

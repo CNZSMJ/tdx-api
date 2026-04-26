@@ -183,6 +183,11 @@ func (s *BlockService) SyncBlocks(ctx context.Context) error {
 			log.Printf("block sync: failed to download %s: %v (preserving old data for this source)", filename, err)
 			continue
 		}
+		if len(infos) == 0 {
+			failedCount++
+			log.Printf("block sync: %s returned 0 groups (preserving old data for this source)", filename)
+			continue
+		}
 
 		for _, info := range infos {
 			allGroups = append(allGroups, BlockGroupRecord{

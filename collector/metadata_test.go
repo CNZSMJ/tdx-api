@@ -180,6 +180,70 @@ func TestMetadataRefreshIsReplaySafeAcrossRestart(t *testing.T) {
 	}
 }
 
+func TestMetadataRefreshWorkdaysReplacesPublishedSet(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := OpenStore(filepath.Join(tmp, "collector.db"))
+	if err != nil {
+		t.Fatalf("open collector store: %v", err)
+	}
+	defer store.Close()
+
+	service, err := NewMetadataService(store, &stubProvider{
+		instruments: []Instrument{
+			{Code: "sh600000", Name: "浦发银行", Exchange: "sh", AssetType: AssetTypeStock, Multiple: 100, Decimal: 2, LastPrice: 12340},
+		},
+		tradingDays: []TradingDay{
+			{Date: "20260330", Time: time.Date(2026, 3, 30, 15, 0, 0, 0, time.Local)},
+			{Date: "20260331", Time: time.Date(2026, 3, 31, 15, 0, 0, 0, time.Local)},
+		},
+	}, MetadataConfig{
+		CodesDBPath:   filepath.Join(tmp, "codes.db"),
+		WorkdayDBPath: filepath.Join(tmp, "workday.db"),
+		Now: func() time.Time {
+			return time.Date(2026, 4, 2, 3, 0, 0, 0, time.Local)
+		},
+	})
+	if err != nil {
+		t.Fatalf("new metadata service: %v", err)
+	}
+
+	if err := service.RefreshWorkdays(context.Background()); err != nil {
+		t.Fatalf("first workday refresh: %v", err)
+	}
+
+	service.provider = &stubProvider{
+		tradingDays: []TradingDay{
+			{Date: "20260331", Time: time.Date(2026, 3, 31, 15, 0, 0, 0, time.Local)},
+			{Date: "20260401", Time: time.Date(2026, 4, 1, 15, 0, 0, 0, time.Local)},
+		},
+	}
+	if err := service.RefreshWorkdays(context.Background()); err != nil {
+		t.Fatalf("second workday refresh: %v", err)
+	}
+
+	dates := loadWorkdayDates(t, filepath.Join(tmp, "workday.db"))
+	expected := []string{"20260331", "20260401"}
+	if len(dates) != len(expected) {
+		t.Fatalf("unexpected workday dates count: got %v want %v", dates, expected)
+	}
+	for i := range expected {
+		if dates[i] != expected[i] {
+			t.Fatalf("unexpected workday dates: got %v want %v", dates, expected)
+		}
+	}
+}
+
+func TestValidateTradingDaysRejectsDuplicateUnix(t *testing.T) {
+	items := []TradingDay{
+		{Date: "20260330", Time: time.Date(2026, 3, 30, 15, 0, 0, 0, time.Local)},
+		{Date: "20260331", Time: time.Date(2026, 3, 30, 15, 0, 0, 0, time.Local)},
+	}
+
+	if _, err := validateTradingDays(items); err == nil {
+		t.Fatalf("expected duplicate unix validation error")
+	}
+}
+
 func countRows[T any](t *testing.T, filename string) int64 {
 	t.Helper()
 	engine, err := openMetadataEngine(filename)
@@ -194,4 +258,23 @@ func countRows[T any](t *testing.T, filename string) int64 {
 		t.Fatalf("count rows %s: %v", filename, err)
 	}
 	return count
+}
+
+func loadWorkdayDates(t *testing.T, filename string) []string {
+	t.Helper()
+	engine, err := openMetadataEngine(filename)
+	if err != nil {
+		t.Fatalf("open metadata engine %s: %v", filename, err)
+	}
+	defer engine.Close()
+
+	rows := make([]MetadataWorkdayRecord, 0, 8)
+	if err := engine.Table("workday").Asc("Unix").Find(&rows); err != nil {
+		t.Fatalf("load workday rows %s: %v", filename, err)
+	}
+	dates := make([]string, 0, len(rows))
+	for _, row := range rows {
+		dates = append(dates, row.Date)
+	}
+	return dates
 }

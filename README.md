@@ -260,7 +260,7 @@ docker compose down                 # 停止并删除容器
 ./scripts/save_image.sh             # 导出镜像，便于迁移到VPS
 ```
 
-`.env.example` 中提供了两个常用变量：
+`.env.example` 中提供了常用运行变量，并为每个变量提供注释说明。部署最常用的是：
 
 - `TDX_STOCK_WEB_IMAGE`：部署时使用的镜像名
 - `TDX_DATA_DIR`：宿主机数据目录，默认 `./data/database`

@@ -9,7 +9,7 @@ import (
 	systemgov "github.com/injoyai/tdx/governance"
 )
 
-func TestRunGovernanceRepairWorkerExecutesStartupMissedWindowTask(t *testing.T) {
+func TestRunGovernanceRepairWorkerDoesNotReplayMissedOpenRefreshTask(t *testing.T) {
 	originalStore := governanceStore
 	originalPaths := governancePaths
 	originalRepairWorker := repairWorker
@@ -72,15 +72,15 @@ func TestRunGovernanceRepairWorkerExecutesStartupMissedWindowTask(t *testing.T) 
 	if len(updated) != 1 {
 		t.Fatalf("updated tasks = %d, want 1", len(updated))
 	}
-	if calls != 1 {
-		t.Fatalf("daily open refresh calls = %d, want 1", calls)
+	if calls != 0 {
+		t.Fatalf("daily open refresh calls = %d, want 0", calls)
 	}
 
 	tasks, err := store.ListTasksByStatus()
 	if err != nil {
 		t.Fatalf("list tasks: %v", err)
 	}
-	if len(tasks) != 1 || tasks[0].Status != collectorpkg.GovernanceTaskStatusRepaired {
+	if len(tasks) != 1 || tasks[0].Status != collectorpkg.GovernanceTaskStatusDegraded {
 		t.Fatalf("unexpected tasks after repair worker run: %+v", tasks)
 	}
 
@@ -95,12 +95,12 @@ func TestRunGovernanceRepairWorkerExecutesStartupMissedWindowTask(t *testing.T) 
 			break
 		}
 	}
-	if !foundOpenRefresh {
-		t.Fatalf("expected startup compensation to execute a daily_open_refresh run, got %+v", runs)
+	if foundOpenRefresh {
+		t.Fatalf("startup compensation should not execute a daily_open_refresh run, got %+v", runs)
 	}
 }
 
-func TestRunGovernanceRepairWorkerExecutesStartupMissedCloseSyncTaskWithStoredWindow(t *testing.T) {
+func TestRunGovernanceRepairWorkerDoesNotReplayMissedCloseSyncTask(t *testing.T) {
 	originalStore := governanceStore
 	originalPaths := governancePaths
 	originalRepairWorker := repairWorker
@@ -165,12 +165,15 @@ func TestRunGovernanceRepairWorkerExecutesStartupMissedCloseSyncTaskWithStoredWi
 	if len(updated) != 1 {
 		t.Fatalf("updated tasks = %d, want 1", len(updated))
 	}
-	if len(receivedDates) != 2 || receivedDates[0] != "20260417" || receivedDates[1] != "20260418" {
-		t.Fatalf("received close-sync dates = %+v, want [20260417 20260418]", receivedDates)
+	if updated[0].Status != collectorpkg.GovernanceTaskStatusDegraded {
+		t.Fatalf("task status = %s, want degraded", updated[0].Status)
+	}
+	if len(receivedDates) != 0 {
+		t.Fatalf("received close-sync dates = %+v, want none", receivedDates)
 	}
 }
 
-func TestRunGovernanceRepairWorkerReplaysInterruptedCloseSyncRun(t *testing.T) {
+func TestRunGovernanceRepairWorkerDoesNotReplayInterruptedCloseSyncRun(t *testing.T) {
 	originalStore := governanceStore
 	originalPaths := governancePaths
 	originalRepairWorker := repairWorker
@@ -247,7 +250,289 @@ func TestRunGovernanceRepairWorkerReplaysInterruptedCloseSyncRun(t *testing.T) {
 	if len(updated) != 1 {
 		t.Fatalf("updated tasks = %d, want 1", len(updated))
 	}
-	if len(receivedDates) != 2 || receivedDates[0] != "20260417" || receivedDates[1] != "20260418" {
-		t.Fatalf("received close-sync dates = %+v, want [20260417 20260418]", receivedDates)
+	if updated[0].Status != collectorpkg.GovernanceTaskStatusDegraded {
+		t.Fatalf("task status = %s, want degraded", updated[0].Status)
+	}
+	if len(receivedDates) != 0 {
+		t.Fatalf("received close-sync dates = %+v, want none", receivedDates)
+	}
+}
+
+func TestRunGovernanceRepairWorkerDoesNotReplayMissedDailyAudit(t *testing.T) {
+	originalStore := governanceStore
+	originalPaths := governancePaths
+	originalRepairWorker := repairWorker
+	originalDailyAudit := dailyAudit
+	defer func() {
+		governanceStore = originalStore
+		governancePaths = originalPaths
+		repairWorker = originalRepairWorker
+		dailyAudit = originalDailyAudit
+	}()
+
+	tmp := t.TempDir()
+	governancePaths = collectorpkg.ResolveGovernancePaths(tmp)
+	store, err := collectorpkg.OpenGovernanceStore(governancePaths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	defer store.Close()
+	governanceStore = store
+	dailyAudit = nil
+
+	if err := store.UpsertTask(&collectorpkg.GovernanceTaskRecord{
+		TaskKey:      "startup_recovery:missed:daily_audit:20260420,20260421",
+		JobName:      string(collectorpkg.GovernanceJobStartupRecovery),
+		Domain:       string(collectorpkg.GovernanceJobDailyAudit),
+		Status:       collectorpkg.GovernanceTaskStatusOpen,
+		Priority:     1,
+		Reason:       "missed governance window queued for recovery",
+		TargetWindow: "20260420,20260421",
+	}); err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+
+	initGovernanceRepairWorker()
+
+	updated, err := runGovernanceRepairWorker("startup", 1)
+	if err != nil {
+		t.Fatalf("run governance repair worker: %v", err)
+	}
+	if len(updated) != 1 {
+		t.Fatalf("updated tasks = %d, want 1", len(updated))
+	}
+	if updated[0].Status != collectorpkg.GovernanceTaskStatusDegraded {
+		t.Fatalf("task status = %s, want degraded", updated[0].Status)
+	}
+}
+
+func TestRunGovernanceRepairWorkerDoesNotReplayInterruptedDailyAudit(t *testing.T) {
+	originalStore := governanceStore
+	originalPaths := governancePaths
+	originalRepairWorker := repairWorker
+	originalDailyAudit := dailyAudit
+	defer func() {
+		governanceStore = originalStore
+		governancePaths = originalPaths
+		repairWorker = originalRepairWorker
+		dailyAudit = originalDailyAudit
+	}()
+
+	tmp := t.TempDir()
+	governancePaths = collectorpkg.ResolveGovernancePaths(tmp)
+	store, err := collectorpkg.OpenGovernanceStore(governancePaths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	defer store.Close()
+	governanceStore = store
+	dailyAudit = nil
+
+	interruptedRun := collectorpkg.GovernanceRunRecord{
+		RunID:        "interrupted-daily-audit-run",
+		JobName:      string(collectorpkg.GovernanceJobDailyAudit),
+		Status:       collectorpkg.GovernanceRunStatusInterrupted,
+		Trigger:      "daily-19:00",
+		TargetWindow: "20260420,20260421",
+		StartedAt:    time.Date(2026, 4, 21, 19, 0, 0, 0, time.Local),
+		EndedAt:      time.Date(2026, 4, 21, 20, 0, 0, 0, time.Local),
+	}
+	if err := store.AddRun(&interruptedRun); err != nil {
+		t.Fatalf("seed interrupted run: %v", err)
+	}
+	if err := store.UpsertTask(&collectorpkg.GovernanceTaskRecord{
+		TaskKey:      "startup_recovery:interrupted:interrupted-daily-audit-run",
+		JobName:      string(collectorpkg.GovernanceJobStartupRecovery),
+		Domain:       "interrupted_run",
+		Status:       collectorpkg.GovernanceTaskStatusOpen,
+		Priority:     1,
+		Reason:       interruptedRun.RunID,
+		TargetWindow: "20260421",
+	}); err != nil {
+		t.Fatalf("seed interrupted-run task: %v", err)
+	}
+
+	initGovernanceRepairWorker()
+
+	updated, err := runGovernanceRepairWorker("startup", 1)
+	if err != nil {
+		t.Fatalf("run governance repair worker: %v", err)
+	}
+	if len(updated) != 1 {
+		t.Fatalf("updated tasks = %d, want 1", len(updated))
+	}
+	if updated[0].Status != collectorpkg.GovernanceTaskStatusDegraded {
+		t.Fatalf("task status = %s, want degraded", updated[0].Status)
+	}
+}
+
+func TestExecuteDailyAuditRepairTaskDegradesRetryableReasonWithoutReconcile(t *testing.T) {
+	originalRuntime := collectorRuntime
+	defer func() {
+		collectorRuntime = originalRuntime
+	}()
+	collectorRuntime = nil
+
+	status, reason, err := executeDailyAuditRepairTask(context.Background(), collectorpkg.GovernanceTaskRecord{
+		TaskKey:      "daily_audit:live_capture:20260416",
+		JobName:      string(collectorpkg.GovernanceJobDailyAudit),
+		Domain:       "live_capture",
+		Status:       collectorpkg.GovernanceTaskStatusOpen,
+		Reason:       "sh515643: 超时; sh515644: EOF",
+		TargetWindow: "20260416",
+	})
+	if err != nil {
+		t.Fatalf("execute daily audit repair task: %v", err)
+	}
+	if status != collectorpkg.GovernanceTaskStatusDegraded {
+		t.Fatalf("status = %s, want degraded", status)
+	}
+	if reason != "sh515643: 超时; sh515644: EOF" {
+		t.Fatalf("reason = %q", reason)
+	}
+}
+
+func TestExecuteDailyAuditRepairTaskRespectsGovernanceLock(t *testing.T) {
+	originalRuntime := collectorRuntime
+	originalPaths := governancePaths
+	defer func() {
+		collectorRuntime = originalRuntime
+		governancePaths = originalPaths
+	}()
+
+	governancePaths = collectorpkg.ResolveGovernancePaths(t.TempDir())
+	lock, err := collectorpkg.AcquireGovernanceLock(governancePaths.LockPath)
+	if err != nil {
+		t.Fatalf("acquire governance lock: %v", err)
+	}
+	defer lock.Release()
+	collectorRuntime = nil
+
+	status, _, err := executeDailyAuditRepairTask(context.Background(), collectorpkg.GovernanceTaskRecord{
+		TaskKey:      "daily_audit:f10:20260420",
+		JobName:      string(collectorpkg.GovernanceJobDailyAudit),
+		Domain:       "f10",
+		Status:       collectorpkg.GovernanceTaskStatusOpen,
+		Reason:       "sh600000: schema mismatch",
+		TargetWindow: "20260420",
+	})
+	if err == nil || !collectorpkg.IsGovernanceLockHeld(err) {
+		t.Fatalf("err = %v, want governance lock held", err)
+	}
+	if status != collectorpkg.GovernanceTaskStatusOpen {
+		t.Fatalf("status = %s, want open", status)
+	}
+}
+
+func TestQueueMissedGovernanceWindowOnLockConflict(t *testing.T) {
+	originalStore := governanceStore
+	defer func() {
+		governanceStore = originalStore
+	}()
+
+	paths := collectorpkg.ResolveGovernancePaths(t.TempDir())
+	store, err := collectorpkg.OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	defer store.Close()
+	governanceStore = store
+
+	lockErr := collectorpkg.ErrGovernanceLockHeld
+	if err := upsertMissedGovernanceWindowTask(collectorpkg.GovernanceJobDailyAudit, "20260420,20260421", lockErr.Error()); err != nil {
+		t.Fatalf("upsert missed governance window task: %v", err)
+	}
+
+	tasks, err := store.ListTasksByStatus(collectorpkg.GovernanceTaskStatusOpen)
+	if err != nil {
+		t.Fatalf("list open tasks: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("open tasks = %+v, want one task", tasks)
+	}
+	task := tasks[0]
+	if task.TaskKey != "startup_recovery:missed:daily_audit:20260420,20260421" {
+		t.Fatalf("task key = %q", task.TaskKey)
+	}
+	if task.JobName != string(collectorpkg.GovernanceJobStartupRecovery) || task.Domain != string(collectorpkg.GovernanceJobDailyAudit) {
+		t.Fatalf("task routing = job:%s domain:%s", task.JobName, task.Domain)
+	}
+	if task.TargetWindow != "20260420,20260421" {
+		t.Fatalf("target window = %q", task.TargetWindow)
+	}
+}
+
+func TestDegradeStaleStartupRecoveryTasks(t *testing.T) {
+	originalStore := governanceStore
+	defer func() {
+		governanceStore = originalStore
+	}()
+
+	paths := collectorpkg.ResolveGovernancePaths(t.TempDir())
+	store, err := collectorpkg.OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	defer store.Close()
+	governanceStore = store
+
+	if err := store.UpsertTask(&collectorpkg.GovernanceTaskRecord{
+		TaskKey:      "startup_recovery:interrupted:close-sync-run",
+		JobName:      string(collectorpkg.GovernanceJobStartupRecovery),
+		Domain:       "interrupted_run",
+		Status:       collectorpkg.GovernanceTaskStatusInProgress,
+		Priority:     1,
+		Reason:       "close-sync-run",
+		TargetWindow: "20260424",
+	}); err != nil {
+		t.Fatalf("seed startup recovery task: %v", err)
+	}
+	if err := store.UpsertTask(&collectorpkg.GovernanceTaskRecord{
+		TaskKey:      "daily_audit:order_history:20260424",
+		JobName:      string(collectorpkg.GovernanceJobDailyAudit),
+		Domain:       "order_history",
+		Status:       collectorpkg.GovernanceTaskStatusInProgress,
+		Priority:     2,
+		Reason:       "provider timeout",
+		TargetWindow: "20260424",
+	}); err != nil {
+		t.Fatalf("seed non-startup task: %v", err)
+	}
+
+	count, err := degradeStaleStartupRecoveryTasks("deferred stale task")
+	if err != nil {
+		t.Fatalf("degrade stale startup recovery tasks: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("degraded task count = %d, want 1", count)
+	}
+
+	tasks, err := store.ListTasksByStatus()
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	byKey := make(map[string]collectorpkg.GovernanceTaskRecord, len(tasks))
+	for _, task := range tasks {
+		byKey[task.TaskKey] = task
+	}
+	if byKey["startup_recovery:interrupted:close-sync-run"].Status != collectorpkg.GovernanceTaskStatusDegraded {
+		t.Fatalf("startup task status = %s, want degraded", byKey["startup_recovery:interrupted:close-sync-run"].Status)
+	}
+	if byKey["daily_audit:order_history:20260424"].Status != collectorpkg.GovernanceTaskStatusInProgress {
+		t.Fatalf("non-startup task status = %s, want in_progress", byKey["daily_audit:order_history:20260424"].Status)
+	}
+}
+
+func TestClassifyRepairAuditDomainStatusMarksRetryablePartialAsDegraded(t *testing.T) {
+	status := classifyRepairAuditDomainStatus("partial", true, []string{"sh515643: timeout", "sh515644: EOF"})
+	if status != collectorpkg.GovernanceTaskStatusDegraded {
+		t.Fatalf("status = %s, want degraded", status)
+	}
+}
+
+func TestClassifyRepairAuditDomainStatusKeepsNonRetryablePartialOpen(t *testing.T) {
+	status := classifyRepairAuditDomainStatus("partial", true, []string{"sh600000: schema mismatch"})
+	if status != collectorpkg.GovernanceTaskStatusOpen {
+		t.Fatalf("status = %s, want open", status)
 	}
 }

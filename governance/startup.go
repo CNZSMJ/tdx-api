@@ -79,7 +79,11 @@ func (r *StartupRecoveryRunner) Run(ctx context.Context, trigger string) (*colle
 
 	snapshot, err := r.cfg.Inspect(ctx, startedAt)
 	if err != nil {
-		run.Status = collectorpkg.GovernanceRunStatusFailed
+		if interruptedGovernanceError(err) {
+			run.Status = collectorpkg.GovernanceRunStatusInterrupted
+		} else {
+			run.Status = collectorpkg.GovernanceRunStatusFailed
+		}
 		run.Reason = err.Error()
 		run.EndedAt = r.cfg.Now()
 		_ = r.cfg.Store.UpdateRun(run)

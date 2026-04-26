@@ -5,11 +5,13 @@ import "time"
 type GovernanceJob string
 
 const (
-	GovernanceJobStartupRecovery   GovernanceJob = "startup_recovery"
-	GovernanceJobDailyOpenRefresh  GovernanceJob = "daily_open_refresh"
-	GovernanceJobDailyCloseSync    GovernanceJob = "daily_close_sync"
-	GovernanceJobDailyAudit        GovernanceJob = "daily_audit"
-	GovernanceJobDeepAuditBackfill GovernanceJob = "deep_audit_backfill"
+	GovernanceJobStartupRecovery          GovernanceJob = "startup_recovery"
+	GovernanceJobDailyOpenRefresh         GovernanceJob = "daily_open_refresh"
+	GovernanceJobDailyCloseSync           GovernanceJob = "daily_close_sync"
+	GovernanceJobDailyAudit               GovernanceJob = "daily_audit"
+	GovernanceJobDeepAuditBackfill        GovernanceJob = "deep_audit_backfill"
+	GovernanceJobDataLifecycleMaintenance GovernanceJob = "data_lifecycle_maintenance"
+	GovernanceJobDataLifecycleRestore     GovernanceJob = "data_lifecycle_restore"
 )
 
 type GovernanceRunStatus string
@@ -27,21 +29,21 @@ const (
 type GovernanceTaskStatus string
 
 const (
-	GovernanceTaskStatusOpen       GovernanceTaskStatus = "open"
-	GovernanceTaskStatusInProgress GovernanceTaskStatus = "in_progress"
-	GovernanceTaskStatusRepaired   GovernanceTaskStatus = "repaired"
-	GovernanceTaskStatusDegraded   GovernanceTaskStatus = "degraded"
-	GovernanceTaskStatusBlocked    GovernanceTaskStatus = "blocked"
+	GovernanceTaskStatusOpen        GovernanceTaskStatus = "open"
+	GovernanceTaskStatusInProgress  GovernanceTaskStatus = "in_progress"
+	GovernanceTaskStatusRepaired    GovernanceTaskStatus = "repaired"
+	GovernanceTaskStatusDegraded    GovernanceTaskStatus = "degraded"
+	GovernanceTaskStatusBlocked     GovernanceTaskStatus = "blocked"
 	GovernanceTaskStatusUnsupported GovernanceTaskStatus = "unsupported"
-	GovernanceTaskStatusClosed     GovernanceTaskStatus = "closed"
+	GovernanceTaskStatusClosed      GovernanceTaskStatus = "closed"
 )
 
 type GovernanceJobSpec struct {
-	Name         GovernanceJob   `json:"name"`
-	Priority     int             `json:"priority"`
-	Schedule     string          `json:"schedule,omitempty"`
-	LegacyNames  []string        `json:"legacy_names,omitempty"`
-	Description  string          `json:"description,omitempty"`
+	Name         GovernanceJob       `json:"name"`
+	Priority     int                 `json:"priority"`
+	Schedule     string              `json:"schedule,omitempty"`
+	LegacyNames  []string            `json:"legacy_names,omitempty"`
+	Description  string              `json:"description,omitempty"`
 	DefaultState GovernanceRunStatus `json:"default_state"`
 }
 
@@ -84,6 +86,18 @@ func DefaultGovernanceJobCatalog() []GovernanceJobSpec {
 			Description:  "low-peak historical audit and backfill",
 			DefaultState: GovernanceRunStatusPlanned,
 		},
+		{
+			Name:         GovernanceJobDataLifecycleRestore,
+			Priority:     6,
+			Description:  "explicit cold segment restore and rehydrate operations",
+			DefaultState: GovernanceRunStatusPlanned,
+		},
+		{
+			Name:         GovernanceJobDataLifecycleMaintenance,
+			Priority:     7,
+			Description:  "bounded hot/cold lifecycle maintenance after higher-priority governance jobs",
+			DefaultState: GovernanceRunStatusPlanned,
+		},
 	}
 }
 
@@ -111,17 +125,17 @@ func (*GovernanceSchemaVersion) TableName() string {
 const GovernanceSchemaVersionCurrent = 1
 
 type GovernanceRunRecord struct {
-	ID         int64               `xorm:"pk autoincr" json:"id"`
-	RunID       string             `xorm:"varchar(128) unique notnull" json:"run_id"`
-	JobName     string             `xorm:"varchar(64) index notnull" json:"job_name"`
-	Trigger     string             `xorm:"varchar(128)" json:"trigger,omitempty"`
-	Status      GovernanceRunStatus `xorm:"varchar(32) index notnull" json:"status"`
-	Reason      string             `xorm:"text" json:"reason,omitempty"`
-	TargetWindow string            `xorm:"varchar(64)" json:"target_window,omitempty"`
-	Details     string             `xorm:"text" json:"details,omitempty"`
-	EvidenceID  string             `xorm:"varchar(128)" json:"evidence_id,omitempty"`
-	StartedAt   time.Time          `xorm:"index notnull" json:"started_at"`
-	EndedAt     time.Time          `json:"ended_at,omitempty"`
+	ID           int64               `xorm:"pk autoincr" json:"id"`
+	RunID        string              `xorm:"varchar(128) unique notnull" json:"run_id"`
+	JobName      string              `xorm:"varchar(64) index notnull" json:"job_name"`
+	Trigger      string              `xorm:"varchar(128)" json:"trigger,omitempty"`
+	Status       GovernanceRunStatus `xorm:"varchar(32) index notnull" json:"status"`
+	Reason       string              `xorm:"text" json:"reason,omitempty"`
+	TargetWindow string              `xorm:"varchar(64)" json:"target_window,omitempty"`
+	Details      string              `xorm:"text" json:"details,omitempty"`
+	EvidenceID   string              `xorm:"varchar(128)" json:"evidence_id,omitempty"`
+	StartedAt    time.Time           `xorm:"index notnull" json:"started_at"`
+	EndedAt      time.Time           `json:"ended_at,omitempty"`
 }
 
 func (*GovernanceRunRecord) TableName() string {
@@ -130,16 +144,16 @@ func (*GovernanceRunRecord) TableName() string {
 
 type GovernanceTaskRecord struct {
 	ID           int64                `xorm:"pk autoincr" json:"id"`
-	TaskKey       string              `xorm:"varchar(128) unique notnull" json:"task_key"`
-	JobName       string              `xorm:"varchar(64) index notnull" json:"job_name"`
-	Domain        string              `xorm:"varchar(64) index notnull" json:"domain"`
-	Status        GovernanceTaskStatus `xorm:"varchar(32) index notnull" json:"status"`
-	Priority      int                 `xorm:"notnull" json:"priority"`
-	Reason        string              `xorm:"text" json:"reason,omitempty"`
-	TargetWindow  string              `xorm:"varchar(64)" json:"target_window,omitempty"`
-	PayloadJSON   string              `xorm:"text" json:"payload_json,omitempty"`
-	CreatedAt     time.Time           `xorm:"created" json:"created_at"`
-	UpdatedAt     time.Time           `xorm:"updated" json:"updated_at"`
+	TaskKey      string               `xorm:"varchar(128) unique notnull" json:"task_key"`
+	JobName      string               `xorm:"varchar(64) index notnull" json:"job_name"`
+	Domain       string               `xorm:"varchar(64) index notnull" json:"domain"`
+	Status       GovernanceTaskStatus `xorm:"varchar(32) index notnull" json:"status"`
+	Priority     int                  `xorm:"notnull" json:"priority"`
+	Reason       string               `xorm:"text" json:"reason,omitempty"`
+	TargetWindow string               `xorm:"varchar(64)" json:"target_window,omitempty"`
+	PayloadJSON  string               `xorm:"text" json:"payload_json,omitempty"`
+	CreatedAt    time.Time            `xorm:"created" json:"created_at"`
+	UpdatedAt    time.Time            `xorm:"updated" json:"updated_at"`
 }
 
 func (*GovernanceTaskRecord) TableName() string {

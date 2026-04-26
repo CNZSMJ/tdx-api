@@ -117,6 +117,12 @@ func (*CollectGapRecord) TableName() string {
 	return "collector_gap"
 }
 
+const (
+	CollectGapStatusOpen     = "open"
+	CollectGapStatusClosed   = "closed"
+	CollectGapStatusDegraded = "degraded"
+)
+
 type ScheduleRunRecord struct {
 	ID           int64     `xorm:"pk autoincr"`
 	ScheduleName string    `xorm:"varchar(128) index notnull"`

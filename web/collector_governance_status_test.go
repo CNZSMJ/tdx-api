@@ -191,8 +191,8 @@ func TestHandleCollectorStatusIncludesGovernanceView(t *testing.T) {
 	if payload.Data.Governance.Paths.DBPath != governancePaths.DBPath {
 		t.Fatalf("governance db path = %s, want %s", payload.Data.Governance.Paths.DBPath, governancePaths.DBPath)
 	}
-	if len(payload.Data.Governance.Jobs) != 5 {
-		t.Fatalf("governance jobs = %d, want 5", len(payload.Data.Governance.Jobs))
+	if len(payload.Data.Governance.Jobs) != 7 {
+		t.Fatalf("governance jobs = %d, want 7", len(payload.Data.Governance.Jobs))
 	}
 	if len(payload.Data.Governance.Domains) == 0 {
 		t.Fatalf("expected governance domains in status payload")

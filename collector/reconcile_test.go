@@ -2,6 +2,7 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -134,4 +135,73 @@ func TestCollectorReconcileCancellationMarksInterrupted(t *testing.T) {
 	if run.Status != "interrupted" {
 		t.Fatalf("expected interrupted reconcile run, got %+v", run)
 	}
+}
+
+func TestCollectorReconcilePartialKeepsPartialRunStatus(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := OpenStore(filepath.Join(tmp, "collector.db"))
+	if err != nil {
+		t.Fatalf("open collector store: %v", err)
+	}
+	defer store.Close()
+
+	provider := &partialReconcileProvider{
+		acceptanceProvider: acceptanceProvider{
+			instruments: []Instrument{{Code: "sh600000", Name: "浦发银行", Exchange: "sh", AssetType: AssetTypeStock}},
+			tradingDays: []TradingDay{{Date: "20260401", Time: time.Date(2026, 4, 1, 15, 0, 0, 0, time.Local)}},
+			quotes:      []QuoteSnapshot{{Code: "sh600000", Last: 12400, PreClose: 12300}},
+			minutes:     []MinutePoint{{Code: "sh600000", Date: "20260401", Clock: "09:30", Price: 12400, Number: 11}},
+			klines:      []KlineBar{newDayBar("sh600000", "20260401", 12300, 12400)},
+			order:       &OrderHistorySnapshot{Code: "sh600000", Date: "20260401", Items: []OrderHistoryEntry{{Price: 12400, BuySellDelta: 10, Volume: 90}}},
+			finance:     &FinanceSnapshot{Code: "sh600000", UpdatedDate: "20260401"},
+			categories:  []F10Category{{Code: "sh600000", Name: "公司概况", Filename: "000001.txt", Start: 1, Length: 10}},
+			contents:    map[string]string{"000001.txt": "浦发银行更新内容"},
+		},
+	}
+
+	runtime, err := NewRuntime(store, provider, RuntimeConfig{
+		Now:                   func() time.Time { return time.Date(2026, 4, 1, 19, 0, 0, 0, time.Local) },
+		ReportDir:             filepath.Join(tmp, "reports"),
+		KlinePeriods:          []KlinePeriod{PeriodDay},
+		ReconcileScheduleName: "collector_daily_reconcile",
+		Metadata: MetadataConfig{
+			CodesDBPath:   filepath.Join(tmp, "codes.db"),
+			WorkdayDBPath: filepath.Join(tmp, "workday.db"),
+		},
+		Kline:        KlineConfig{BaseDir: filepath.Join(tmp, "kline")},
+		Trade:        TradeConfig{BaseDir: filepath.Join(tmp, "trade")},
+		OrderHistory: OrderHistoryConfig{BaseDir: filepath.Join(tmp, "order_history")},
+		Live:         LiveCaptureConfig{BaseDir: filepath.Join(tmp, "live")},
+		Fundamentals: FundamentalsConfig{BaseDir: filepath.Join(tmp, "fundamentals")},
+	})
+	if err != nil {
+		t.Fatalf("new collector runtime: %v", err)
+	}
+
+	report, err := runtime.ReconcileDate(context.Background(), "20260401")
+	if err != nil {
+		t.Fatalf("reconcile date: %v", err)
+	}
+	if report.Status != "partial" {
+		t.Fatalf("expected partial reconcile report, got %+v", report)
+	}
+
+	run, err := store.LatestScheduleRun("collector_daily_reconcile")
+	if err != nil {
+		t.Fatalf("load reconcile run: %v", err)
+	}
+	if run == nil {
+		t.Fatalf("expected reconcile run record")
+	}
+	if run.Status != "partial" {
+		t.Fatalf("expected partial reconcile run, got %+v", run)
+	}
+}
+
+type partialReconcileProvider struct {
+	acceptanceProvider
+}
+
+func (p *partialReconcileProvider) TradeHistory(ctx context.Context, query TradeHistoryQuery) ([]TradeTick, error) {
+	return nil, errors.New("upstream timeout")
 }

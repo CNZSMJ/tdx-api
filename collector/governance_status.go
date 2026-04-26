@@ -226,16 +226,9 @@ func (r *Runtime) buildDomainSnapshot(domain string, now time.Time) (*DomainHeal
 
 func (r *Runtime) buildBlockSnapshot(now time.Time) (*DomainHealthSnapshotRecord, error) {
 	var count int64
-	if r.store != nil && r.store.engine != nil {
-		if ok, err := r.store.engine.IsTableExist(new(BlockGroupRecord)); err != nil {
-			return nil, err
-		} else if ok {
-			value, err := r.store.engine.Table(new(BlockGroupRecord)).Count(new(BlockGroupRecord))
-			if err != nil {
-				return nil, err
-			}
-			count = value
-		}
+	if r.block != nil {
+		groups, _ := r.block.Stats()
+		count = int64(groups)
 	}
 	status := "healthy"
 	freshness := "fresh"

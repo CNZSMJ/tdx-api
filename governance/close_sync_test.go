@@ -3,6 +3,7 @@ package governance
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -111,5 +112,56 @@ func TestDailyCloseSyncCreatesRepairTasksForExecutionFailures(t *testing.T) {
 	}
 	if failure.Domain != "trade_history" || failure.Date != "20260420" || failure.Instrument != "sh600000" {
 		t.Fatalf("unexpected failure payload: %+v", failure)
+	}
+}
+
+func TestDailyCloseSyncMarksRunInterruptedWhenCanceled(t *testing.T) {
+	paths := collectorpkg.ResolveGovernancePaths(t.TempDir())
+	store, err := collectorpkg.OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	defer store.Close()
+
+	runner, err := NewDailyCloseSyncRunner(DailyCloseSyncConfig{
+		Store: store,
+		Paths: paths,
+		Now: func() time.Time {
+			return time.Date(2026, 4, 20, 18, 0, 0, 0, time.Local)
+		},
+		CalendarGate: func(day time.Time) (bool, error) {
+			return true, nil
+		},
+		ResolveTargetDates: func(ctx context.Context, now time.Time) ([]string, error) {
+			return []string{"20260416", "20260417"}, nil
+		},
+		Execute: func(ctx context.Context, dates []string) ([]collectorpkg.CloseSyncFailure, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	})
+	if err != nil {
+		t.Fatalf("new runner: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := runner.RunWithDates(ctx, "startup-recovery", []string{"20260416", "20260417"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("run daily close sync err = %v, want context canceled", err)
+	}
+
+	runs, err := store.ListRecentRuns(1)
+	if err != nil {
+		t.Fatalf("list recent runs: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("recent runs = %d, want 1", len(runs))
+	}
+	if runs[0].Status != collectorpkg.GovernanceRunStatusInterrupted {
+		t.Fatalf("run status = %s, want interrupted", runs[0].Status)
+	}
+	if runs[0].TargetWindow != "20260416,20260417" {
+		t.Fatalf("run target window = %q, want 20260416,20260417", runs[0].TargetWindow)
 	}
 }

@@ -11,8 +11,8 @@ next_phase:
   name: Completed
 
 current_task:
-  id: phase_7_task_1
-  summary: Final acceptance completed and then operationally hardened with distinct 18:00/19:00 maintenance records, missed-run compensation, status observability, full bootstrap backfill, and provider throttling.
+  id: post_acceptance_hot_cold_lifecycle
+  summary: Final acceptance completed; post-acceptance hot/cold lifecycle real catch-up and professional-finance serving-only slimming are complete with zero remaining lifecycle candidates in the full dry-run.
 
 required_read_order:
   - docs/collector/START_HERE.md
@@ -33,11 +33,11 @@ phase_exit_criteria:
   - final_blocking_suite_green
 
 last_verified_commit: null
-last_verified_at: "2026-04-02 23:59:00 CST"
+last_verified_at: "2026-04-26 09:25:00 CST"
 last_test_suite:
-  - go test ./collector -v
-  - go test ./...
-  - cd web && go test ./...
+  - lifecycle-maintenance dry-run with SelectedCandidates=0, SkippedCandidates=0, FailedSegments=0
+  - go test ./... -count=1
+  - cd web && TDX_WEB_SKIP_INIT=1 go test ./... -count=1
 
 blocking_issues: []
 

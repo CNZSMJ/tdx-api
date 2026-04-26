@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"syscall"
 )
 
 var ErrGovernanceLockHeld = errors.New("system governance lock already held")
@@ -29,9 +28,9 @@ func AcquireGovernanceLock(path string) (*GovernanceLock, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := lockGovernanceFile(file); err != nil {
 		_ = file.Close()
-		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+		if isGovernanceLockBusy(err) {
 			return nil, fmt.Errorf("%w: %s", ErrGovernanceLockHeld, path)
 		}
 		return nil, err
@@ -54,7 +53,7 @@ func (l *GovernanceLock) Release() error {
 	if l == nil || l.file == nil {
 		return nil
 	}
-	unlockErr := syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN)
+	unlockErr := unlockGovernanceFile(l.file)
 	closeErr := l.file.Close()
 	l.file = nil
 	if unlockErr != nil {

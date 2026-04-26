@@ -93,7 +93,11 @@ func (r *DeepAuditBackfillRunner) Run(ctx context.Context, trigger string, req D
 		run.EndedAt = r.cfg.Now()
 		switch {
 		case resultErr != nil:
-			run.Status = collectorpkg.GovernanceRunStatusFailed
+			if interruptedGovernanceError(resultErr) {
+				run.Status = collectorpkg.GovernanceRunStatusInterrupted
+			} else {
+				run.Status = collectorpkg.GovernanceRunStatusFailed
+			}
 			run.Reason = resultErr.Error()
 		case partial:
 			run.Status = collectorpkg.GovernanceRunStatusPartial

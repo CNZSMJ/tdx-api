@@ -4,8 +4,17 @@
 
 - Current phase: `7 - Final Acceptance`
 - Phase status: `done`
-- Current task: `Final acceptance remains complete; operations hardening now adds 18:00 full-sync persistence, 19:00 reconciliation/reporting, missed-run compensation, status observability, and provider request throttling.`
+- Current task: `Final acceptance remains complete; post-acceptance hot/cold lifecycle catch-up and professional-finance slimming are complete on the local state store.`
 - Next phase after current completion: `completed - Completed`
+
+## Post-Acceptance Hot/Cold Lifecycle Update: 2026-04-26
+
+- Real catch-up for `trade`, `live`, and `order_history` completed against `/Users/huangjiahao/workspace/industry-investment-suite/state/a-stock-market-tdx`.
+- Final full lifecycle dry-run returned `SelectedCandidates=0`, `SkippedCandidates=0`, and `FailedSegments=0`, proving those hot stores are now within the 180-trading-day retention boundary.
+- Sprint 6 professional-finance slimming completed after Stage 1 catch-up: the original `69G` `prof_finance.db` was compressed to an `11G` cold full-DB archive, and the hot serving DB now keeps the existing query contract with a `15G` serving-only SQLite file.
+- `cold_manifest.db` records `11445` active cold segments and `1,514,109,723` archived rows, including the professional-finance full-DB archive segment.
+- Disk free space recovered to about `210GiB`; measured hot/cold sizes were `trade=34G`, `live=29G`, `order_history=1.6G`, `fundamentals/professional_finance=16G`, Stage 1 local cold Parquet store `5.5G`, professional-finance cold archive `11G`, and `cold_restore=0B`.
+- `/api/v1/prof-finance/history` was verified after replacement with the same sample response semantics for `sh600000`; source/raw rows are archived, serving rows remain hot, and `Rebuild()` now refuses to run until raw sources are restored.
 
 ## Phase Status Board
 
@@ -25,6 +34,7 @@
 
 - Phase `0a` is complete
 - Phase `0b` is complete
+- Published the post-acceptance system governance redesign proposal at `docs/collector/SYSTEM_DATA_GOVERNANCE_PLAN.md`
 - Created the collector control documents under `docs/collector/`
 - Defined the phase model, anti-drift rules, and documentation entrypoint
 - Defined the final collector domains and storage targets

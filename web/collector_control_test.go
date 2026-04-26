@@ -113,6 +113,19 @@ func TestBuildKlineGapReconcileOptions(t *testing.T) {
 	}
 }
 
+func TestBuildKlineGapDowngradeOptions(t *testing.T) {
+	opts, err := buildKlineGapDowngradeOptions("etf", "sh513623", "15minute", 12, "manual downgrade", false)
+	if err != nil {
+		t.Fatalf("buildKlineGapDowngradeOptions: %v", err)
+	}
+	if opts.AssetType != collectorpkg.AssetTypeETF || opts.Period != collectorpkg.Period15Minute {
+		t.Fatalf("unexpected type filters: %+v", opts)
+	}
+	if opts.Limit != 12 || opts.Instrument != "sh513623" || opts.Reason != "manual downgrade" || opts.DryRun {
+		t.Fatalf("unexpected downgrade options: %+v", opts)
+	}
+}
+
 func TestNewCollectorControlStateHonorsStartPausedEnv(t *testing.T) {
 	old := os.Getenv("COLLECTOR_START_PAUSED")
 	defer os.Setenv("COLLECTOR_START_PAUSED", old)
@@ -126,5 +139,30 @@ func TestNewCollectorControlStateHonorsStartPausedEnv(t *testing.T) {
 	}
 	if got := state.snapshot().PauseReason; got != "startup paused via env" {
 		t.Fatalf("pause reason = %q, want startup paused via env", got)
+	}
+}
+
+func TestWaitForGovernanceRunStopCancelsActiveRun(t *testing.T) {
+	originalActiveRun := governanceActiveRun
+	originalStore := governanceStore
+	defer func() {
+		governanceActiveRun = originalActiveRun
+		governanceStore = originalStore
+	}()
+
+	governanceActiveRun = newCollectorActiveRunState()
+	governanceStore = nil
+
+	var end func()
+	cancelCalled := false
+	end = governanceActiveRun.begin("startup_recovery", func() {
+		cancelCalled = true
+		end()
+	})
+
+	waitForGovernanceRunStop(time.Second)
+
+	if !cancelCalled {
+		t.Fatalf("expected active governance run to be canceled")
 	}
 }

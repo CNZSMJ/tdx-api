@@ -16,16 +16,17 @@ import (
 )
 
 type ReconcileReport struct {
-	Date         string                  `json:"date"`
-	Trigger      string                  `json:"trigger"`
-	Status       string                  `json:"status"`
-	IsTradingDay bool                    `json:"is_trading_day"`
-	OpenGapCount int64                   `json:"open_gap_count"`
-	StartedAt    time.Time               `json:"started_at"`
-	CompletedAt  time.Time               `json:"completed_at"`
-	ReportPath   string                  `json:"report_path"`
-	Domains      []ReconcileDomainReport `json:"domains"`
-	Errors       []string                `json:"errors,omitempty"`
+	Date             string                  `json:"date"`
+	Trigger          string                  `json:"trigger"`
+	Status           string                  `json:"status"`
+	IsTradingDay     bool                    `json:"is_trading_day"`
+	OpenGapCount     int64                   `json:"open_gap_count"`
+	DegradedGapCount int64                   `json:"degraded_gap_count"`
+	StartedAt        time.Time               `json:"started_at"`
+	CompletedAt      time.Time               `json:"completed_at"`
+	ReportPath       string                  `json:"report_path"`
+	Domains          []ReconcileDomainReport `json:"domains"`
+	Errors           []string                `json:"errors,omitempty"`
 }
 
 type ReconcileDomainReport struct {
@@ -109,7 +110,7 @@ func (r *Runtime) reconcileDate(ctx context.Context, date, trigger string) (_ *R
 			}
 		} else if len(report.Errors) > 0 {
 			report.Status = "partial"
-			run.Status = "failed"
+			run.Status = "partial"
 		} else {
 			report.Status = "passed"
 			run.Status = "passed"
@@ -377,6 +378,22 @@ func (r *Runtime) reconcileDate(ctx context.Context, date, trigger string) (_ *R
 	} else {
 		index := report.addDomain("collector_gap", "reconciled", false, 0, "no open collector gaps remain after reconciliation")
 		report.applyObservation(index, reconcileObservation{rows: 0}, reconcileObservation{rows: 0})
+	}
+	degradedGapCount, degradedErr := r.store.CountCollectGapsByStatus(CollectGapStatusDegraded)
+	if degradedErr != nil {
+		report.addFailure("collector_gap_degraded", false, 0, "count degraded collector gaps failed", degradedErr)
+		return report, nil
+	}
+	report.DegradedGapCount = degradedGapCount
+	if degradedGapCount > 0 {
+		report.Domains = append(report.Domains, ReconcileDomainReport{
+			Domain:          "collector_gap_degraded",
+			Status:          "acknowledged",
+			RepairAttempted: false,
+			Items:           int(degradedGapCount),
+			AfterRows:       degradedGapCount,
+			Details:         "degraded gaps are tracked separately and do not block reconciliation health",
+		})
 	}
 
 	return report, nil
