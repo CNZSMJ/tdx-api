@@ -166,6 +166,9 @@ func executeCloseSyncTask(ctx context.Context, task collectorpkg.GovernanceTaskR
 	}
 	failure := closeSyncFailureFromTask(task)
 	if err := collectorRuntime.RepairCloseSyncFailure(ctx, failure); err != nil {
+		if isRetryableProviderRepairError(err.Error()) {
+			return collectorpkg.GovernanceTaskStatusDegraded, err.Error(), nil
+		}
 		return collectorpkg.GovernanceTaskStatusOpen, "", err
 	}
 	return collectorpkg.GovernanceTaskStatusRepaired, fmt.Sprintf("%s repaired for %s", failure.Domain, failure.Date), nil
@@ -326,8 +329,14 @@ func isRetryableAuditError(message string) bool {
 		strings.Contains(text, "eof") ||
 		strings.Contains(text, "broken pipe") ||
 		strings.Contains(text, "connection reset") ||
+		strings.Contains(text, "context canceled") ||
+		strings.Contains(text, "context cancelled") ||
 		strings.Contains(text, "use of closed network connection") ||
 		strings.Contains(text, "i/o timeout") ||
 		strings.Contains(text, "connection refused") ||
 		strings.Contains(text, "数据长度不足")
+}
+
+func isRetryableProviderRepairError(message string) bool {
+	return isRetryableAuditError(message)
 }

@@ -462,7 +462,7 @@ func TestQueueMissedGovernanceWindowOnLockConflict(t *testing.T) {
 	}
 }
 
-func TestDegradeStaleStartupRecoveryTasks(t *testing.T) {
+func TestRecoverStaleInProgressGovernanceTasks(t *testing.T) {
 	originalStore := governanceStore
 	defer func() {
 		governanceStore = originalStore
@@ -496,15 +496,37 @@ func TestDegradeStaleStartupRecoveryTasks(t *testing.T) {
 		Reason:       "provider timeout",
 		TargetWindow: "20260424",
 	}); err != nil {
-		t.Fatalf("seed non-startup task: %v", err)
+		t.Fatalf("seed stale daily audit task: %v", err)
+	}
+	if err := store.UpsertTask(&collectorpkg.GovernanceTaskRecord{
+		TaskKey:      "daily_audit:live_capture:20260416",
+		JobName:      string(collectorpkg.GovernanceJobDailyAudit),
+		Domain:       "live_capture",
+		Status:       collectorpkg.GovernanceTaskStatusInProgress,
+		Priority:     2,
+		Reason:       "stale in-progress task recovered after service restart",
+		TargetWindow: "20260416",
+	}); err != nil {
+		t.Fatalf("seed stale daily audit task with lost reason: %v", err)
+	}
+	if err := store.UpsertTask(&collectorpkg.GovernanceTaskRecord{
+		TaskKey:      "daily_close_sync:live_capture:20260424:sh600000",
+		JobName:      string(collectorpkg.GovernanceJobDailyCloseSync),
+		Domain:       "live_capture",
+		Status:       collectorpkg.GovernanceTaskStatusInProgress,
+		Priority:     2,
+		Reason:       "context canceled",
+		TargetWindow: "20260424",
+	}); err != nil {
+		t.Fatalf("seed bounded close sync task: %v", err)
 	}
 
-	count, err := degradeStaleStartupRecoveryTasks("deferred stale task")
+	counts, err := recoverStaleInProgressGovernanceTasks("deferred stale task")
 	if err != nil {
-		t.Fatalf("degrade stale startup recovery tasks: %v", err)
+		t.Fatalf("recover stale in-progress governance tasks: %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("degraded task count = %d, want 1", count)
+	if counts.Degraded != 3 || counts.Reopened != 1 {
+		t.Fatalf("recovery counts = %+v, want degraded=3 reopened=1", counts)
 	}
 
 	tasks, err := store.ListTasksByStatus()
@@ -518,8 +540,17 @@ func TestDegradeStaleStartupRecoveryTasks(t *testing.T) {
 	if byKey["startup_recovery:interrupted:close-sync-run"].Status != collectorpkg.GovernanceTaskStatusDegraded {
 		t.Fatalf("startup task status = %s, want degraded", byKey["startup_recovery:interrupted:close-sync-run"].Status)
 	}
-	if byKey["daily_audit:order_history:20260424"].Status != collectorpkg.GovernanceTaskStatusInProgress {
-		t.Fatalf("non-startup task status = %s, want in_progress", byKey["daily_audit:order_history:20260424"].Status)
+	if byKey["daily_audit:order_history:20260424"].Status != collectorpkg.GovernanceTaskStatusDegraded {
+		t.Fatalf("stale daily audit status = %s, want degraded", byKey["daily_audit:order_history:20260424"].Status)
+	}
+	if byKey["daily_close_sync:live_capture:20260424:sh600000"].Status != collectorpkg.GovernanceTaskStatusOpen {
+		t.Fatalf("bounded close sync status = %s, want open", byKey["daily_close_sync:live_capture:20260424:sh600000"].Status)
+	}
+	if byKey["daily_close_sync:live_capture:20260424:sh600000"].Reason != "context canceled" {
+		t.Fatalf("bounded close sync reason = %q, want original context canceled", byKey["daily_close_sync:live_capture:20260424:sh600000"].Reason)
+	}
+	if byKey["daily_audit:live_capture:20260416"].Status != collectorpkg.GovernanceTaskStatusDegraded {
+		t.Fatalf("lost-reason daily audit status = %s, want degraded", byKey["daily_audit:live_capture:20260416"].Status)
 	}
 }
 
@@ -527,6 +558,20 @@ func TestClassifyRepairAuditDomainStatusMarksRetryablePartialAsDegraded(t *testi
 	status := classifyRepairAuditDomainStatus("partial", true, []string{"sh515643: timeout", "sh515644: EOF"})
 	if status != collectorpkg.GovernanceTaskStatusDegraded {
 		t.Fatalf("status = %s, want degraded", status)
+	}
+}
+
+func TestDailyAuditRetryableErrorsIncludeContextCanceled(t *testing.T) {
+	if !hasOnlyRetryableAuditErrors([]string{"context canceled"}) {
+		t.Fatal("context canceled should be treated as retryable audit error")
+	}
+}
+
+func TestCloseSyncRepairErrorsDegradeProviderTimeouts(t *testing.T) {
+	for _, message := range []string{"超时", "数据长度不足", "context canceled"} {
+		if !isRetryableProviderRepairError(message) {
+			t.Fatalf("%q should be treated as retryable provider repair error", message)
+		}
 	}
 }
 

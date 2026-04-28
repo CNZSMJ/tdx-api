@@ -132,11 +132,19 @@ func (s *OrderHistoryService) RefreshDay(ctx context.Context, query OrderHistory
 		return err
 	}
 
+	cursorValue := query.Date
+	current, err := s.store.GetCollectCursor("order_history", string(query.AssetType), query.Code, "")
+	if err != nil {
+		return err
+	}
+	if current != nil && current.Cursor != "" && tradeDateAfter(current.Cursor, cursorValue) {
+		cursorValue = current.Cursor
+	}
 	if err := s.store.UpsertCollectCursor(&CollectCursorRecord{
 		Domain:     "order_history",
 		AssetType:  string(query.AssetType),
 		Instrument: query.Code,
-		Cursor:     query.Date,
+		Cursor:     cursorValue,
 	}); err != nil {
 		return err
 	}

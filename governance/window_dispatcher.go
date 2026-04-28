@@ -65,11 +65,20 @@ func (d *WindowDispatcher) RunNext(ctx context.Context) (bool, error) {
 		if !window.NextRunAt.IsZero() && window.NextRunAt.After(now) {
 			continue
 		}
-		dependencyReady, err := d.dependencyReady(window)
+		dependencyState, err := d.dependencyState(window)
 		if err != nil {
 			return false, err
 		}
-		if !dependencyReady {
+		if dependencyState.missing {
+			window.Status = collectorpkg.GovernanceWindowStatusTerminalFailed
+			window.LastError = "missing dependency " + window.DependencyKey
+			window.ResultSummary = "dependency missing; terminally deferred " + window.DependencyKey
+			if err := d.cfg.Store.UpdateWindow(&window); err != nil {
+				return false, err
+			}
+			return false, nil
+		}
+		if !dependencyState.ready {
 			if window.Status != collectorpkg.GovernanceWindowStatusWaitingDependency {
 				window.Status = collectorpkg.GovernanceWindowStatusWaitingDependency
 				window.ResultSummary = "waiting for dependency " + window.DependencyKey
@@ -122,16 +131,21 @@ func (d *WindowDispatcher) RunNext(ctx context.Context) (bool, error) {
 	return false, nil
 }
 
-func (d *WindowDispatcher) dependencyReady(window collectorpkg.GovernanceWindowRecord) (bool, error) {
+type windowDependencyState struct {
+	ready   bool
+	missing bool
+}
+
+func (d *WindowDispatcher) dependencyState(window collectorpkg.GovernanceWindowRecord) (windowDependencyState, error) {
 	if strings.TrimSpace(window.DependencyKey) == "" {
-		return true, nil
+		return windowDependencyState{ready: true}, nil
 	}
 	dependency, err := d.cfg.Store.GetWindowByKey(window.DependencyKey)
 	if err != nil {
-		return false, err
+		return windowDependencyState{}, err
 	}
 	if dependency == nil {
-		return false, nil
+		return windowDependencyState{missing: true}, nil
 	}
-	return collectorpkg.GovernanceWindowStatusIsTerminal(dependency.Status), nil
+	return windowDependencyState{ready: collectorpkg.GovernanceWindowStatusIsTerminal(dependency.Status)}, nil
 }

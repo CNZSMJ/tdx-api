@@ -1383,10 +1383,10 @@ func runStartupRecoveryWithContext(ctx context.Context, trigger string) (*collec
 	if err != nil {
 		return nil, err
 	}
-	if count, err := degradeStaleStartupRecoveryTasks("stale in-progress startup recovery task deferred after service restart"); err != nil {
+	if counts, err := recoverStaleInProgressGovernanceTasks("stale in-progress task recovered after service restart"); err != nil {
 		return nil, err
-	} else if count > 0 {
-		log.Printf("startup_recovery: marked %d stale in-progress repair tasks degraded", count)
+	} else if counts.Degraded > 0 || counts.Reopened > 0 {
+		log.Printf("startup_recovery: recovered stale in-progress tasks degraded=%d reopened=%d", counts.Degraded, counts.Reopened)
 	}
 	if _, err := runGovernanceRepairWorkerWithContext(ctx, trigger, 8); err != nil && !strings.Contains(err.Error(), "未初始化") {
 		return nil, err
@@ -1395,30 +1395,52 @@ func runStartupRecoveryWithContext(ctx context.Context, trigger string) (*collec
 	return run, nil
 }
 
-func degradeStaleStartupRecoveryTasks(reason string) (int, error) {
+type staleInProgressRecoveryCounts struct {
+	Degraded int
+	Reopened int
+}
+
+func recoverStaleInProgressGovernanceTasks(reason string) (staleInProgressRecoveryCounts, error) {
+	var counts staleInProgressRecoveryCounts
 	if governanceStore == nil {
-		return 0, nil
+		return counts, nil
 	}
 	if strings.TrimSpace(reason) == "" {
-		reason = "stale in-progress startup recovery task deferred after service restart"
+		reason = "stale in-progress task recovered after service restart"
 	}
 	tasks, err := governanceStore.ListTasksByStatus(collectorpkg.GovernanceTaskStatusInProgress)
 	if err != nil {
-		return 0, err
+		return counts, err
 	}
-	count := 0
 	for _, task := range tasks {
-		if task.JobName != string(collectorpkg.GovernanceJobStartupRecovery) {
-			continue
+		switch task.JobName {
+		case string(collectorpkg.GovernanceJobStartupRecovery):
+			task.Status = collectorpkg.GovernanceTaskStatusDegraded
+			task.Reason = reason
+			counts.Degraded++
+		case string(collectorpkg.GovernanceJobDailyAudit):
+			task.Status = collectorpkg.GovernanceTaskStatusDegraded
+			if strings.TrimSpace(task.Reason) == "" || isDailyAuditTaskWithLostStaleReason(task) {
+				task.Reason = reason
+			}
+			counts.Degraded++
+		default:
+			task.Status = collectorpkg.GovernanceTaskStatusOpen
+			if strings.TrimSpace(task.Reason) == "" {
+				task.Reason = reason
+			}
+			counts.Reopened++
 		}
-		task.Status = collectorpkg.GovernanceTaskStatusDegraded
-		task.Reason = reason
 		if err := governanceStore.UpsertTask(&task); err != nil {
-			return count, err
+			return counts, err
 		}
-		count++
 	}
-	return count, nil
+	return counts, nil
+}
+
+func isDailyAuditTaskWithLostStaleReason(task collectorpkg.GovernanceTaskRecord) bool {
+	return task.JobName == string(collectorpkg.GovernanceJobDailyAudit) &&
+		strings.Contains(task.Reason, "stale in-progress task recovered")
 }
 
 func governanceRunExists(runs []collectorpkg.GovernanceRunRecord, job collectorpkg.GovernanceJob, targetWindow string) bool {

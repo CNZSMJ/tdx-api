@@ -57,7 +57,7 @@ command_for_pid() {
 }
 
 find_port_pid() {
-  lsof -ti "tcp:${DEFAULT_PORT}" 2>/dev/null | head -n 1 || true
+  lsof -tiTCP:"${DEFAULT_PORT}" -sTCP:LISTEN 2>/dev/null | head -n 1 || true
 }
 
 cleanup_stale_pid_file() {

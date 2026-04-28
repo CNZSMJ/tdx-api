@@ -116,6 +116,53 @@ func TestOrderHistoryRefreshPublishesDBFirstAndPersistsCursor(t *testing.T) {
 	}
 }
 
+func TestOrderHistoryRefreshDoesNotRegressLatestCursor(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := OpenStore(filepath.Join(tmp, "collector.db"))
+	if err != nil {
+		t.Fatalf("open collector store: %v", err)
+	}
+	defer store.Close()
+
+	if err := store.UpsertCollectCursor(&CollectCursorRecord{
+		Domain:     "order_history",
+		AssetType:  string(AssetTypeStock),
+		Instrument: "sh600000",
+		Cursor:     "20260428",
+	}); err != nil {
+		t.Fatalf("seed latest cursor: %v", err)
+	}
+
+	service, err := NewOrderHistoryService(store, &orderHistoryStubProvider{
+		snapshot: &OrderHistorySnapshot{
+			Code: "sh600000",
+			Date: "20260416",
+			Items: []OrderHistoryEntry{
+				{Price: 12000, BuySellDelta: -20, Volume: 100},
+			},
+		},
+	}, OrderHistoryConfig{BaseDir: filepath.Join(tmp, "order_history")})
+	if err != nil {
+		t.Fatalf("new order history service: %v", err)
+	}
+
+	if err := service.RefreshDay(context.Background(), OrderHistoryCollectQuery{
+		Code:      "sh600000",
+		AssetType: AssetTypeStock,
+		Date:      "20260416",
+	}); err != nil {
+		t.Fatalf("refresh historical order history: %v", err)
+	}
+
+	cursor, err := store.GetCollectCursor("order_history", string(AssetTypeStock), "sh600000", "")
+	if err != nil {
+		t.Fatalf("order history cursor: %v", err)
+	}
+	if cursor == nil || cursor.Cursor != "20260428" {
+		t.Fatalf("order history cursor regressed: %#v", cursor)
+	}
+}
+
 func TestOrderHistoryReplayPreservesRawDeltaValues(t *testing.T) {
 	tmp := t.TempDir()
 	collectorDB := filepath.Join(tmp, "collector.db")

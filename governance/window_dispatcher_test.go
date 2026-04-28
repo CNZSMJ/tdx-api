@@ -146,3 +146,57 @@ func TestWindowDispatcherDefersWindowUntilDependencyIsTerminal(t *testing.T) {
 		t.Fatalf("audit window = %+v, want waiting_dependency", audit)
 	}
 }
+
+func TestWindowDispatcherTerminatesWindowWithMissingDependency(t *testing.T) {
+	paths := collectorpkg.ResolveGovernancePaths(t.TempDir())
+	store, err := collectorpkg.OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 4, 28, 20, 0, 0, 0, time.Local)
+	auditKey := collectorpkg.GovernanceWindowKey(collectorpkg.GovernanceJobDailyAudit, "20260427,20260428")
+	missingCloseKey := collectorpkg.GovernanceWindowKey(collectorpkg.GovernanceJobDailyCloseSync, "20260427,20260428")
+	window := collectorpkg.GovernanceWindowRecord{
+		WindowKey:     auditKey,
+		JobName:       string(collectorpkg.GovernanceJobDailyAudit),
+		TargetWindow:  "20260427,20260428",
+		DueAt:         now.Add(-time.Hour),
+		Priority:      4,
+		Status:        collectorpkg.GovernanceWindowStatusWaitingDependency,
+		DependencyKey: missingCloseKey,
+		EnqueuedAt:    now.Add(-time.Hour),
+	}
+	if err := store.UpsertWindow(&window); err != nil {
+		t.Fatalf("seed audit window: %v", err)
+	}
+
+	dispatcher := NewWindowDispatcher(WindowDispatcherConfig{
+		Store: store,
+		Now: func() time.Time {
+			return now
+		},
+		Owner: "test-dispatcher",
+		Execute: func(ctx context.Context, window collectorpkg.GovernanceWindowRecord) (WindowExecutionResult, error) {
+			t.Fatalf("missing dependency should not execute: %+v", window)
+			return WindowExecutionResult{}, nil
+		},
+	})
+
+	ran, err := dispatcher.RunNext(context.Background())
+	if err != nil {
+		t.Fatalf("run next: %v", err)
+	}
+	if ran {
+		t.Fatalf("dispatcher should not execute a missing-dependency window")
+	}
+
+	audit, err := store.GetWindowByKey(auditKey)
+	if err != nil {
+		t.Fatalf("get audit window: %v", err)
+	}
+	if audit == nil || audit.Status != collectorpkg.GovernanceWindowStatusTerminalFailed {
+		t.Fatalf("audit window = %+v, want terminal_failed", audit)
+	}
+}
