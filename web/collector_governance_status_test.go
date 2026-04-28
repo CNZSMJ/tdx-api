@@ -153,6 +153,17 @@ func TestHandleCollectorStatusIncludesGovernanceView(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed governance task: %v", err)
 	}
+	if err := governanceStore.UpsertWindow(&collectorpkg.GovernanceWindowRecord{
+		WindowKey:    collectorpkg.GovernanceWindowKey(collectorpkg.GovernanceJobDailyAudit, "20260418"),
+		JobName:      string(collectorpkg.GovernanceJobDailyAudit),
+		TargetWindow: "20260418",
+		DueAt:        now.Add(-time.Hour),
+		Priority:     4,
+		Status:       collectorpkg.GovernanceWindowStatusWaitingDependency,
+		EnqueuedAt:   now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("seed governance window: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/collector/status", nil)
 	rec := httptest.NewRecorder()
@@ -178,6 +189,10 @@ func TestHandleCollectorStatusIncludesGovernanceView(t *testing.T) {
 				Tasks []struct {
 					TaskKey string `json:"task_key"`
 				} `json:"tasks"`
+				Windows []struct {
+					WindowKey string `json:"window_key"`
+					Status    string `json:"status"`
+				} `json:"windows"`
 			} `json:"governance"`
 		} `json:"data"`
 	}
@@ -199,5 +214,8 @@ func TestHandleCollectorStatusIncludesGovernanceView(t *testing.T) {
 	}
 	if len(payload.Data.Governance.Tasks) != 1 || payload.Data.Governance.Tasks[0].TaskKey != "task-1" {
 		t.Fatalf("unexpected governance tasks: %+v", payload.Data.Governance.Tasks)
+	}
+	if len(payload.Data.Governance.Windows) != 1 || payload.Data.Governance.Windows[0].Status != string(collectorpkg.GovernanceWindowStatusWaitingDependency) {
+		t.Fatalf("unexpected governance windows: %+v", payload.Data.Governance.Windows)
 	}
 }

@@ -1,6 +1,10 @@
 package collector
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
 
 type GovernanceJob string
 
@@ -37,6 +41,38 @@ const (
 	GovernanceTaskStatusUnsupported GovernanceTaskStatus = "unsupported"
 	GovernanceTaskStatusClosed      GovernanceTaskStatus = "closed"
 )
+
+type GovernanceWindowStatus string
+
+const (
+	GovernanceWindowStatusPlanned           GovernanceWindowStatus = "planned"
+	GovernanceWindowStatusQueued            GovernanceWindowStatus = "queued"
+	GovernanceWindowStatusWaitingDependency GovernanceWindowStatus = "waiting_dependency"
+	GovernanceWindowStatusRunning           GovernanceWindowStatus = "running"
+	GovernanceWindowStatusContinued         GovernanceWindowStatus = "continued"
+	GovernanceWindowStatusPassed            GovernanceWindowStatus = "passed"
+	GovernanceWindowStatusPartial           GovernanceWindowStatus = "partial"
+	GovernanceWindowStatusSkipped           GovernanceWindowStatus = "skipped"
+	GovernanceWindowStatusTerminalFailed    GovernanceWindowStatus = "terminal_failed"
+	GovernanceWindowStatusManualClosed      GovernanceWindowStatus = "manual_closed"
+)
+
+func GovernanceWindowKey(job GovernanceJob, targetWindow string) string {
+	return fmt.Sprintf("%s:%s", job, strings.TrimSpace(targetWindow))
+}
+
+func GovernanceWindowStatusIsTerminal(status GovernanceWindowStatus) bool {
+	switch status {
+	case GovernanceWindowStatusPassed,
+		GovernanceWindowStatusPartial,
+		GovernanceWindowStatusSkipped,
+		GovernanceWindowStatusTerminalFailed,
+		GovernanceWindowStatusManualClosed:
+		return true
+	default:
+		return false
+	}
+}
 
 type GovernanceJobSpec struct {
 	Name         GovernanceJob       `json:"name"`
@@ -101,6 +137,24 @@ func DefaultGovernanceJobCatalog() []GovernanceJobSpec {
 	}
 }
 
+func GovernanceJobPriority(job GovernanceJob) int {
+	for _, spec := range DefaultGovernanceJobCatalog() {
+		if spec.Name == job {
+			return spec.Priority
+		}
+	}
+	return 100
+}
+
+func GovernanceWindowDependencyKey(job GovernanceJob, targetWindow string) string {
+	switch job {
+	case GovernanceJobDailyAudit:
+		return GovernanceWindowKey(GovernanceJobDailyCloseSync, targetWindow)
+	default:
+		return ""
+	}
+}
+
 func MapLegacyGovernanceJob(name string) (GovernanceJob, bool) {
 	for _, spec := range DefaultGovernanceJobCatalog() {
 		for _, legacyName := range spec.LegacyNames {
@@ -158,6 +212,34 @@ type GovernanceTaskRecord struct {
 
 func (*GovernanceTaskRecord) TableName() string {
 	return "governance_task"
+}
+
+type GovernanceWindowRecord struct {
+	ID            int64                  `xorm:"pk autoincr" json:"id"`
+	WindowKey     string                 `xorm:"varchar(160) unique notnull" json:"window_key"`
+	JobName       string                 `xorm:"varchar(64) index notnull" json:"job_name"`
+	TargetWindow  string                 `xorm:"varchar(64) index notnull" json:"target_window"`
+	DueAt         time.Time              `xorm:"index notnull" json:"due_at"`
+	Priority      int                    `xorm:"index notnull" json:"priority"`
+	Status        GovernanceWindowStatus `xorm:"varchar(32) index notnull" json:"status"`
+	DependencyKey string                 `xorm:"varchar(160) index" json:"dependency_key,omitempty"`
+	Attempts      int                    `json:"attempts"`
+	NextRunAt     time.Time              `xorm:"index" json:"next_run_at,omitempty"`
+	LeaseOwner    string                 `xorm:"varchar(128)" json:"lease_owner,omitempty"`
+	LeaseUntil    time.Time              `xorm:"index" json:"lease_until,omitempty"`
+	RunID         string                 `xorm:"varchar(128) index" json:"run_id,omitempty"`
+	LastError     string                 `xorm:"text" json:"last_error,omitempty"`
+	ResultSummary string                 `xorm:"text" json:"result_summary,omitempty"`
+	ScheduledAt   time.Time              `xorm:"index" json:"scheduled_at,omitempty"`
+	EnqueuedAt    time.Time              `xorm:"index" json:"enqueued_at,omitempty"`
+	StartedAt     time.Time              `json:"started_at,omitempty"`
+	EndedAt       time.Time              `json:"ended_at,omitempty"`
+	CreatedAt     time.Time              `xorm:"created" json:"created_at"`
+	UpdatedAt     time.Time              `xorm:"updated" json:"updated_at"`
+}
+
+func (*GovernanceWindowRecord) TableName() string {
+	return "governance_window"
 }
 
 type DomainHealthSnapshotRecord struct {

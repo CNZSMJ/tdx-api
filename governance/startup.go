@@ -102,6 +102,9 @@ func (r *StartupRecoveryRunner) Run(ctx context.Context, trigger string) (*colle
 		}); err != nil {
 			return nil, err
 		}
+		if err := r.upsertMissedWindowIntent(missed, startedAt); err != nil {
+			return nil, err
+		}
 	}
 	for _, interrupted := range snapshot.InterruptedRuns {
 		if err := r.cfg.Store.UpsertTask(&collectorpkg.GovernanceTaskRecord{
@@ -129,4 +132,53 @@ func (r *StartupRecoveryRunner) Run(ctx context.Context, trigger string) (*colle
 		return nil, err
 	}
 	return run, nil
+}
+
+func (r *StartupRecoveryRunner) upsertMissedWindowIntent(missed StartupRecoveryMissedJob, now time.Time) error {
+	if missed.Job == "" || missed.TargetWindow == "" {
+		return nil
+	}
+
+	windowKey := collectorpkg.GovernanceWindowKey(missed.Job, missed.TargetWindow)
+	existing, err := r.cfg.Store.GetWindowByKey(windowKey)
+	if err != nil {
+		return err
+	}
+	if existing != nil {
+		if collectorpkg.GovernanceWindowStatusIsTerminal(existing.Status) ||
+			existing.Status == collectorpkg.GovernanceWindowStatusRunning {
+			return nil
+		}
+		existing.JobName = string(missed.Job)
+		existing.TargetWindow = missed.TargetWindow
+		if existing.DueAt.IsZero() {
+			existing.DueAt = now
+		}
+		existing.Priority = collectorpkg.GovernanceJobPriority(missed.Job)
+		existing.DependencyKey = collectorpkg.GovernanceWindowDependencyKey(missed.Job, missed.TargetWindow)
+		if existing.Status == "" || existing.Status == collectorpkg.GovernanceWindowStatusPlanned {
+			existing.Status = collectorpkg.GovernanceWindowStatusQueued
+		}
+		if existing.ScheduledAt.IsZero() {
+			existing.ScheduledAt = now
+		}
+		if existing.EnqueuedAt.IsZero() {
+			existing.EnqueuedAt = now
+		}
+		existing.LastError = "missed governance window queued for recovery"
+		return r.cfg.Store.UpdateWindow(existing)
+	}
+
+	return r.cfg.Store.UpsertWindow(&collectorpkg.GovernanceWindowRecord{
+		WindowKey:     windowKey,
+		JobName:       string(missed.Job),
+		TargetWindow:  missed.TargetWindow,
+		DueAt:         now,
+		Priority:      collectorpkg.GovernanceJobPriority(missed.Job),
+		Status:        collectorpkg.GovernanceWindowStatusQueued,
+		DependencyKey: collectorpkg.GovernanceWindowDependencyKey(missed.Job, missed.TargetWindow),
+		ScheduledAt:   now,
+		EnqueuedAt:    now,
+		LastError:     "missed governance window queued for recovery",
+	})
 }

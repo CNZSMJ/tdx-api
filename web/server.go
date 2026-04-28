@@ -28,34 +28,36 @@ import (
 )
 
 var (
-	client              *tdx.Client
-	manager             *tdx.Manage
-	taskManager         = NewTaskManager()
-	databaseDir         string
-	collectorRuntime    *collectorpkg.Runtime
-	governanceStore     *collectorpkg.GovernanceStore
-	governancePaths     collectorpkg.GovernancePaths
-	dailyOpenRefresh    *systemgov.DailyOpenRefreshRunner
-	dailyCloseSync      *systemgov.DailyCloseSyncRunner
-	dailyAudit          *systemgov.DailyAuditRunner
-	startupRecovery     *systemgov.StartupRecoveryRunner
-	proFinanceService   *profinance.Service
-	proFinanceDataDir   string
-	collectorRunActive  atomic.Bool
-	serviceShuttingDown atomic.Bool
-	collectorJobState   = newCollectorExecutionState()
-	collectorActiveRun  = newCollectorActiveRunState()
-	governanceActiveRun = newCollectorActiveRunState()
+	client                     *tdx.Client
+	manager                    *tdx.Manage
+	taskManager                = NewTaskManager()
+	databaseDir                string
+	collectorRuntime           *collectorpkg.Runtime
+	governanceStore            *collectorpkg.GovernanceStore
+	governancePaths            collectorpkg.GovernancePaths
+	dailyOpenRefresh           *systemgov.DailyOpenRefreshRunner
+	dailyCloseSync             *systemgov.DailyCloseSyncRunner
+	dailyAudit                 *systemgov.DailyAuditRunner
+	startupRecovery            *systemgov.StartupRecoveryRunner
+	governanceWindowDispatcher *systemgov.WindowDispatcher
+	proFinanceService          *profinance.Service
+	proFinanceDataDir          string
+	collectorRunActive         atomic.Bool
+	serviceShuttingDown        atomic.Bool
+	collectorJobState          = newCollectorExecutionState()
+	collectorActiveRun         = newCollectorActiveRunState()
+	governanceActiveRun        = newCollectorActiveRunState()
 )
 
 const (
-	collectorDailyOpenRefreshSpec      = "0 0 9 * * *"
-	collectorDailySyncSpec             = "0 0 18 * * *"
-	collectorDailyReconcileSpec        = "0 0 19 * * *"
-	collectorRunTimeout                = 6 * time.Hour // default for daily_full_sync / reconcile; override with COLLECTOR_RUN_TIMEOUT
-	collectorDefaultWorkers            = 4
-	collectorMaxCatchupWorkers         = 32 // TDX 侧连接过多易被限流；需要更高请改此常量并自担风险
-	collectorDefaultRequestMinInterval = 150 * time.Millisecond
+	collectorDailyOpenRefreshSpec         = "0 0 9 * * *"
+	collectorDailySyncSpec                = "0 0 18 * * *"
+	collectorDailyReconcileSpec           = "0 0 19 * * *"
+	collectorGovernanceWindowDispatchSpec = "0 */5 * * * *"
+	collectorRunTimeout                   = 6 * time.Hour // default for daily_full_sync / reconcile; override with COLLECTOR_RUN_TIMEOUT
+	collectorDefaultWorkers               = 4
+	collectorMaxCatchupWorkers            = 32 // TDX 侧连接过多易被限流；需要更高请改此常量并自担风险
+	collectorDefaultRequestMinInterval    = 150 * time.Millisecond
 )
 
 // collectorCatchUpContext returns a context for runCollectorCatchUp.
@@ -503,6 +505,7 @@ func initCollectorRuntime() {
 	initDailyCloseSyncRunner()
 	initDailyAuditRunner()
 	initStartupRecoveryRunner()
+	initGovernanceWindowDispatcher()
 	initGovernanceRepairWorker()
 	initDeepAuditBackfillRunner()
 	initDataLifecycleMaintenanceRunner()
@@ -520,10 +523,7 @@ func initCollectorRuntime() {
 	if dailyOpenRefresh != nil {
 		if _, err := manager.Cron.AddFunc(collectorDailyOpenRefreshSpec, func() {
 			go func() {
-				if _, err := runDailyOpenRefresh("daily-09:00"); err != nil {
-					log.Printf("daily_open_refresh 失败: %v", err)
-					handleScheduledGovernanceFailure(collectorpkg.GovernanceJobDailyOpenRefresh, "daily-09:00", err)
-				}
+				runScheduledGovernanceWindow(collectorpkg.GovernanceJobDailyOpenRefresh, "daily-09:00")
 			}()
 		}); err != nil {
 			log.Printf("注册 daily_open_refresh 失败: %v", err)
@@ -534,10 +534,7 @@ func initCollectorRuntime() {
 	if dailyCloseSync != nil {
 		if _, err := manager.Cron.AddFunc(collectorDailySyncSpec, func() {
 			go func() {
-				if _, err := runDailyCloseSync("daily-18:00"); err != nil {
-					log.Printf("daily_close_sync 失败: %v", err)
-					handleScheduledGovernanceFailure(collectorpkg.GovernanceJobDailyCloseSync, "daily-18:00", err)
-				}
+				runScheduledGovernanceWindow(collectorpkg.GovernanceJobDailyCloseSync, "daily-18:00")
 			}()
 		}); err != nil {
 			log.Printf("注册 daily_close_sync 失败: %v", err)
@@ -548,13 +545,23 @@ func initCollectorRuntime() {
 	if dailyAudit != nil {
 		if _, err := manager.Cron.AddFunc(collectorDailyReconcileSpec, func() {
 			go func() {
-				if _, err := runDailyAudit("daily-19:00"); err != nil {
-					log.Printf("daily_audit 失败: %v", err)
-					handleScheduledGovernanceFailure(collectorpkg.GovernanceJobDailyAudit, "daily-19:00", err)
-				}
+				runScheduledGovernanceWindow(collectorpkg.GovernanceJobDailyAudit, "daily-19:00")
 			}()
 		}); err != nil {
 			log.Printf("注册 daily_audit 失败: %v", err)
+			return
+		}
+	}
+
+	if governanceWindowDispatcher != nil {
+		if _, err := manager.Cron.AddFunc(collectorGovernanceWindowDispatchSpec, func() {
+			go func() {
+				if _, err := runGovernanceWindowDispatcher("scheduled-window-dispatcher"); err != nil {
+					log.Printf("governance_window_dispatcher 失败: %v", err)
+				}
+			}()
+		}); err != nil {
+			log.Printf("注册 governance_window_dispatcher 失败: %v", err)
 			return
 		}
 	}
@@ -722,6 +729,18 @@ func initStartupRecoveryRunner() {
 	startupRecovery = runner
 }
 
+func initGovernanceWindowDispatcher() {
+	if governanceStore == nil {
+		return
+	}
+	governanceWindowDispatcher = systemgov.NewWindowDispatcher(systemgov.WindowDispatcherConfig{
+		Store:   governanceStore,
+		Now:     time.Now,
+		Owner:   "tdx-api-web",
+		Execute: executeGovernanceWindow,
+	})
+}
+
 func collectStartupRecoverySnapshot(
 	ctx context.Context,
 	now time.Time,
@@ -814,6 +833,33 @@ func governanceExpectedTargetWindow(
 	}
 }
 
+func runScheduledGovernanceWindow(job collectorpkg.GovernanceJob, trigger string) {
+	ctx := context.Background()
+	now := time.Now()
+	if err := enqueueScheduledGovernanceWindow(ctx, job, trigger, now); err != nil {
+		log.Printf("%s enqueue governance window 失败: %v", job, err)
+		return
+	}
+	if _, err := runGovernanceWindowDispatcher(trigger); err != nil {
+		log.Printf("%s dispatch governance window 失败: %v", job, err)
+	}
+}
+
+func enqueueScheduledGovernanceWindow(ctx context.Context, job collectorpkg.GovernanceJob, trigger string, now time.Time) error {
+	if governanceStore == nil {
+		return nil
+	}
+	targetWindow, due, err := scheduledGovernanceTargetWindow(ctx, job, now)
+	if err != nil {
+		return err
+	}
+	if !due || targetWindow == "" {
+		return nil
+	}
+	summary := fmt.Sprintf("scheduled %s queued for governance dispatcher", trigger)
+	return upsertGovernanceWindowIntent(job, targetWindow, summary, "", now)
+}
+
 func handleScheduledGovernanceFailure(job collectorpkg.GovernanceJob, trigger string, err error) {
 	if err == nil || !collectorpkg.IsGovernanceLockHeld(err) {
 		return
@@ -862,7 +908,61 @@ func upsertMissedGovernanceWindowTask(job collectorpkg.GovernanceJob, targetWind
 		Reason:       reason,
 		TargetWindow: targetWindow,
 	}
-	return governanceStore.UpsertTask(&task)
+	if err := governanceStore.UpsertTask(&task); err != nil {
+		return err
+	}
+	return upsertGovernanceWindowIntent(job, targetWindow, "", reason, time.Now())
+}
+
+func upsertGovernanceWindowIntent(job collectorpkg.GovernanceJob, targetWindow, summary, lastError string, now time.Time) error {
+	windowKey := collectorpkg.GovernanceWindowKey(job, targetWindow)
+	existing, err := governanceStore.GetWindowByKey(windowKey)
+	if err != nil {
+		return err
+	}
+	if existing != nil {
+		if collectorpkg.GovernanceWindowStatusIsTerminal(existing.Status) ||
+			existing.Status == collectorpkg.GovernanceWindowStatusRunning {
+			return nil
+		}
+		existing.JobName = string(job)
+		existing.TargetWindow = targetWindow
+		if existing.DueAt.IsZero() {
+			existing.DueAt = now
+		}
+		existing.Priority = collectorpkg.GovernanceJobPriority(job)
+		existing.DependencyKey = collectorpkg.GovernanceWindowDependencyKey(job, targetWindow)
+		if existing.Status == "" || existing.Status == collectorpkg.GovernanceWindowStatusPlanned {
+			existing.Status = collectorpkg.GovernanceWindowStatusQueued
+		}
+		if existing.ScheduledAt.IsZero() {
+			existing.ScheduledAt = now
+		}
+		if existing.EnqueuedAt.IsZero() {
+			existing.EnqueuedAt = now
+		}
+		if summary != "" {
+			existing.ResultSummary = summary
+		}
+		if lastError != "" {
+			existing.LastError = lastError
+		}
+		return governanceStore.UpdateWindow(existing)
+	}
+
+	return governanceStore.UpsertWindow(&collectorpkg.GovernanceWindowRecord{
+		WindowKey:     windowKey,
+		JobName:       string(job),
+		TargetWindow:  targetWindow,
+		DueAt:         now,
+		Priority:      collectorpkg.GovernanceJobPriority(job),
+		Status:        collectorpkg.GovernanceWindowStatusQueued,
+		DependencyKey: collectorpkg.GovernanceWindowDependencyKey(job, targetWindow),
+		ScheduledAt:   now,
+		EnqueuedAt:    now,
+		LastError:     lastError,
+		ResultSummary: summary,
+	})
 }
 
 func governanceRecentTradingWindow(
@@ -983,6 +1083,9 @@ func runCollectorStartupSequence() {
 	}
 	if _, err := runStartupRecovery("startup"); err != nil {
 		log.Printf("startup_recovery 失败: %v", err)
+	}
+	if _, err := runGovernanceWindowDispatcher("startup-recovery"); err != nil && !strings.Contains(err.Error(), "未初始化") {
+		log.Printf("startup governance_window_dispatcher 失败: %v", err)
 	}
 }
 
@@ -1168,6 +1271,95 @@ func runDailyAuditWithDatesContext(ctx context.Context, trigger string, targetDa
 	}
 	log.Printf("daily_audit 完成: trigger=%s status=%s target=%s", trigger, run.Status, run.TargetWindow)
 	return run, nil
+}
+
+func runGovernanceWindowDispatcher(trigger string) (bool, error) {
+	if isServiceShuttingDown() {
+		return false, fmt.Errorf("service shutdown in progress, skip governance_window_dispatcher: trigger=%s", trigger)
+	}
+	return runGovernanceWindowDispatcherWithContext(context.Background(), trigger)
+}
+
+func runGovernanceWindowDispatcherWithContext(ctx context.Context, trigger string) (bool, error) {
+	if governanceWindowDispatcher == nil {
+		return false, fmt.Errorf("governance_window_dispatcher 未初始化")
+	}
+	ranAny := false
+	for i := 0; i < 8; i++ {
+		ran, err := governanceWindowDispatcher.RunNext(ctx)
+		if err != nil {
+			return ranAny || ran, err
+		}
+		if !ran {
+			return ranAny, nil
+		}
+		ranAny = true
+	}
+	log.Printf("governance_window_dispatcher reached per-trigger drain limit: trigger=%s", trigger)
+	return ranAny, nil
+}
+
+func executeGovernanceWindow(ctx context.Context, window collectorpkg.GovernanceWindowRecord) (systemgov.WindowExecutionResult, error) {
+	_ = ctx
+	trigger := "window-dispatcher:" + window.WindowKey
+	var (
+		run *collectorpkg.GovernanceRunRecord
+		err error
+	)
+	switch collectorpkg.GovernanceJob(window.JobName) {
+	case collectorpkg.GovernanceJobDailyOpenRefresh:
+		run, err = runDailyOpenRefresh(trigger)
+	case collectorpkg.GovernanceJobDailyCloseSync:
+		run, err = runDailyCloseSyncWithDates(trigger, governanceWindowTargetDates(window.TargetWindow))
+	case collectorpkg.GovernanceJobDailyAudit:
+		run, err = runDailyAuditWithDates(trigger, governanceWindowTargetDates(window.TargetWindow))
+	default:
+		return systemgov.WindowExecutionResult{
+			Status:  collectorpkg.GovernanceWindowStatusTerminalFailed,
+			Summary: "unsupported governance window job " + window.JobName,
+		}, nil
+	}
+	if err != nil {
+		return systemgov.WindowExecutionResult{}, err
+	}
+	if run == nil {
+		return systemgov.WindowExecutionResult{
+			Status:  collectorpkg.GovernanceWindowStatusTerminalFailed,
+			Summary: "governance runner returned nil run",
+		}, nil
+	}
+	return systemgov.WindowExecutionResult{
+		Status:  governanceWindowStatusFromRun(run.Status),
+		Summary: fmt.Sprintf("run_id=%s status=%s target=%s", run.RunID, run.Status, run.TargetWindow),
+		RunID:   run.RunID,
+	}, nil
+}
+
+func governanceWindowTargetDates(targetWindow string) []string {
+	parts := strings.Split(targetWindow, ",")
+	dates := make([]string, 0, len(parts))
+	for _, part := range parts {
+		date := strings.TrimSpace(part)
+		if date != "" {
+			dates = append(dates, date)
+		}
+	}
+	return dates
+}
+
+func governanceWindowStatusFromRun(status collectorpkg.GovernanceRunStatus) collectorpkg.GovernanceWindowStatus {
+	switch status {
+	case collectorpkg.GovernanceRunStatusPassed:
+		return collectorpkg.GovernanceWindowStatusPassed
+	case collectorpkg.GovernanceRunStatusPartial:
+		return collectorpkg.GovernanceWindowStatusPartial
+	case collectorpkg.GovernanceRunStatusSkipped:
+		return collectorpkg.GovernanceWindowStatusSkipped
+	case collectorpkg.GovernanceRunStatusFailed, collectorpkg.GovernanceRunStatusInterrupted:
+		return collectorpkg.GovernanceWindowStatusTerminalFailed
+	default:
+		return collectorpkg.GovernanceWindowStatusTerminalFailed
+	}
 }
 
 func runStartupRecovery(trigger string) (*collectorpkg.GovernanceRunRecord, error) {

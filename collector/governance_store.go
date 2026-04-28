@@ -56,6 +56,7 @@ func (s *GovernanceStore) EnsureSchema() error {
 		new(GovernanceSchemaVersion),
 		new(GovernanceRunRecord),
 		new(GovernanceTaskRecord),
+		new(GovernanceWindowRecord),
 		new(DomainHealthSnapshotRecord),
 		new(GovernanceLockMetadataRecord),
 		new(GovernanceEvidenceRecord),
@@ -163,6 +164,62 @@ func (s *GovernanceStore) UpsertTask(record *GovernanceTaskRecord) error {
 func (s *GovernanceStore) ListTasksByStatus(statuses ...GovernanceTaskStatus) ([]GovernanceTaskRecord, error) {
 	records := make([]GovernanceTaskRecord, 0, 16)
 	session := s.engine.Asc("Priority").Asc("CreatedAt")
+	if len(statuses) > 0 {
+		values := make([]string, 0, len(statuses))
+		for _, status := range statuses {
+			values = append(values, string(status))
+		}
+		session = session.In("Status", values)
+	}
+	err := session.Find(&records)
+	return records, err
+}
+
+func (s *GovernanceStore) UpsertWindow(record *GovernanceWindowRecord) error {
+	if record.WindowKey == "" {
+		record.WindowKey = GovernanceWindowKey(GovernanceJob(record.JobName), record.TargetWindow)
+	}
+	existing := new(GovernanceWindowRecord)
+	has, err := s.engine.Where("WindowKey = ?", record.WindowKey).Get(existing)
+	if err != nil {
+		return err
+	}
+	if has {
+		record.ID = existing.ID
+		if record.CreatedAt.IsZero() {
+			record.CreatedAt = existing.CreatedAt
+		}
+		_, err = s.engine.ID(existing.ID).AllCols().Update(record)
+		return err
+	}
+	_, err = s.engine.Insert(record)
+	return err
+}
+
+func (s *GovernanceStore) UpdateWindow(record *GovernanceWindowRecord) error {
+	if record.ID > 0 {
+		_, err := s.engine.ID(record.ID).AllCols().Update(record)
+		return err
+	}
+	_, err := s.engine.Where("WindowKey = ?", record.WindowKey).AllCols().Update(record)
+	return err
+}
+
+func (s *GovernanceStore) GetWindowByKey(windowKey string) (*GovernanceWindowRecord, error) {
+	record := new(GovernanceWindowRecord)
+	has, err := s.engine.Where("WindowKey = ?", windowKey).Get(record)
+	if err != nil {
+		return nil, err
+	}
+	if !has {
+		return nil, nil
+	}
+	return record, nil
+}
+
+func (s *GovernanceStore) ListWindowsByStatus(statuses ...GovernanceWindowStatus) ([]GovernanceWindowRecord, error) {
+	records := make([]GovernanceWindowRecord, 0, 16)
+	session := s.engine.Asc("Priority").Asc("DueAt").Asc("ID")
 	if len(statuses) > 0 {
 		values := make([]string, 0, len(statuses))
 		for _, status := range statuses {

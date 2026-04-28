@@ -63,6 +63,7 @@ func TestOpenGovernanceStoreUsesIsolatedSchema(t *testing.T) {
 		new(GovernanceSchemaVersion),
 		new(GovernanceRunRecord),
 		new(GovernanceTaskRecord),
+		new(GovernanceWindowRecord),
 		new(DomainHealthSnapshotRecord),
 		new(GovernanceLockMetadataRecord),
 		new(GovernanceEvidenceRecord),
@@ -74,6 +75,53 @@ func TestOpenGovernanceStoreUsesIsolatedSchema(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected governance table for %T", bean)
 		}
+	}
+}
+
+func TestGovernanceStorePersistsWindowLedger(t *testing.T) {
+	paths := ResolveGovernancePaths(t.TempDir())
+	store, err := OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	defer store.Close()
+
+	dueAt := time.Date(2026, 4, 28, 19, 0, 0, 0, time.Local)
+	window := &GovernanceWindowRecord{
+		WindowKey:    GovernanceWindowKey(GovernanceJobDailyAudit, "20260427,20260428"),
+		JobName:      string(GovernanceJobDailyAudit),
+		TargetWindow: "20260427,20260428",
+		DueAt:        dueAt,
+		Priority:     4,
+		Status:       GovernanceWindowStatusQueued,
+		DependencyKey: GovernanceWindowKey(
+			GovernanceJobDailyCloseSync,
+			"20260427,20260428",
+		),
+		ScheduledAt: dueAt,
+		EnqueuedAt:  dueAt.Add(40 * time.Minute),
+	}
+	if err := store.UpsertWindow(window); err != nil {
+		t.Fatalf("upsert window: %v", err)
+	}
+
+	// Re-enqueueing the same logical window must update the same fact, not create
+	// a second work item.
+	window.Attempts = 1
+	window.LastError = "system governance lock already held"
+	if err := store.UpsertWindow(window); err != nil {
+		t.Fatalf("upsert existing window: %v", err)
+	}
+
+	windows, err := store.ListWindowsByStatus(GovernanceWindowStatusQueued)
+	if err != nil {
+		t.Fatalf("list queued windows: %v", err)
+	}
+	if len(windows) != 1 {
+		t.Fatalf("queued windows = %d, want 1", len(windows))
+	}
+	if windows[0].WindowKey != window.WindowKey || windows[0].Attempts != 1 {
+		t.Fatalf("unexpected window row: %+v", windows[0])
 	}
 }
 

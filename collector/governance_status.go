@@ -13,6 +13,7 @@ type GovernanceStatusView struct {
 	Jobs    []GovernanceJobStatus         `json:"jobs"`
 	Runs    []GovernanceRunRecord         `json:"runs,omitempty"`
 	Tasks   []GovernanceTaskRecord        `json:"tasks,omitempty"`
+	Windows []GovernanceWindowRecord      `json:"windows,omitempty"`
 	Domains []DomainHealthSnapshotRecord  `json:"domains,omitempty"`
 	Lock    *GovernanceLockMetadataRecord `json:"lock,omitempty"`
 }
@@ -52,6 +53,10 @@ func (r *Runtime) UnifiedGovernanceStatus(store *GovernanceStore, paths Governan
 	if err != nil {
 		return nil, err
 	}
+	windows, err := store.ListWindowsByStatus()
+	if err != nil {
+		return nil, err
+	}
 	domains, err := store.ListLatestDomainHealthSnapshots()
 	if err != nil {
 		return nil, err
@@ -66,6 +71,7 @@ func (r *Runtime) UnifiedGovernanceStatus(store *GovernanceStore, paths Governan
 		Jobs:    buildGovernanceJobStatuses(runtimeStatus, runs),
 		Runs:    runs,
 		Tasks:   tasks,
+		Windows: windows,
 		Domains: domains,
 		Lock:    lock,
 	}, nil

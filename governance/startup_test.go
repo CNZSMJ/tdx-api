@@ -27,6 +27,7 @@ func TestStartupRecoveryQueuesMissedWindowsAndInterruptedRuns(t *testing.T) {
 				MissedJobs: []StartupRecoveryMissedJob{
 					{Job: collectorpkg.GovernanceJobDailyOpenRefresh, TargetWindow: "20260421"},
 					{Job: collectorpkg.GovernanceJobDailyCloseSync, TargetWindow: "20260418,20260421"},
+					{Job: collectorpkg.GovernanceJobDailyAudit, TargetWindow: "20260418,20260421"},
 				},
 				InterruptedRuns:  []string{"run-1"},
 				OpenBacklogCount: 2,
@@ -49,8 +50,8 @@ func TestStartupRecoveryQueuesMissedWindowsAndInterruptedRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list open tasks: %v", err)
 	}
-	if len(tasks) != 3 {
-		t.Fatalf("task count = %d, want 3", len(tasks))
+	if len(tasks) != 4 {
+		t.Fatalf("task count = %d, want 4", len(tasks))
 	}
 	targets := make(map[string]string, len(tasks))
 	for _, task := range tasks {
@@ -61,6 +62,32 @@ func TestStartupRecoveryQueuesMissedWindowsAndInterruptedRuns(t *testing.T) {
 	}
 	if targets[string(collectorpkg.GovernanceJobDailyCloseSync)] != "20260418,20260421" {
 		t.Fatalf("close sync target window = %q, want 20260418,20260421", targets[string(collectorpkg.GovernanceJobDailyCloseSync)])
+	}
+	if targets[string(collectorpkg.GovernanceJobDailyAudit)] != "20260418,20260421" {
+		t.Fatalf("daily audit target window = %q, want 20260418,20260421", targets[string(collectorpkg.GovernanceJobDailyAudit)])
+	}
+
+	windows, err := store.ListWindowsByStatus(collectorpkg.GovernanceWindowStatusQueued)
+	if err != nil {
+		t.Fatalf("list queued windows: %v", err)
+	}
+	if len(windows) != 3 {
+		t.Fatalf("queued windows = %d, want 3", len(windows))
+	}
+	windowTargets := make(map[string]string, len(windows))
+	windowDependencies := make(map[string]string, len(windows))
+	for _, window := range windows {
+		windowTargets[window.JobName] = window.TargetWindow
+		windowDependencies[window.JobName] = window.DependencyKey
+	}
+	if windowTargets[string(collectorpkg.GovernanceJobDailyOpenRefresh)] != "20260421" {
+		t.Fatalf("open refresh window = %q, want 20260421", windowTargets[string(collectorpkg.GovernanceJobDailyOpenRefresh)])
+	}
+	if windowTargets[string(collectorpkg.GovernanceJobDailyCloseSync)] != "20260418,20260421" {
+		t.Fatalf("close sync window = %q, want 20260418,20260421", windowTargets[string(collectorpkg.GovernanceJobDailyCloseSync)])
+	}
+	if windowDependencies[string(collectorpkg.GovernanceJobDailyAudit)] != collectorpkg.GovernanceWindowKey(collectorpkg.GovernanceJobDailyCloseSync, "20260418,20260421") {
+		t.Fatalf("daily audit dependency = %q, want close-sync dependency", windowDependencies[string(collectorpkg.GovernanceJobDailyAudit)])
 	}
 }
 

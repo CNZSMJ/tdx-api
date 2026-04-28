@@ -127,3 +127,49 @@ func TestCollectStartupRecoverySnapshotQueuesPreviousTradingWindowsBeforeEvening
 		t.Fatalf("daily audit target window = %q, want 20260416,20260417", missedByJob[collectorpkg.GovernanceJobDailyAudit])
 	}
 }
+
+func TestMissedGovernanceWindowCreatesDurableWindowIntent(t *testing.T) {
+	originalStore := governanceStore
+	defer func() {
+		governanceStore = originalStore
+	}()
+
+	paths := collectorpkg.ResolveGovernancePaths(t.TempDir())
+	store, err := collectorpkg.OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	defer store.Close()
+	governanceStore = store
+
+	if err := upsertMissedGovernanceWindowTask(
+		collectorpkg.GovernanceJobDailyAudit,
+		"20260427,20260428",
+		"scheduled daily-19:00 blocked by active governance lock",
+	); err != nil {
+		t.Fatalf("upsert missed governance window: %v", err)
+	}
+
+	tasks, err := store.ListTasksByStatus(collectorpkg.GovernanceTaskStatusOpen)
+	if err != nil {
+		t.Fatalf("list open tasks: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("open tasks = %d, want 1", len(tasks))
+	}
+
+	window, err := store.GetWindowByKey(collectorpkg.GovernanceWindowKey(collectorpkg.GovernanceJobDailyAudit, "20260427,20260428"))
+	if err != nil {
+		t.Fatalf("get governance window: %v", err)
+	}
+	if window == nil {
+		t.Fatalf("expected missed audit window intent")
+	}
+	if window.Status != collectorpkg.GovernanceWindowStatusQueued || window.TargetWindow != "20260427,20260428" {
+		t.Fatalf("unexpected window intent: %+v", window)
+	}
+	wantDependency := collectorpkg.GovernanceWindowKey(collectorpkg.GovernanceJobDailyCloseSync, "20260427,20260428")
+	if window.DependencyKey != wantDependency {
+		t.Fatalf("window dependency = %q, want %q", window.DependencyKey, wantDependency)
+	}
+}
