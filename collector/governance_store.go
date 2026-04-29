@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -117,6 +118,103 @@ func (s *GovernanceStore) InterruptRunningRuns(reason string, endedAt time.Time)
 		return nil, nil
 	})
 	return updated, err
+}
+
+func (s *GovernanceStore) ExpireRunningWindow(record *GovernanceWindowRecord, reason string, endedAt time.Time) (bool, error) {
+	if record == nil {
+		return false, nil
+	}
+	if endedAt.IsZero() {
+		endedAt = time.Now()
+	}
+
+	var expired bool
+	_, err := s.engine.Transaction(func(session *xorm.Session) (interface{}, error) {
+		current := new(GovernanceWindowRecord)
+		var (
+			has bool
+			err error
+		)
+		if record.ID > 0 {
+			has, err = session.ID(record.ID).Get(current)
+		} else {
+			has, err = session.Where("WindowKey = ?", record.WindowKey).Get(current)
+		}
+		if err != nil {
+			return nil, err
+		}
+		if !has ||
+			current.Status != GovernanceWindowStatusRunning ||
+			current.LeaseUntil.IsZero() ||
+			current.LeaseUntil.After(endedAt) {
+			return nil, nil
+		}
+
+		latestRun := new(GovernanceRunRecord)
+		hasRun, err := session.
+			Where("JobName = ? AND TargetWindow = ?", current.JobName, current.TargetWindow).
+			Desc("StartedAt").
+			Desc("ID").
+			Get(latestRun)
+		if err != nil {
+			return nil, err
+		}
+		if hasRun && latestRun.Status == GovernanceRunStatusRunning {
+			return nil, nil
+		}
+
+		current.Status = GovernanceWindowStatusTerminalFailed
+		current.LastError = reason
+		current.ResultSummary = reason
+		current.EndedAt = endedAt
+		if hasRun {
+			current.Status = governanceWindowStatusFromRunStatus(latestRun.Status)
+			current.RunID = latestRun.RunID
+			current.ResultSummary = fmt.Sprintf("run_id=%s status=%s target=%s", latestRun.RunID, latestRun.Status, latestRun.TargetWindow)
+			if !latestRun.EndedAt.IsZero() {
+				current.EndedAt = latestRun.EndedAt
+			}
+			if current.Status == GovernanceWindowStatusTerminalFailed {
+				current.LastError = latestRun.Reason
+				if current.LastError == "" {
+					current.LastError = reason
+				}
+			} else {
+				current.LastError = ""
+			}
+		}
+		current.LeaseOwner = ""
+		current.LeaseUntil = time.Time{}
+
+		affected, err := session.
+			Where("ID = ? AND Status = ? AND LeaseUntil <= ?", current.ID, GovernanceWindowStatusRunning, endedAt).
+			AllCols().
+			Update(current)
+		if err != nil {
+			return nil, err
+		}
+		if affected == 0 {
+			return nil, nil
+		}
+		expired = true
+		return nil, nil
+	})
+	return expired, err
+}
+
+func governanceWindowStatusFromRunStatus(status GovernanceRunStatus) GovernanceWindowStatus {
+	switch status {
+	case GovernanceRunStatusPassed:
+		return GovernanceWindowStatusPassed
+	case GovernanceRunStatusPartial:
+		return GovernanceWindowStatusPartial
+	case GovernanceRunStatusSkipped:
+		return GovernanceWindowStatusSkipped
+	case GovernanceRunStatusFailed, GovernanceRunStatusInterrupted:
+		return GovernanceWindowStatusTerminalFailed
+	default:
+		return GovernanceWindowStatusTerminalFailed
+	}
 }
 
 func (s *GovernanceStore) ListRecentRuns(limit int) ([]GovernanceRunRecord, error) {

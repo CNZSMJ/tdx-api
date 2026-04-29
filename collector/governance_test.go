@@ -352,6 +352,62 @@ func TestGovernanceStoreInterruptRunningRunsRollsBackOnUpdateFailure(t *testing.
 	}
 }
 
+func TestGovernanceStoreExpireRunningWindowDoesNotOverwriteCurrentTerminalWindow(t *testing.T) {
+	paths := ResolveGovernancePaths(t.TempDir())
+	store, err := OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 4, 20, 3, 30, 0, 0, time.Local)
+	window := &GovernanceWindowRecord{
+		WindowKey:    GovernanceWindowKey(GovernanceJobDailyCloseSync, "20260416,20260417"),
+		JobName:      string(GovernanceJobDailyCloseSync),
+		TargetWindow: "20260416,20260417",
+		DueAt:        now.Add(-2 * time.Hour),
+		Priority:     3,
+		Status:       GovernanceWindowStatusRunning,
+		StartedAt:    now.Add(-2 * time.Hour),
+		LeaseOwner:   "old-dispatcher",
+		LeaseUntil:   now.Add(-time.Minute),
+	}
+	if err := store.UpsertWindow(window); err != nil {
+		t.Fatalf("seed running window: %v", err)
+	}
+	staleRecord, err := store.GetWindowByKey(window.WindowKey)
+	if err != nil {
+		t.Fatalf("get stale record: %v", err)
+	}
+
+	current := *staleRecord
+	current.Status = GovernanceWindowStatusPassed
+	current.LeaseOwner = ""
+	current.LeaseUntil = time.Time{}
+	current.RunID = "run-close-passed"
+	current.ResultSummary = "run_id=run-close-passed status=passed target=20260416,20260417"
+	current.EndedAt = now.Add(-30 * time.Second)
+	if err := store.UpdateWindow(&current); err != nil {
+		t.Fatalf("mark current window passed: %v", err)
+	}
+
+	expired, err := store.ExpireRunningWindow(staleRecord, "governance window lease expired", now)
+	if err != nil {
+		t.Fatalf("expire running window: %v", err)
+	}
+	if expired {
+		t.Fatalf("stale record should not expire an already terminal window")
+	}
+
+	loaded, err := store.GetWindowByKey(window.WindowKey)
+	if err != nil {
+		t.Fatalf("get loaded window: %v", err)
+	}
+	if loaded == nil || loaded.Status != GovernanceWindowStatusPassed || loaded.RunID != "run-close-passed" {
+		t.Fatalf("terminal window was overwritten: %+v", loaded)
+	}
+}
+
 func TestGovernanceStoreUpsertTaskPreservesDegradedStatus(t *testing.T) {
 	paths := ResolveGovernancePaths(t.TempDir())
 	store, err := OpenGovernanceStore(paths.DBPath)

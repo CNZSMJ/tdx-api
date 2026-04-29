@@ -30,6 +30,20 @@ Workspace-level rules from the parent workspace `AGENTS.md` still apply here. Th
 - Before staging or committing, confirm the active repo with `git rev-parse --show-toplevel`.
 - Stage only the files relevant to the current `tdx-api` task.
 
+## Agent skills
+
+### Issue tracker
+
+Issues and PRDs are tracked in GitHub Issues for `CNZSMJ/tdx-api`, using the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the default five-label triage vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This is a single-context repo: read root `CONTEXT.md` and relevant ADRs under `docs/adr/` when present. See `docs/agents/domain.md`.
+
 ---
 
 ## 0. Non-negotiables

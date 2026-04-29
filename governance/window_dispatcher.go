@@ -9,6 +9,8 @@ import (
 	collectorpkg "github.com/injoyai/tdx/collector"
 )
 
+const governanceWindowLeaseExpiredReason = "governance window lease expired"
+
 type WindowDispatcherConfig struct {
 	Store         *collectorpkg.GovernanceStore
 	Now           func() time.Time
@@ -49,6 +51,14 @@ func (d *WindowDispatcher) RunNext(ctx context.Context) (bool, error) {
 	}
 
 	now := d.cfg.Now()
+	recovered, err := d.recoverExpiredRunningWindow(now)
+	if err != nil {
+		return false, err
+	}
+	if recovered {
+		return true, nil
+	}
+
 	windows, err := d.cfg.Store.ListWindowsByStatus(
 		collectorpkg.GovernanceWindowStatusQueued,
 		collectorpkg.GovernanceWindowStatusContinued,
@@ -128,6 +138,26 @@ func (d *WindowDispatcher) RunNext(ctx context.Context) (bool, error) {
 		return true, nil
 	}
 
+	return false, nil
+}
+
+func (d *WindowDispatcher) recoverExpiredRunningWindow(now time.Time) (bool, error) {
+	windows, err := d.cfg.Store.ListWindowsByStatus(collectorpkg.GovernanceWindowStatusRunning)
+	if err != nil {
+		return false, err
+	}
+	for _, window := range windows {
+		if window.LeaseUntil.IsZero() || window.LeaseUntil.After(now) {
+			continue
+		}
+		expired, err := d.cfg.Store.ExpireRunningWindow(&window, governanceWindowLeaseExpiredReason, now)
+		if err != nil {
+			return false, err
+		}
+		if expired {
+			return true, nil
+		}
+	}
 	return false, nil
 }
 
