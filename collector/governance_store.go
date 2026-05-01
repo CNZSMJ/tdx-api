@@ -16,17 +16,37 @@ type GovernanceStore struct {
 }
 
 func OpenGovernanceStore(filename string) (*GovernanceStore, error) {
+	return openGovernanceStore(filename, false)
+}
+
+func OpenGovernanceStoreReadOnly(filename string) (*GovernanceStore, error) {
+	return openGovernanceStore(filename, true)
+}
+
+func openGovernanceStore(filename string, readOnly bool) (*GovernanceStore, error) {
 	if filename == "" {
 		filename = ResolveGovernancePaths("").DBPath
 	}
 	dir, _ := filepath.Split(filename)
-	if dir != "" {
+	if readOnly {
+		if _, err := os.Stat(filename); err != nil {
+			return nil, err
+		}
+	} else if dir != "" {
 		if err := os.MkdirAll(dir, 0o777); err != nil {
 			return nil, err
 		}
 	}
 
-	engine, err := xorm.NewEngine("sqlite", filename)
+	dsn := filename
+	if readOnly {
+		abs, err := filepath.Abs(filename)
+		if err != nil {
+			return nil, err
+		}
+		dsn = "file:" + filepath.ToSlash(abs) + "?mode=ro"
+	}
+	engine, err := xorm.NewEngine("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
@@ -34,9 +54,11 @@ func OpenGovernanceStore(filename string) (*GovernanceStore, error) {
 	engine.DB().SetMaxOpenConns(1)
 
 	store := &GovernanceStore{engine: engine}
-	if err := store.EnsureSchema(); err != nil {
-		_ = engine.Close()
-		return nil, err
+	if !readOnly {
+		if err := store.EnsureSchema(); err != nil {
+			_ = engine.Close()
+			return nil, err
+		}
 	}
 	return store, nil
 }
