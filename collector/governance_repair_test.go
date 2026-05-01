@@ -491,7 +491,7 @@ func TestTerminalGovernanceWindowRepairRequeuesOnlySafeTerminalWindows(t *testin
 	for _, change := range result.Operations[0].Changes {
 		actions[change.Target] = change.Action
 	}
-	if actions[closeKey] != "requeue_window" || actions[auditReadyKey] != "requeue_window" || actions[auditMissingKey] != "keep_terminal_failed" {
+	if actions[closeKey] != "requeue_window" || actions[auditReadyKey] != "requeue_window" || actions[GovernanceWindowKey(GovernanceJobDailyCloseSync, auditMissingTarget)] != "create_missing_dependency_window" {
 		t.Fatalf("unexpected planned actions: %+v", actions)
 	}
 
@@ -506,7 +506,7 @@ func TestTerminalGovernanceWindowRepairRequeuesOnlySafeTerminalWindows(t *testin
 	if err != nil {
 		t.Fatalf("apply terminal window repair: %v", err)
 	}
-	if len(result.Operations) != 1 || result.Operations[0].Planned != 3 || result.Operations[0].Applied != 2 {
+	if len(result.Operations) != 1 || result.Operations[0].Planned != 3 || result.Operations[0].Applied != 3 {
 		t.Fatalf("unexpected apply result: %+v", result.Operations)
 	}
 
@@ -533,6 +533,76 @@ func TestTerminalGovernanceWindowRepairRequeuesOnlySafeTerminalWindows(t *testin
 	}
 	if auditMissing == nil || auditMissing.Status != GovernanceWindowStatusTerminalFailed {
 		t.Fatalf("missing-dependency audit window = %+v, want terminal_failed", auditMissing)
+	}
+}
+
+func TestTerminalGovernanceWindowRepairCreatesMissingDependencyWindow(t *testing.T) {
+	paths := ResolveGovernancePaths(t.TempDir())
+	store, err := OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	now := fixedRepairNow()
+	targetWindow := "20260427,20260428"
+	auditKey := GovernanceWindowKey(GovernanceJobDailyAudit, targetWindow)
+	dependencyKey := GovernanceWindowKey(GovernanceJobDailyCloseSync, targetWindow)
+	if err := store.UpsertWindow(&GovernanceWindowRecord{
+		WindowKey:     auditKey,
+		JobName:       string(GovernanceJobDailyAudit),
+		TargetWindow:  targetWindow,
+		DueAt:         now.Add(-2 * time.Hour),
+		Priority:      4,
+		Status:        GovernanceWindowStatusTerminalFailed,
+		DependencyKey: dependencyKey,
+		LastError:     "missing dependency " + dependencyKey,
+		ResultSummary: "dependency missing; terminally deferred " + dependencyKey,
+	}); err != nil {
+		t.Fatalf("seed audit window: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close governance store: %v", err)
+	}
+
+	result, err := RunGovernanceRepairBatch(GovernanceRepairBatchOptions{
+		DBPath:    paths.DBPath,
+		BackupDir: filepath.Join(paths.BaseDataDir, "backups"),
+		Mode:      GovernanceRepairModeApply,
+		Now:       fixedRepairNow,
+	}, []GovernanceRepairOperation{
+		TerminalGovernanceWindowRepair{Now: fixedRepairNow},
+	})
+	if err != nil {
+		t.Fatalf("apply terminal window repair: %v", err)
+	}
+	if len(result.Operations) != 1 || result.Operations[0].Planned != 1 || result.Operations[0].Applied != 1 {
+		t.Fatalf("unexpected apply result: %+v", result.Operations)
+	}
+	change := result.Operations[0].Changes[0]
+	if change.Target != dependencyKey || change.Action != "create_missing_dependency_window" {
+		t.Fatalf("unexpected repair change: %+v", change)
+	}
+
+	store, err = OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("reopen governance store: %v", err)
+	}
+	defer store.Close()
+	dependency, err := store.GetWindowByKey(dependencyKey)
+	if err != nil {
+		t.Fatalf("get dependency window: %v", err)
+	}
+	if dependency == nil || dependency.Status != GovernanceWindowStatusQueued {
+		t.Fatalf("dependency window = %+v, want queued", dependency)
+	}
+	if dependency.JobName != string(GovernanceJobDailyCloseSync) || dependency.TargetWindow != targetWindow || dependency.Priority != GovernanceJobPriority(GovernanceJobDailyCloseSync) {
+		t.Fatalf("dependency window has wrong identity: %+v", dependency)
+	}
+	audit, err := store.GetWindowByKey(auditKey)
+	if err != nil {
+		t.Fatalf("get audit window: %v", err)
+	}
+	if audit == nil || audit.Status != GovernanceWindowStatusTerminalFailed {
+		t.Fatalf("audit window = %+v, want terminal_failed until dependency completes", audit)
 	}
 }
 

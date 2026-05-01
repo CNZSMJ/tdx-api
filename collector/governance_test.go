@@ -125,6 +125,54 @@ func TestGovernanceStorePersistsWindowLedger(t *testing.T) {
 	}
 }
 
+func TestGovernanceStoreCreateWindowIfMissingDoesNotOverwriteExistingWindow(t *testing.T) {
+	paths := ResolveGovernancePaths(t.TempDir())
+	store, err := OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	defer store.Close()
+
+	windowKey := GovernanceWindowKey(GovernanceJobDailyCloseSync, "20260427,20260428")
+	created, err := store.CreateWindowIfMissing(&GovernanceWindowRecord{
+		WindowKey:    windowKey,
+		JobName:      string(GovernanceJobDailyCloseSync),
+		TargetWindow: "20260427,20260428",
+		DueAt:        time.Date(2026, 4, 28, 18, 0, 0, 0, time.Local),
+		Priority:     3,
+		Status:       GovernanceWindowStatusQueued,
+	})
+	if err != nil {
+		t.Fatalf("create window: %v", err)
+	}
+	if !created {
+		t.Fatalf("first create returned false")
+	}
+	created, err = store.CreateWindowIfMissing(&GovernanceWindowRecord{
+		WindowKey:     windowKey,
+		JobName:       string(GovernanceJobDailyCloseSync),
+		TargetWindow:  "20260427,20260428",
+		DueAt:         time.Date(2026, 4, 28, 18, 0, 0, 0, time.Local),
+		Priority:      3,
+		Status:        GovernanceWindowStatusTerminalFailed,
+		LastError:     "should not overwrite",
+		ResultSummary: "should not overwrite",
+	})
+	if err != nil {
+		t.Fatalf("second create: %v", err)
+	}
+	if created {
+		t.Fatalf("second create returned true")
+	}
+	window, err := store.GetWindowByKey(windowKey)
+	if err != nil {
+		t.Fatalf("get window: %v", err)
+	}
+	if window == nil || window.Status != GovernanceWindowStatusQueued || window.LastError != "" {
+		t.Fatalf("existing window was overwritten: %+v", window)
+	}
+}
+
 func TestGovernanceStorePersistsControlPlaneRecords(t *testing.T) {
 	paths := ResolveGovernancePaths(t.TempDir())
 	store, err := OpenGovernanceStore(paths.DBPath)

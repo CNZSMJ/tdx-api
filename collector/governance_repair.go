@@ -209,6 +209,19 @@ func (r TerminalGovernanceWindowRepair) Apply(store *GovernanceStore) ([]Governa
 		}
 		window := plan.window
 		switch plan.change.Action {
+		case "create_missing_dependency_window":
+			dependency, ok := missingDependencyWindowForTerminalWindow(window, now)
+			if !ok {
+				continue
+			}
+			created, err := store.CreateWindowIfMissing(dependency)
+			if err != nil {
+				return nil, err
+			}
+			if created {
+				applied = append(applied, plan.change)
+			}
+			continue
 		case "mirror_completed_run":
 			if plan.run == nil {
 				continue
@@ -289,6 +302,12 @@ func (r TerminalGovernanceWindowRepair) planWindow(store *GovernanceStore, windo
 		return terminalGovernanceWindowRepairPlan{}, err
 	}
 	if !ready {
+		if dependency, ok := missingDependencyWindowForTerminalWindow(window, r.now()); ok && strings.Contains(reason, "missing dependency "+dependency.WindowKey) {
+			change.Target = dependency.WindowKey
+			change.Action = "create_missing_dependency_window"
+			change.Reason = fmt.Sprintf("terminal window %s waits on missing dependency", window.WindowKey)
+			return terminalGovernanceWindowRepairPlan{change: change, window: window, run: latestRun}, nil
+		}
 		change.Action = "keep_terminal_failed"
 		change.Reason = reason
 		return terminalGovernanceWindowRepairPlan{change: change, window: window, run: latestRun}, nil
@@ -307,6 +326,39 @@ func (r TerminalGovernanceWindowRepair) now() time.Time {
 		return r.Now()
 	}
 	return time.Now()
+}
+
+func missingDependencyWindowForTerminalWindow(window GovernanceWindowRecord, now time.Time) (*GovernanceWindowRecord, bool) {
+	var dependencyJob GovernanceJob
+	switch GovernanceJob(window.JobName) {
+	case GovernanceJobDailyAudit:
+		dependencyJob = GovernanceJobDailyCloseSync
+	default:
+		return nil, false
+	}
+	canonicalKey := GovernanceWindowKey(dependencyJob, window.TargetWindow)
+	dependencyKey := strings.TrimSpace(window.DependencyKey)
+	if dependencyKey == "" {
+		dependencyKey = GovernanceWindowDependencyKey(GovernanceJob(window.JobName), window.TargetWindow)
+	}
+	if dependencyKey != canonicalKey {
+		return nil, false
+	}
+	dueAt := window.DueAt
+	if dueAt.IsZero() {
+		dueAt = now
+	}
+	return &GovernanceWindowRecord{
+		WindowKey:     dependencyKey,
+		JobName:       string(dependencyJob),
+		TargetWindow:  window.TargetWindow,
+		DueAt:         dueAt,
+		Priority:      GovernanceJobPriority(dependencyJob),
+		Status:        GovernanceWindowStatusQueued,
+		ScheduledAt:   now,
+		EnqueuedAt:    now,
+		ResultSummary: fmt.Sprintf("created because terminal window %s was missing its dependency", window.WindowKey),
+	}, true
 }
 
 func terminalWindowDependencyReady(store *GovernanceStore, window GovernanceWindowRecord) (bool, string, error) {

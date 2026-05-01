@@ -80,9 +80,22 @@ func (d *WindowDispatcher) RunNext(ctx context.Context) (bool, error) {
 			return false, err
 		}
 		if dependencyState.missing {
-			window.Status = collectorpkg.GovernanceWindowStatusTerminalFailed
-			window.LastError = "missing dependency " + window.DependencyKey
-			window.ResultSummary = "dependency missing; terminally deferred " + window.DependencyKey
+			created, err := d.createMissingDependencyWindow(window, now)
+			if err != nil {
+				return false, err
+			}
+			if !created {
+				window.Status = collectorpkg.GovernanceWindowStatusTerminalFailed
+				window.LastError = "missing dependency " + window.DependencyKey
+				window.ResultSummary = "dependency missing; terminally deferred " + window.DependencyKey
+				if err := d.cfg.Store.UpdateWindow(&window); err != nil {
+					return false, err
+				}
+				return false, nil
+			}
+			window.Status = collectorpkg.GovernanceWindowStatusWaitingDependency
+			window.LastError = ""
+			window.ResultSummary = "waiting for dependency " + window.DependencyKey
 			if err := d.cfg.Store.UpdateWindow(&window); err != nil {
 				return false, err
 			}
@@ -161,6 +174,36 @@ func (d *WindowDispatcher) recoverExpiredRunningWindow(now time.Time) (bool, err
 	return false, nil
 }
 
+func (d *WindowDispatcher) createMissingDependencyWindow(window collectorpkg.GovernanceWindowRecord, now time.Time) (bool, error) {
+	var dependencyJob collectorpkg.GovernanceJob
+	switch collectorpkg.GovernanceJob(window.JobName) {
+	case collectorpkg.GovernanceJobDailyAudit:
+		dependencyJob = collectorpkg.GovernanceJobDailyCloseSync
+	default:
+		return false, nil
+	}
+	dependencyKey := strings.TrimSpace(window.DependencyKey)
+	canonicalKey := collectorpkg.GovernanceWindowKey(dependencyJob, window.TargetWindow)
+	if dependencyKey != canonicalKey {
+		return false, nil
+	}
+	dueAt := window.DueAt
+	if dueAt.IsZero() {
+		dueAt = now
+	}
+	return d.cfg.Store.CreateWindowIfMissing(&collectorpkg.GovernanceWindowRecord{
+		WindowKey:     dependencyKey,
+		JobName:       string(dependencyJob),
+		TargetWindow:  window.TargetWindow,
+		DueAt:         dueAt,
+		Priority:      collectorpkg.GovernanceJobPriority(dependencyJob),
+		Status:        collectorpkg.GovernanceWindowStatusQueued,
+		ScheduledAt:   now,
+		EnqueuedAt:    now,
+		ResultSummary: fmt.Sprintf("created because window %s was missing its dependency", window.WindowKey),
+	})
+}
+
 type windowDependencyState struct {
 	ready   bool
 	missing bool
@@ -177,5 +220,12 @@ func (d *WindowDispatcher) dependencyState(window collectorpkg.GovernanceWindowR
 	if dependency == nil {
 		return windowDependencyState{missing: true}, nil
 	}
-	return windowDependencyState{ready: collectorpkg.GovernanceWindowStatusIsTerminal(dependency.Status)}, nil
+	switch dependency.Status {
+	case collectorpkg.GovernanceWindowStatusPassed,
+		collectorpkg.GovernanceWindowStatusPartial,
+		collectorpkg.GovernanceWindowStatusSkipped:
+		return windowDependencyState{ready: true}, nil
+	default:
+		return windowDependencyState{}, nil
+	}
 }

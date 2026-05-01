@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "github.com/glebarez/go-sqlite"
@@ -348,6 +349,31 @@ func (s *GovernanceStore) UpsertWindow(record *GovernanceWindowRecord) error {
 	}
 	_, err = s.engine.Insert(record)
 	return err
+}
+
+func (s *GovernanceStore) CreateWindowIfMissing(record *GovernanceWindowRecord) (bool, error) {
+	if record.WindowKey == "" {
+		record.WindowKey = GovernanceWindowKey(GovernanceJob(record.JobName), record.TargetWindow)
+	}
+	existing := new(GovernanceWindowRecord)
+	has, err := s.engine.Where("WindowKey = ?", record.WindowKey).Get(existing)
+	if err != nil {
+		return false, err
+	}
+	if has {
+		return false, nil
+	}
+	_, err = s.engine.Insert(record)
+	if err != nil && strings.Contains(strings.ToLower(err.Error()), "unique") {
+		has, getErr := s.engine.Where("WindowKey = ?", record.WindowKey).Exist(new(GovernanceWindowRecord))
+		if getErr != nil {
+			return false, getErr
+		}
+		if has {
+			return false, nil
+		}
+	}
+	return err == nil, err
 }
 
 func (s *GovernanceStore) UpdateWindow(record *GovernanceWindowRecord) error {
