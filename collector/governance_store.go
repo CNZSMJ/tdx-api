@@ -225,6 +225,66 @@ func (s *GovernanceStore) ExpireRunningWindow(record *GovernanceWindowRecord, re
 	return expired, err
 }
 
+func (s *GovernanceStore) RecoverRunningWindowsFromEndedRuns(reason string, endedAt time.Time) (int64, error) {
+	if endedAt.IsZero() {
+		endedAt = time.Now()
+	}
+
+	var recovered int64
+	_, err := s.engine.Transaction(func(session *xorm.Session) (interface{}, error) {
+		windows := make([]GovernanceWindowRecord, 0, 8)
+		if err := session.Where("Status = ?", GovernanceWindowStatusRunning).Find(&windows); err != nil {
+			return nil, err
+		}
+		for _, window := range windows {
+			latestRun := new(GovernanceRunRecord)
+			hasRun, err := session.
+				Where("JobName = ? AND TargetWindow = ?", window.JobName, window.TargetWindow).
+				Desc("StartedAt").
+				Desc("ID").
+				Get(latestRun)
+			if err != nil {
+				return nil, err
+			}
+			if !hasRun || latestRun.Status == GovernanceRunStatusRunning {
+				continue
+			}
+
+			window.Status = governanceWindowStatusFromRunStatus(latestRun.Status)
+			window.RunID = latestRun.RunID
+			window.ResultSummary = fmt.Sprintf("run_id=%s status=%s target=%s", latestRun.RunID, latestRun.Status, latestRun.TargetWindow)
+			if !latestRun.EndedAt.IsZero() {
+				window.EndedAt = latestRun.EndedAt
+			} else {
+				window.EndedAt = endedAt
+			}
+			if window.Status == GovernanceWindowStatusTerminalFailed {
+				window.LastError = latestRun.Reason
+				if window.LastError == "" {
+					window.LastError = reason
+				}
+			} else {
+				window.LastError = ""
+			}
+			window.LeaseOwner = ""
+			window.LeaseUntil = time.Time{}
+
+			affected, err := session.
+				Where("ID = ? AND Status = ?", window.ID, GovernanceWindowStatusRunning).
+				AllCols().
+				Update(&window)
+			if err != nil {
+				return nil, err
+			}
+			if affected > 0 {
+				recovered++
+			}
+		}
+		return nil, nil
+	})
+	return recovered, err
+}
+
 func governanceWindowStatusFromRunStatus(status GovernanceRunStatus) GovernanceWindowStatus {
 	switch status {
 	case GovernanceRunStatusPassed:

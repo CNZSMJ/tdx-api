@@ -400,6 +400,65 @@ func TestGovernanceStoreInterruptRunningRunsRollsBackOnUpdateFailure(t *testing.
 	}
 }
 
+func TestGovernanceStoreRecoversRunningWindowsFromEndedRuns(t *testing.T) {
+	paths := ResolveGovernancePaths(t.TempDir())
+	store, err := OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 5, 2, 9, 0, 0, 0, time.Local)
+	targetWindow := "20260427,20260428"
+	windowKey := GovernanceWindowKey(GovernanceJobDailyCloseSync, targetWindow)
+	if err := store.UpsertWindow(&GovernanceWindowRecord{
+		WindowKey:    windowKey,
+		JobName:      string(GovernanceJobDailyCloseSync),
+		TargetWindow: targetWindow,
+		DueAt:        now.Add(-time.Hour),
+		Priority:     3,
+		Status:       GovernanceWindowStatusRunning,
+		LeaseOwner:   "old-web",
+		LeaseUntil:   now.Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("seed running window: %v", err)
+	}
+	runEndedAt := now.Add(-time.Minute)
+	if err := store.AddRun(&GovernanceRunRecord{
+		RunID:        "run-close-interrupted",
+		JobName:      string(GovernanceJobDailyCloseSync),
+		Status:       GovernanceRunStatusInterrupted,
+		Reason:       "context canceled",
+		TargetWindow: targetWindow,
+		StartedAt:    now.Add(-30 * time.Minute),
+		EndedAt:      runEndedAt,
+	}); err != nil {
+		t.Fatalf("seed ended run: %v", err)
+	}
+
+	recovered, err := store.RecoverRunningWindowsFromEndedRuns("collector process restarted before governance run finished", now)
+	if err != nil {
+		t.Fatalf("recover running windows: %v", err)
+	}
+	if recovered != 1 {
+		t.Fatalf("recovered = %d, want 1", recovered)
+	}
+
+	window, err := store.GetWindowByKey(windowKey)
+	if err != nil {
+		t.Fatalf("get window: %v", err)
+	}
+	if window == nil || window.Status != GovernanceWindowStatusTerminalFailed {
+		t.Fatalf("window = %+v, want terminal_failed", window)
+	}
+	if window.RunID != "run-close-interrupted" || window.LastError != "context canceled" || !window.EndedAt.Equal(runEndedAt) {
+		t.Fatalf("window did not mirror ended run: %+v", window)
+	}
+	if window.LeaseOwner != "" || !window.LeaseUntil.IsZero() {
+		t.Fatalf("window lease was not cleared: %+v", window)
+	}
+}
+
 func TestGovernanceStoreExpireRunningWindowDoesNotOverwriteCurrentTerminalWindow(t *testing.T) {
 	paths := ResolveGovernancePaths(t.TempDir())
 	store, err := OpenGovernanceStore(paths.DBPath)

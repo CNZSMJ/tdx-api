@@ -453,12 +453,21 @@ func recoverInterruptedGovernanceRuns() error {
 	if governanceStore == nil {
 		return nil
 	}
-	count, err := governanceStore.InterruptRunningRuns("collector process restarted before governance run finished", time.Now())
+	now := time.Now()
+	reason := "collector process restarted before governance run finished"
+	count, err := governanceStore.InterruptRunningRuns(reason, now)
 	if err != nil {
 		return err
 	}
 	if count > 0 {
 		log.Printf("governance: marked %d stale running runs as interrupted", count)
+	}
+	recoveredWindows, err := governanceStore.RecoverRunningWindowsFromEndedRuns(reason, now)
+	if err != nil {
+		return err
+	}
+	if recoveredWindows > 0 {
+		log.Printf("governance: recovered %d running windows from ended runs", recoveredWindows)
 	}
 	return nil
 }
