@@ -155,6 +155,9 @@ func governanceWindowHealth(windows []GovernanceWindowRecord) string {
 func governanceBacklogHealth(tasks []GovernanceTaskRecord) string {
 	health := "healthy"
 	for _, task := range tasks {
+		if isAcceptedUnsupportedHistoricalQuoteSnapshotTask(task) {
+			continue
+		}
 		switch task.Status {
 		case GovernanceTaskStatusOpen, GovernanceTaskStatusInProgress, GovernanceTaskStatusBlocked:
 			health = worstGovernanceHealth(health, "unhealthy")
@@ -192,6 +195,9 @@ func governanceHealthReasons(domains []DomainHealthSnapshotRecord, windows []Gov
 		}
 	}
 	for _, task := range tasks {
+		if isAcceptedUnsupportedHistoricalQuoteSnapshotTask(task) {
+			continue
+		}
 		switch task.Status {
 		case GovernanceTaskStatusOpen, GovernanceTaskStatusInProgress, GovernanceTaskStatusBlocked, GovernanceTaskStatusDegraded, GovernanceTaskStatusUnsupported:
 			reasons = append(reasons, fmt.Sprintf("backlog:%s status=%s", task.TaskKey, task.Status))
@@ -201,6 +207,12 @@ func governanceHealthReasons(domains []DomainHealthSnapshotRecord, windows []Gov
 		reasons = append(reasons, fmt.Sprintf("lock:%s state=stale holder_run_id=%s", lock.LockName, lock.HolderRunID))
 	}
 	return reasons
+}
+
+func isAcceptedUnsupportedHistoricalQuoteSnapshotTask(task GovernanceTaskRecord) bool {
+	return task.JobName == string(GovernanceJobDailyAudit) &&
+		task.Domain == "quote_snapshot" &&
+		task.Status == GovernanceTaskStatusUnsupported
 }
 
 func worstGovernanceHealth(values ...string) string {

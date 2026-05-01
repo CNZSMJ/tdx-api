@@ -975,6 +975,43 @@ func TestRuntimeUnifiedGovernanceStatusSeparatesDataAndExecutionHealth(t *testin
 	}
 }
 
+func TestGovernanceBacklogHealthIgnoresAcceptedHistoricalQuoteSnapshotUnsupported(t *testing.T) {
+	tasks := []GovernanceTaskRecord{
+		{
+			TaskKey:      "daily_audit:quote_snapshot:20260428",
+			JobName:      string(GovernanceJobDailyAudit),
+			Domain:       "quote_snapshot",
+			Status:       GovernanceTaskStatusUnsupported,
+			Reason:       "unsupported historical rebuild",
+			TargetWindow: "20260428",
+		},
+	}
+
+	if got := governanceBacklogHealth(tasks); got != "healthy" {
+		t.Fatalf("backlog health = %q, want healthy", got)
+	}
+	reasons := governanceHealthReasons(nil, nil, tasks, nil)
+	if len(reasons) != 0 {
+		t.Fatalf("health reasons = %+v, want none", reasons)
+	}
+
+	tasks = append(tasks, GovernanceTaskRecord{
+		TaskKey:      "daily_audit:f10:20260428",
+		JobName:      string(GovernanceJobDailyAudit),
+		Domain:       "f10",
+		Status:       GovernanceTaskStatusUnsupported,
+		Reason:       "unsupported provider contract",
+		TargetWindow: "20260428",
+	})
+	if got := governanceBacklogHealth(tasks); got != "degraded" {
+		t.Fatalf("backlog health with other unsupported task = %q, want degraded", got)
+	}
+	reasons = governanceHealthReasons(nil, nil, tasks, nil)
+	if len(reasons) != 1 || reasons[0] != "backlog:daily_audit:f10:20260428 status=unsupported" {
+		t.Fatalf("health reasons = %+v, want only non-quote-snapshot unsupported task", reasons)
+	}
+}
+
 func TestBuildDomainSnapshotDoesNotTreatDegradedGapsAsOpenCoverage(t *testing.T) {
 	tmp := t.TempDir()
 	store, err := OpenStore(filepath.Join(tmp, "collector.db"))
