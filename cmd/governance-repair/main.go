@@ -61,7 +61,7 @@ func parseConfig(args []string) (cliConfig, error) {
 	fs.StringVar(&cfg.GovernanceDB, "governance-db", "", "governance DB path, defaults to <data-dir>/governance/system_governance.db")
 	fs.StringVar(&cfg.GovernanceLock, "governance-lock", "", "governance lock path, defaults to <data-dir>/governance/system_governance.lock")
 	fs.StringVar(&cfg.BackupDir, "backup-dir", "", "backup directory, defaults to the governance DB directory")
-	fs.StringVar(&cfg.Repair, "repair", "", "repair operation to run: stale-lock")
+	fs.StringVar(&cfg.Repair, "repair", "", "repair operation to run: stale-lock, startup-recovery-deferred")
 	fs.BoolVar(&cfg.Apply, "apply", false, "apply planned governance repairs; default is dry-run")
 	if err := fs.Parse(args); err != nil {
 		return cliConfig{}, err
@@ -76,7 +76,7 @@ func parseConfig(args []string) (cliConfig, error) {
 	if cfg.GovernanceLock == "" {
 		cfg.GovernanceLock = paths.LockPath
 	}
-	if cfg.Repair != "" && cfg.Repair != "stale-lock" {
+	if cfg.Repair != "" && cfg.Repair != "stale-lock" && cfg.Repair != "startup-recovery-deferred" {
 		return cliConfig{}, fmt.Errorf("unsupported repair operation: %s", cfg.Repair)
 	}
 	return cfg, nil
@@ -87,6 +87,10 @@ func governanceRepairOperations(cfg cliConfig) []collectorpkg.GovernanceRepairOp
 	case "stale-lock":
 		return []collectorpkg.GovernanceRepairOperation{
 			collectorpkg.StaleGovernanceLockMetadataRepair{LockPath: cfg.GovernanceLock},
+		}
+	case "startup-recovery-deferred":
+		return []collectorpkg.GovernanceRepairOperation{
+			collectorpkg.StartupRecoveryDeferredBacklogRepair{},
 		}
 	default:
 		return nil

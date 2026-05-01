@@ -281,6 +281,15 @@ func (s *GovernanceStore) UpsertTask(record *GovernanceTaskRecord) error {
 	return err
 }
 
+func (s *GovernanceStore) UpdateTask(record *GovernanceTaskRecord) error {
+	if record.ID > 0 {
+		_, err := s.engine.ID(record.ID).AllCols().Update(record)
+		return err
+	}
+	_, err := s.engine.Where("TaskKey = ?", record.TaskKey).AllCols().Update(record)
+	return err
+}
+
 func (s *GovernanceStore) ListTasksByStatus(statuses ...GovernanceTaskStatus) ([]GovernanceTaskRecord, error) {
 	records := make([]GovernanceTaskRecord, 0, 16)
 	session := s.engine.Asc("Priority").Asc("CreatedAt")

@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -89,6 +90,84 @@ func (r StaleGovernanceLockMetadataRepair) Apply(store *GovernanceStore) ([]Gove
 		return nil, nil
 	}
 	return planned, nil
+}
+
+type StartupRecoveryDeferredBacklogRepair struct{}
+
+func (r StartupRecoveryDeferredBacklogRepair) Name() string {
+	return "startup_recovery_deferred_backlog"
+}
+
+func (r StartupRecoveryDeferredBacklogRepair) Plan(store *GovernanceStore) ([]GovernanceRepairChange, error) {
+	tasks, err := legacyStartupRecoveryDeferredTasks(store)
+	if err != nil {
+		return nil, err
+	}
+	changes := make([]GovernanceRepairChange, 0, len(tasks))
+	for _, task := range tasks {
+		changes = append(changes, GovernanceRepairChange{
+			Operation: r.Name(),
+			Target:    task.TaskKey,
+			Action:    "requeue_open_task",
+			Reason:    fmt.Sprintf("legacy deferred startup recovery task target_window=%s", task.TargetWindow),
+		})
+	}
+	return changes, nil
+}
+
+func (r StartupRecoveryDeferredBacklogRepair) Apply(store *GovernanceStore) ([]GovernanceRepairChange, error) {
+	tasks, err := legacyStartupRecoveryDeferredTasks(store)
+	if err != nil {
+		return nil, err
+	}
+	applied := make([]GovernanceRepairChange, 0, len(tasks))
+	for _, task := range tasks {
+		change := GovernanceRepairChange{
+			Operation: r.Name(),
+			Target:    task.TaskKey,
+			Action:    "requeue_open_task",
+			Reason:    fmt.Sprintf("legacy deferred startup recovery task target_window=%s", task.TargetWindow),
+		}
+		task.Status = GovernanceTaskStatusOpen
+		task.Reason = requeuedStartupRecoveryTaskReason(task)
+		if err := store.UpdateTask(&task); err != nil {
+			return nil, err
+		}
+		applied = append(applied, change)
+	}
+	return applied, nil
+}
+
+func legacyStartupRecoveryDeferredTasks(store *GovernanceStore) ([]GovernanceTaskRecord, error) {
+	tasks, err := store.ListTasksByStatus(GovernanceTaskStatusDegraded)
+	if err != nil {
+		return nil, err
+	}
+	matched := make([]GovernanceTaskRecord, 0, len(tasks))
+	for _, task := range tasks {
+		if !isLegacyStartupRecoveryDeferredTask(task) {
+			continue
+		}
+		matched = append(matched, task)
+	}
+	return matched, nil
+}
+
+func isLegacyStartupRecoveryDeferredTask(task GovernanceTaskRecord) bool {
+	if task.JobName != string(GovernanceJobStartupRecovery) || task.Status != GovernanceTaskStatusDegraded {
+		return false
+	}
+	reason := strings.ToLower(task.Reason)
+	return strings.Contains(reason, "replay") && strings.Contains(reason, "deferred")
+}
+
+func requeuedStartupRecoveryTaskReason(task GovernanceTaskRecord) string {
+	if task.Domain == "interrupted_run" {
+		if runID, ok := strings.CutPrefix(task.TaskKey, string(GovernanceJobStartupRecovery)+":interrupted:"); ok {
+			return strings.TrimSpace(runID)
+		}
+	}
+	return "legacy startup recovery deferred backlog requeued"
 }
 
 func RunGovernanceRepairBatch(opts GovernanceRepairBatchOptions, operations []GovernanceRepairOperation) (*GovernanceRepairBatchResult, error) {

@@ -218,6 +218,137 @@ func TestStaleGovernanceLockMetadataRepairRefusesActiveLock(t *testing.T) {
 	}
 }
 
+func TestStartupRecoveryDeferredBacklogRepairReopensOnlyLegacyDeferredTasks(t *testing.T) {
+	paths := ResolveGovernancePaths(t.TempDir())
+	store, err := OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	for _, task := range []GovernanceTaskRecord{
+		{
+			TaskKey:      "startup_recovery:missed:daily_audit:20260427,20260428",
+			JobName:      string(GovernanceJobStartupRecovery),
+			Domain:       string(GovernanceJobDailyAudit),
+			Status:       GovernanceTaskStatusDegraded,
+			Priority:     1,
+			Reason:       "full replay is deferred until startup recovery replay is available",
+			TargetWindow: "20260427,20260428",
+		},
+		{
+			TaskKey:      "startup_recovery:interrupted:daily-audit-run",
+			JobName:      string(GovernanceJobStartupRecovery),
+			Domain:       "interrupted_run",
+			Status:       GovernanceTaskStatusDegraded,
+			Priority:     1,
+			Reason:       "startup recovery replay was deferred after restart",
+			TargetWindow: "20260428,20260429",
+		},
+		{
+			TaskKey:      "startup_recovery:missed:daily_close_sync:20260428,20260429",
+			JobName:      string(GovernanceJobStartupRecovery),
+			Domain:       string(GovernanceJobDailyCloseSync),
+			Status:       GovernanceTaskStatusDegraded,
+			Priority:     1,
+			Reason:       "provider timeout remains degraded",
+			TargetWindow: "20260428,20260429",
+		},
+		{
+			TaskKey:      "daily_audit:quote_snapshot:20260428",
+			JobName:      string(GovernanceJobDailyAudit),
+			Domain:       "quote_snapshot",
+			Status:       GovernanceTaskStatusDegraded,
+			Priority:     4,
+			Reason:       "full replay is deferred until product policy exists",
+			TargetWindow: "20260428",
+		},
+	} {
+		task := task
+		if err := store.UpsertTask(&task); err != nil {
+			t.Fatalf("seed task %s: %v", task.TaskKey, err)
+		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close governance store: %v", err)
+	}
+
+	result, err := RunGovernanceRepairBatch(GovernanceRepairBatchOptions{
+		DBPath: paths.DBPath,
+		Mode:   GovernanceRepairModeDryRun,
+		Now:    fixedRepairNow,
+	}, []GovernanceRepairOperation{
+		StartupRecoveryDeferredBacklogRepair{},
+	})
+	if err != nil {
+		t.Fatalf("dry-run deferred backlog repair: %v", err)
+	}
+	if len(result.Operations) != 1 || result.Operations[0].Planned != 2 || result.Operations[0].Applied != 0 {
+		t.Fatalf("unexpected dry-run result: %+v", result)
+	}
+
+	result, err = RunGovernanceRepairBatch(GovernanceRepairBatchOptions{
+		DBPath:    paths.DBPath,
+		BackupDir: filepath.Join(paths.BaseDataDir, "backups"),
+		Mode:      GovernanceRepairModeApply,
+		Now:       fixedRepairNow,
+	}, []GovernanceRepairOperation{
+		StartupRecoveryDeferredBacklogRepair{},
+	})
+	if err != nil {
+		t.Fatalf("apply deferred backlog repair: %v", err)
+	}
+	if len(result.Operations) != 1 || result.Operations[0].Planned != 2 || result.Operations[0].Applied != 2 {
+		t.Fatalf("unexpected apply result: %+v", result)
+	}
+
+	store, err = OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("reopen governance store: %v", err)
+	}
+	defer store.Close()
+	openTasks, err := store.ListTasksByStatus(GovernanceTaskStatusOpen)
+	if err != nil {
+		t.Fatalf("list open tasks: %v", err)
+	}
+	openByKey := make(map[string]GovernanceTaskRecord, len(openTasks))
+	for _, task := range openTasks {
+		openByKey[task.TaskKey] = task
+	}
+	for _, key := range []string{
+		"startup_recovery:missed:daily_audit:20260427,20260428",
+	} {
+		task, ok := openByKey[key]
+		if !ok {
+			t.Fatalf("expected task %s to be reopened; open=%+v", key, openTasks)
+		}
+		if task.Reason != "legacy startup recovery deferred backlog requeued" {
+			t.Fatalf("task %s reason = %q", key, task.Reason)
+		}
+	}
+	interrupted, ok := openByKey["startup_recovery:interrupted:daily-audit-run"]
+	if !ok {
+		t.Fatalf("expected interrupted task to be reopened; open=%+v", openTasks)
+	}
+	if interrupted.Reason != "daily-audit-run" {
+		t.Fatalf("interrupted task reason = %q, want original run id", interrupted.Reason)
+	}
+	degradedTasks, err := store.ListTasksByStatus(GovernanceTaskStatusDegraded)
+	if err != nil {
+		t.Fatalf("list degraded tasks: %v", err)
+	}
+	degradedByKey := make(map[string]GovernanceTaskRecord, len(degradedTasks))
+	for _, task := range degradedTasks {
+		degradedByKey[task.TaskKey] = task
+	}
+	for _, key := range []string{
+		"startup_recovery:missed:daily_close_sync:20260428,20260429",
+		"daily_audit:quote_snapshot:20260428",
+	} {
+		if _, ok := degradedByKey[key]; !ok {
+			t.Fatalf("expected task %s to stay degraded; degraded=%+v", key, degradedTasks)
+		}
+	}
+}
+
 func fixedRepairNow() time.Time {
 	return time.Date(2026, 4, 28, 21, 0, 0, 0, time.UTC)
 }
