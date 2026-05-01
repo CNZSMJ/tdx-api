@@ -88,6 +88,7 @@ func (r *DailyCloseSyncRunner) run(ctx context.Context, trigger string, targetDa
 
 	var resultErr error
 	var failures []collectorpkg.CloseSyncFailure
+	explicitTargetDates := len(targetDates) > 0
 	defer func() {
 		run.EndedAt = r.cfg.Now()
 		if resultErr != nil {
@@ -107,21 +108,21 @@ func (r *DailyCloseSyncRunner) run(ctx context.Context, trigger string, targetDa
 		_ = r.cfg.Store.UpdateRun(run)
 	}()
 
-	tradingDay, err := r.cfg.CalendarGate(startedAt)
-	if err != nil {
-		resultErr = err
-		return nil, err
-	}
-	if !tradingDay {
-		run.Status = collectorpkg.GovernanceRunStatusSkipped
-		run.Reason = "non_trading_day_window"
-		if err := r.cfg.Store.UpdateRun(run); err != nil {
+	if !explicitTargetDates {
+		tradingDay, err := r.cfg.CalendarGate(startedAt)
+		if err != nil {
+			resultErr = err
 			return nil, err
 		}
-		return run, nil
-	}
+		if !tradingDay {
+			run.Status = collectorpkg.GovernanceRunStatusSkipped
+			run.Reason = "non_trading_day_window"
+			if err := r.cfg.Store.UpdateRun(run); err != nil {
+				return nil, err
+			}
+			return run, nil
+		}
 
-	if len(targetDates) == 0 {
 		targetDates, err = r.cfg.ResolveTargetDates(ctx, startedAt)
 		if err != nil {
 			resultErr = err
