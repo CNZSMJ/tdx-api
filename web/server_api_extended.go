@@ -1830,54 +1830,37 @@ func mergeLimitPublic(item map[string]interface{}, p *collectorpkg.LimitSidePubl
 }
 
 func handleMarketSignal(w http.ResponseWriter, r *http.Request) {
+	req, err := parseMarketSignalRequest(r)
+	if err != nil {
+		errorResponse(w, err.Error())
+		return
+	}
 	ss := getSignalService()
+	if ss != nil {
+		snap, apiStatus := ss.Snapshot()
+		if resp, ok := buildMarketSignalSnapshotResponse(req, snap, apiStatus); ok {
+			successResponse(w, resp)
+			return
+		}
+	}
+	if resp, ok := buildMarketSignalCloseSnapshotResponse(req); ok {
+		successResponse(w, resp)
+		return
+	}
 	if ss == nil {
-		errorResponse(w, "Signal 服务未初始化")
+		successResponse(w, map[string]interface{}{
+			"status":           "not_started",
+			"status_hint":      "Signal 服务未初始化且无日K收盘快照",
+			"updated_at":       nil,
+			"scan_duration_ms": int64(0),
+			"new_high":         []collectorpkg.SignalItem{},
+			"new_low":          []collectorpkg.SignalItem{},
+			"volume_spike":     []collectorpkg.SignalItem{},
+			"count":            0,
+		})
 		return
 	}
-	snap, apiStatus := ss.Snapshot()
-	typeFilter := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("type")))
-	if typeFilter == "" {
-		typeFilter = "all"
-	}
-
-	resp := map[string]interface{}{
-		"status":           apiStatus,
-		"updated_at":       nil,
-		"scan_duration_ms": snap.ScanDurationMs,
-		"new_high":         snap.NewHigh,
-		"new_low":          snap.NewLow,
-		"volume_spike":     snap.VolumeSpike,
-	}
-	if !snap.UpdatedAt.IsZero() {
-		resp["updated_at"] = snap.UpdatedAt.Format(time.RFC3339)
-	}
-	switch typeFilter {
-	case "new_high":
-		resp["list"] = snap.NewHigh
-		resp["count"] = len(snap.NewHigh)
-	case "new_low":
-		resp["list"] = snap.NewLow
-		resp["count"] = len(snap.NewLow)
-	case "volume_spike":
-		resp["list"] = snap.VolumeSpike
-		resp["count"] = len(snap.VolumeSpike)
-	case "all":
-		resp["count"] = len(snap.NewHigh) + len(snap.NewLow) + len(snap.VolumeSpike)
-	default:
-		errorResponse(w, "type 参数无效，支持 all|new_high|new_low|volume_spike")
-		return
-	}
-	if apiStatus == "not_ready" {
-		resp["status_hint"] = "首轮 K 线扫描尚未完成，请稍后重试"
-	}
-	if apiStatus == "scanning" {
-		resp["status_hint"] = "正在扫描中，以下为上一轮完整结果"
-	}
-	if apiStatus == "stale" {
-		resp["status_hint"] = "结果已超过新鲜度阈值，可能过期"
-	}
-	successResponse(w, resp)
+	successResponse(w, buildMarketSignalResponse(req.typeFilter, nil, nil, nil))
 }
 
 func handleBlockRanking(w http.ResponseWriter, r *http.Request) {

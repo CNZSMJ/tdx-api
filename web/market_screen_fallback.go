@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"math"
 	"net/http"
 	"os"
@@ -47,6 +48,20 @@ type marketBlockRequest struct {
 	sortBy         string
 	order          string
 	limit          int
+	tradingDate    string
+	hasTradingDate bool
+}
+
+type marketSignalRequest struct {
+	typeFilter     string
+	tradingDate    string
+	hasTradingDate bool
+}
+
+type marketSignalCheckRequest struct {
+	fullCodes      []string
+	signalTypes    []string
+	mode           string
 	tradingDate    string
 	hasTradingDate bool
 }
@@ -711,6 +726,412 @@ func buildBlockStocksCloseSnapshotItems(req marketBlockRequest, ticks []collecto
 		items = append(items, stockTickToProviderMap(tick))
 	}
 	return roundMarketScreen(totalPct/float64(len(blockTicks)), 2), items
+}
+
+func parseMarketSignalRequest(r *http.Request) (marketSignalRequest, error) {
+	typeFilter := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("type")))
+	if typeFilter == "" {
+		typeFilter = "all"
+	}
+	switch typeFilter {
+	case "all", "new_high", "new_low", "volume_spike":
+	default:
+		return marketSignalRequest{}, errors.New("type 参数无效，支持 all|new_high|new_low|volume_spike")
+	}
+	tradingDateRaw := strings.TrimSpace(r.URL.Query().Get("trading_date"))
+	tradingDate := ""
+	if tradingDateRaw != "" {
+		parsed, err := parseMarketScreenTradingDate(tradingDateRaw)
+		if err != nil {
+			return marketSignalRequest{}, err
+		}
+		tradingDate = parsed
+	}
+	return marketSignalRequest{
+		typeFilter:     typeFilter,
+		tradingDate:    tradingDate,
+		hasTradingDate: tradingDate != "",
+	}, nil
+}
+
+func buildMarketSignalSnapshotResponse(req marketSignalRequest, snap collectorpkg.SignalSnapshot, apiStatus string) (map[string]interface{}, bool) {
+	if !marketSignalShouldUseSnapshot(req, snap) {
+		return nil, false
+	}
+	resp := buildMarketSignalResponse(req.typeFilter, snap.NewHigh, snap.NewLow, snap.VolumeSpike)
+	resp["status"] = apiStatus
+	resp["updated_at"] = snap.UpdatedAt.Format(time.RFC3339)
+	resp["scan_duration_ms"] = snap.ScanDurationMs
+	resp["data_source"] = "signal_service"
+	resp["trading_date"] = snap.UpdatedAt.In(time.Local).Format("20060102")
+	if apiStatus == "not_ready" {
+		resp["status_hint"] = "首轮 K 线扫描尚未完成，请稍后重试"
+	}
+	if apiStatus == "scanning" {
+		resp["status_hint"] = "正在扫描中，以下为上一轮完整结果"
+	}
+	if apiStatus == "stale" {
+		resp["status_hint"] = "结果已超过新鲜度阈值，可能过期"
+	}
+	return resp, true
+}
+
+func marketSignalShouldUseSnapshot(req marketSignalRequest, snap collectorpkg.SignalSnapshot) bool {
+	if snap.UpdatedAt.IsZero() {
+		return false
+	}
+	updatedDate := snap.UpdatedAt.In(time.Local).Format("20060102")
+	if req.hasTradingDate {
+		return updatedDate == req.tradingDate
+	}
+	now := marketScreenNow()
+	if !marketScreenIsTodayTradingDay(now) {
+		return false
+	}
+	return updatedDate == now.In(time.Local).Format("20060102")
+}
+
+func buildMarketSignalCloseSnapshotResponse(req marketSignalRequest) (map[string]interface{}, bool) {
+	ticks, tradingDate, ok := loadMarketScreenCloseTicks("all", req.tradingDate)
+	if !ok && !req.hasTradingDate {
+		return nil, false
+	}
+	var items []collectorpkg.SignalItem
+	if ok {
+		items = buildMarketScreenSignalItems(ticks, tradingDate, marketSignalTypesForFilter(req.typeFilter))
+	}
+	newHigh, newLow, volumeSpike := splitMarketSignalItems(items)
+	resp := buildMarketSignalResponse(req.typeFilter, newHigh, newLow, volumeSpike)
+	if req.hasTradingDate && !ok {
+		addMarketScreenCloseSnapshotMeta(resp, req.tradingDate)
+		resp["status"] = "empty"
+		resp["status_hint"] = "指定 trading_date 无日K收盘快照"
+		return resp, true
+	}
+	addMarketScreenCloseSnapshotMeta(resp, tradingDate)
+	return resp, true
+}
+
+func buildMarketSignalResponse(typeFilter string, newHigh, newLow, volumeSpike []collectorpkg.SignalItem) map[string]interface{} {
+	resp := map[string]interface{}{
+		"updated_at":       nil,
+		"scan_duration_ms": int64(0),
+		"new_high":         newHigh,
+		"new_low":          newLow,
+		"volume_spike":     volumeSpike,
+	}
+	switch typeFilter {
+	case "new_high":
+		resp["list"] = newHigh
+		resp["count"] = len(newHigh)
+	case "new_low":
+		resp["list"] = newLow
+		resp["count"] = len(newLow)
+	case "volume_spike":
+		resp["list"] = volumeSpike
+		resp["count"] = len(volumeSpike)
+	default:
+		resp["count"] = len(newHigh) + len(newLow) + len(volumeSpike)
+	}
+	return resp
+}
+
+func parseMarketSignalCheckRequest(r *http.Request) (marketSignalCheckRequest, error) {
+	fullCodes := normalizeSignalCheckFullCodes(splitCodes(strings.TrimSpace(r.URL.Query().Get("full_codes"))))
+	if len(fullCodes) == 0 {
+		return marketSignalCheckRequest{}, errors.New("full_codes 为必填参数")
+	}
+	signalTypes, err := normalizeMarketSignalTypes(splitCodes(strings.TrimSpace(r.URL.Query().Get("signal_types"))))
+	if err != nil {
+		return marketSignalCheckRequest{}, err
+	}
+	mode := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("mode")))
+	if mode == "" {
+		mode = "hits_only"
+	}
+	if mode != "hits_only" && mode != "full" {
+		return marketSignalCheckRequest{}, errors.New("mode 仅支持 hits_only 或 full")
+	}
+	tradingDateRaw := strings.TrimSpace(r.URL.Query().Get("trading_date"))
+	tradingDate := ""
+	if tradingDateRaw != "" {
+		parsed, err := parseMarketScreenTradingDate(tradingDateRaw)
+		if err != nil {
+			return marketSignalCheckRequest{}, err
+		}
+		tradingDate = parsed
+	}
+	return marketSignalCheckRequest{
+		fullCodes:      fullCodes,
+		signalTypes:    signalTypes,
+		mode:           mode,
+		tradingDate:    tradingDate,
+		hasTradingDate: tradingDate != "",
+	}, nil
+}
+
+func buildMarketSignalCheckTickerResponse(req marketSignalCheckRequest, ss *collectorpkg.SignalService, ts *collectorpkg.TickerService) (map[string]interface{}, bool, error) {
+	if ss == nil || !marketScreenShouldUseTicker(marketScreenRequest{
+		tradingDate:    req.tradingDate,
+		hasTradingDate: req.hasTradingDate,
+	}, ts) {
+		return nil, false, nil
+	}
+	hits, err := ss.CheckCodes(req.fullCodes, req.signalTypes)
+	if err != nil {
+		return nil, true, err
+	}
+	resp := buildSignalCheckPayload(req.fullCodes, req.signalTypes, req.mode, hits, time.Now())
+	resp["data_source"] = "signal_service"
+	resp["trading_date"] = ts.UpdatedAt().In(time.Local).Format("20060102")
+	addTickerMeta(resp, ts)
+	return resp, true, nil
+}
+
+func buildMarketSignalCheckCloseSnapshotResponse(req marketSignalCheckRequest) (map[string]interface{}, bool) {
+	ticks, tradingDate, ok := loadMarketScreenCloseTicks("all", req.tradingDate)
+	if !ok && !req.hasTradingDate {
+		return nil, false
+	}
+	hits := make([]collectorpkg.SignalItem, 0)
+	if ok {
+		tickByCode := make(map[string]collectorpkg.StockTick, len(ticks)*2)
+		for _, tick := range ticks {
+			addMarketScreenTickLookup(tickByCode, tick)
+		}
+		for _, fullCode := range req.fullCodes {
+			tick, ok := tickByCode[fullCode]
+			if !ok {
+				continue
+			}
+			hits = append(hits, buildMarketScreenSignalItems([]collectorpkg.StockTick{tick}, tradingDate, req.signalTypes)...)
+		}
+	}
+	resp := buildSignalCheckPayload(req.fullCodes, req.signalTypes, req.mode, hits, time.Now())
+	if req.hasTradingDate && !ok {
+		addMarketScreenCloseSnapshotMeta(resp, req.tradingDate)
+		resp["status"] = "empty"
+		resp["status_hint"] = "指定 trading_date 无日K收盘快照"
+		return resp, true
+	}
+	addMarketScreenCloseSnapshotMeta(resp, tradingDate)
+	return resp, true
+}
+
+func marketSignalTypesForFilter(typeFilter string) []string {
+	switch typeFilter {
+	case "new_high", "new_low", "volume_spike":
+		return []string{typeFilter}
+	default:
+		return []string{"new_high", "new_low", "volume_spike"}
+	}
+}
+
+func normalizeMarketSignalTypes(raw []string) ([]string, error) {
+	if len(raw) == 0 {
+		return nil, errors.New("signal_types 为必填参数")
+	}
+	out := make([]string, 0, len(raw))
+	seen := make(map[string]struct{}, len(raw))
+	for _, item := range raw {
+		typ := strings.TrimSpace(strings.ToLower(item))
+		switch typ {
+		case "new_high", "new_low", "volume_spike":
+		default:
+			return nil, errors.New("unsupported signal type: " + typ)
+		}
+		if _, ok := seen[typ]; ok {
+			continue
+		}
+		seen[typ] = struct{}{}
+		out = append(out, typ)
+	}
+	if len(out) == 0 {
+		return nil, errors.New("signal_types 为必填参数")
+	}
+	return out, nil
+}
+
+func normalizeSignalCheckFullCodes(raw []string) []string {
+	out := make([]string, 0, len(raw))
+	seen := make(map[string]struct{}, len(raw))
+	for _, item := range raw {
+		fullCode := strings.ToLower(strings.TrimSpace(item))
+		if fullCode == "" || bareCode(fullCode) == fullCode {
+			continue
+		}
+		if _, ok := seen[fullCode]; ok {
+			continue
+		}
+		seen[fullCode] = struct{}{}
+		out = append(out, fullCode)
+	}
+	return out
+}
+
+func buildMarketScreenSignalItems(ticks []collectorpkg.StockTick, tradingDate string, signalTypes []string) []collectorpkg.SignalItem {
+	filter := make(map[string]bool, len(signalTypes))
+	for _, typ := range signalTypes {
+		filter[typ] = true
+	}
+	items := make([]collectorpkg.SignalItem, 0)
+	for i := range ticks {
+		rows, ok := loadMarketScreenSignalRows(ticks[i].Code, tradingDate, 26)
+		if !ok {
+			continue
+		}
+		for _, item := range evaluateMarketScreenSignalItems(&ticks[i], rows, 20, 5, 2.0) {
+			if filter[item.SignalType] {
+				items = append(items, item)
+			}
+		}
+	}
+	sortMarketScreenSignalItems(items)
+	return items
+}
+
+func loadMarketScreenSignalRows(fullCode, tradingDate string, limit int) ([]collectorpkg.KlinePublishRow, bool) {
+	if tradingDate == "" {
+		return nil, false
+	}
+	target, err := time.ParseInLocation("20060102", tradingDate, time.Local)
+	if err != nil {
+		return nil, false
+	}
+	end := time.Date(target.Year(), target.Month(), target.Day()+1, 0, 0, 0, 0, time.Local).Unix()
+	dbPath := filepath.Join(databaseDir, "kline", fullCode+".db")
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil, false
+	}
+	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro")
+	if err != nil {
+		return nil, false
+	}
+	defer db.Close()
+
+	rows, err := db.Query(`SELECT Code, Date, Open, High, Low, Close, Volume, Amount FROM DayKline WHERE Code = ? AND Date < ? ORDER BY Date DESC LIMIT ?`, fullCode, end, limit)
+	if err != nil {
+		return nil, false
+	}
+	defer rows.Close()
+
+	out := make([]collectorpkg.KlinePublishRow, 0, limit)
+	for rows.Next() {
+		var row collectorpkg.KlinePublishRow
+		if err := rows.Scan(&row.Code, &row.Date, &row.Open, &row.High, &row.Low, &row.Close, &row.Volume, &row.Amount); err != nil {
+			return nil, false
+		}
+		out = append(out, row)
+	}
+	if rows.Err() != nil || len(out) == 0 {
+		return nil, false
+	}
+	if time.Unix(out[0].Date, 0).In(time.Local).Format("20060102") != tradingDate {
+		return nil, false
+	}
+	return out, true
+}
+
+func evaluateMarketScreenSignalItems(tick *collectorpkg.StockTick, rows []collectorpkg.KlinePublishRow, win, vlb int, volumeRatioMin float64) []collectorpkg.SignalItem {
+	if tick == nil || len(rows) < win+1 {
+		return nil
+	}
+	if 1+win > len(rows) {
+		return nil
+	}
+	hist := rows[1 : 1+win]
+	var maxHigh, minLow collectorpkg.PriceMilli
+	for i := range hist {
+		if i == 0 {
+			maxHigh = hist[i].High
+			minLow = hist[i].Low
+			continue
+		}
+		if hist[i].High > maxHigh {
+			maxHigh = hist[i].High
+		}
+		if hist[i].Low < minLow {
+			minLow = hist[i].Low
+		}
+	}
+
+	items := make([]collectorpkg.SignalItem, 0, 3)
+	refHigh := maxHigh.Float64()
+	refLow := minLow.Float64()
+	if tick.High >= refHigh-1e-9 {
+		items = append(items, collectorpkg.SignalItem{
+			Code:       tick.Code,
+			Name:       tick.Name,
+			SignalType: "new_high",
+			Window:     win,
+			Price:      tick.Last,
+			High:       refHigh,
+			Low:        tick.Low,
+			Volume:     tick.Volume,
+			ChangePct:  tick.PctChange,
+		})
+	}
+	if tick.Low <= refLow+1e-9 {
+		items = append(items, collectorpkg.SignalItem{
+			Code:       tick.Code,
+			Name:       tick.Name,
+			SignalType: "new_low",
+			Window:     win,
+			Price:      tick.Last,
+			Low:        refLow,
+			High:       tick.High,
+			Volume:     tick.Volume,
+			ChangePct:  tick.PctChange,
+		})
+	}
+	if 1+win+vlb <= len(rows) {
+		volSlice := rows[1+win : 1+win+vlb]
+		var sum int64
+		for _, row := range volSlice {
+			sum += row.Volume
+		}
+		avg := float64(sum) / float64(len(volSlice))
+		if avg > 0 && float64(tick.Volume)/avg >= volumeRatioMin {
+			items = append(items, collectorpkg.SignalItem{
+				Code:        tick.Code,
+				Name:        tick.Name,
+				SignalType:  "volume_spike",
+				Window:      vlb,
+				Price:       tick.Last,
+				Volume:      tick.Volume,
+				AvgVolume:   avg,
+				VolumeRatio: float64(tick.Volume) / avg,
+				ChangePct:   tick.PctChange,
+			})
+		}
+	}
+	return items
+}
+
+func splitMarketSignalItems(items []collectorpkg.SignalItem) ([]collectorpkg.SignalItem, []collectorpkg.SignalItem, []collectorpkg.SignalItem) {
+	newHigh := make([]collectorpkg.SignalItem, 0)
+	newLow := make([]collectorpkg.SignalItem, 0)
+	volumeSpike := make([]collectorpkg.SignalItem, 0)
+	for _, item := range items {
+		switch item.SignalType {
+		case "new_high":
+			newHigh = append(newHigh, item)
+		case "new_low":
+			newLow = append(newLow, item)
+		case "volume_spike":
+			volumeSpike = append(volumeSpike, item)
+		}
+	}
+	return newHigh, newLow, volumeSpike
+}
+
+func sortMarketScreenSignalItems(items []collectorpkg.SignalItem) {
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Code != items[j].Code {
+			return items[i].Code < items[j].Code
+		}
+		return items[i].SignalType < items[j].SignalType
+	})
 }
 
 func blockRankToProviderMap(rank collectorpkg.BlockRank) map[string]interface{} {

@@ -336,6 +336,122 @@ func TestBlockRankingAndStocksExactTradingDateDoesNotFallback(t *testing.T) {
 	}
 }
 
+func TestMarketSignalFallsBackToDailyKlineCloseSnapshot(t *testing.T) {
+	originalDir := databaseDir
+	originalRuntime := collectorRuntime
+	defer func() {
+		databaseDir = originalDir
+		collectorRuntime = originalRuntime
+	}()
+
+	tmp := t.TempDir()
+	databaseDir = tmp
+	collectorRuntime = nil
+
+	mustCreateMarketScreenCodesDB(t, filepath.Join(tmp, "codes.db"))
+	latest := time.Date(2026, 4, 29, 15, 0, 0, 0, time.Local)
+	mustCreateMarketScreenKlineDB(t, filepath.Join(tmp, "kline", "sh600000.db"), "sh600000", marketScreenSignalKlines(latest))
+	mustCreateMarketScreenKlineDB(t, filepath.Join(tmp, "kline", "sz000001.db"), "sz000001", marketScreenSignalKlines(latest))
+
+	payload := callMarketScreenHandler(t, "/api/market/signal?type=all", handleMarketSignal)
+	data := payload["data"].(map[string]interface{})
+
+	if data["status"] != "closed_snapshot" || data["data_source"] != "daily_kline" {
+		t.Fatalf("signal fallback metadata = %#v", data)
+	}
+	if data["trading_date"] != "20260429" {
+		t.Fatalf("signal trading_date = %v, want 20260429", data["trading_date"])
+	}
+	if data["count"].(float64) != 4 {
+		t.Fatalf("signal count = %v, want 4; data=%#v", data["count"], data)
+	}
+}
+
+func TestMarketSignalExactTradingDateDoesNotFallback(t *testing.T) {
+	originalDir := databaseDir
+	originalRuntime := collectorRuntime
+	defer func() {
+		databaseDir = originalDir
+		collectorRuntime = originalRuntime
+	}()
+
+	tmp := t.TempDir()
+	databaseDir = tmp
+	collectorRuntime = nil
+
+	mustCreateMarketScreenCodesDB(t, filepath.Join(tmp, "codes.db"))
+	latest := time.Date(2026, 4, 29, 15, 0, 0, 0, time.Local)
+	mustCreateMarketScreenKlineDB(t, filepath.Join(tmp, "kline", "sh600000.db"), "sh600000", marketScreenSignalKlines(latest))
+
+	payload := callMarketScreenHandler(t, "/api/market/signal?type=all&trading_date=20260331", handleMarketSignal)
+	data := payload["data"].(map[string]interface{})
+
+	if data["trading_date"] != "20260331" {
+		t.Fatalf("signal trading_date = %v, want exact 20260331", data["trading_date"])
+	}
+	if data["count"].(float64) != 0 {
+		t.Fatalf("signal exact date fell back: count=%v data=%#v", data["count"], data)
+	}
+}
+
+func TestMarketSignalCheckFallsBackToDailyKlineCloseSnapshot(t *testing.T) {
+	originalDir := databaseDir
+	originalRuntime := collectorRuntime
+	defer func() {
+		databaseDir = originalDir
+		collectorRuntime = originalRuntime
+	}()
+
+	tmp := t.TempDir()
+	databaseDir = tmp
+	collectorRuntime = nil
+
+	mustCreateMarketScreenCodesDB(t, filepath.Join(tmp, "codes.db"))
+	latest := time.Date(2026, 4, 29, 15, 0, 0, 0, time.Local)
+	mustCreateMarketScreenKlineDB(t, filepath.Join(tmp, "kline", "sh600000.db"), "sh600000", marketScreenSignalKlines(latest))
+	mustCreateMarketScreenKlineDB(t, filepath.Join(tmp, "kline", "sz000001.db"), "sz000001", marketScreenSignalKlines(latest))
+
+	payload := callMarketScreenHandler(t, "/api/market/signal/check?full_codes=sh600000,sz000001&signal_types=new_high,volume_spike&mode=full", handleMarketSignalCheck)
+	data := payload["data"].(map[string]interface{})
+
+	if data["status"] != "closed_snapshot" || data["data_source"] != "daily_kline" {
+		t.Fatalf("signal check fallback metadata = %#v", data)
+	}
+	if data["trading_date"] != "20260429" {
+		t.Fatalf("signal check trading_date = %v, want 20260429", data["trading_date"])
+	}
+	if data["count"].(float64) != 4 {
+		t.Fatalf("signal check count = %v, want 4; data=%#v", data["count"], data)
+	}
+}
+
+func TestMarketSignalCheckExactTradingDateDoesNotFallback(t *testing.T) {
+	originalDir := databaseDir
+	originalRuntime := collectorRuntime
+	defer func() {
+		databaseDir = originalDir
+		collectorRuntime = originalRuntime
+	}()
+
+	tmp := t.TempDir()
+	databaseDir = tmp
+	collectorRuntime = nil
+
+	mustCreateMarketScreenCodesDB(t, filepath.Join(tmp, "codes.db"))
+	latest := time.Date(2026, 4, 29, 15, 0, 0, 0, time.Local)
+	mustCreateMarketScreenKlineDB(t, filepath.Join(tmp, "kline", "sh600000.db"), "sh600000", marketScreenSignalKlines(latest))
+
+	payload := callMarketScreenHandler(t, "/api/market/signal/check?full_codes=sh600000&signal_types=new_high,volume_spike&mode=hits_only&trading_date=20260331", handleMarketSignalCheck)
+	data := payload["data"].(map[string]interface{})
+
+	if data["trading_date"] != "20260331" {
+		t.Fatalf("signal check trading_date = %v, want exact 20260331", data["trading_date"])
+	}
+	if data["count"].(float64) != 0 {
+		t.Fatalf("signal check exact date fell back: count=%v data=%#v", data["count"], data)
+	}
+}
+
 type marketScreenQuoteProvider struct {
 	quotes []collectorpkg.QuoteSnapshot
 }
@@ -439,6 +555,32 @@ func mustCreateMarketScreenKlineDB(t *testing.T, path, code string, rows []marke
 			t.Fatalf("insert kline %s: %v", code, err)
 		}
 	}
+}
+
+func marketScreenSignalKlines(latest time.Time) []marketScreenKlineFixture {
+	rows := make([]marketScreenKlineFixture, 0, 26)
+	start := latest.AddDate(0, 0, -25)
+	for i := 0; i < 25; i++ {
+		rows = append(rows, marketScreenKlineFixture{
+			At:     start.AddDate(0, 0, i),
+			Open:   10000,
+			High:   11000,
+			Low:    9000,
+			Close:  10000 + int64(i),
+			Volume: 100,
+			Amount: 100000000,
+		})
+	}
+	rows = append(rows, marketScreenKlineFixture{
+		At:     latest,
+		Open:   12000,
+		High:   13000,
+		Low:    11900,
+		Close:  12500,
+		Volume: 1000,
+		Amount: 1250000000,
+	})
+	return rows
 }
 
 func mustCreateMarketScreenBlockDB(t *testing.T, path string, codes []string) {

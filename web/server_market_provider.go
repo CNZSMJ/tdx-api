@@ -683,42 +683,26 @@ func serveBlockStocks(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleMarketSignalCheck(w http.ResponseWriter, r *http.Request) {
-	ss := getSignalService()
-	if ss == nil {
-		errorResponse(w, "Signal 服务未初始化")
-		return
-	}
-	models, err := resolveFullCodeModels(splitCodes(strings.TrimSpace(r.URL.Query().Get("full_codes"))))
+	req, err := parseMarketSignalCheckRequest(r)
 	if err != nil {
 		errorResponse(w, err.Error())
 		return
 	}
-	rawSignalTypes := splitCodes(strings.TrimSpace(r.URL.Query().Get("signal_types")))
-	if len(rawSignalTypes) == 0 {
-		errorResponse(w, "signal_types 为必填参数")
-		return
-	}
-	mode := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("mode")))
-	if mode == "" {
-		mode = "hits_only"
-	}
-	if mode != "hits_only" && mode != "full" {
-		errorResponse(w, "mode 仅支持 hits_only 或 full")
-		return
-	}
-
-	fullCodes := make([]string, 0, len(models))
-	for _, model := range models {
-		fullCodes = append(fullCodes, model.FullCode())
-	}
-	hits, err := ss.CheckCodes(fullCodes, rawSignalTypes)
+	ss := getSignalService()
+	resp, ok, err := buildMarketSignalCheckTickerResponse(req, ss, getTickerService())
 	if err != nil {
 		errorResponse(w, fmt.Sprintf("执行定向 signal 检查失败: %v", err))
 		return
 	}
-
-	checkedAt := time.Now()
-	successResponse(w, buildSignalCheckPayload(fullCodes, rawSignalTypes, mode, hits, checkedAt))
+	if ok {
+		successResponse(w, resp)
+		return
+	}
+	if resp, ok := buildMarketSignalCheckCloseSnapshotResponse(req); ok {
+		successResponse(w, resp)
+		return
+	}
+	successResponse(w, buildSignalCheckPayload(req.fullCodes, req.signalTypes, req.mode, nil, time.Now()))
 }
 
 func buildSignalCheckPayload(fullCodes []string, signalTypes []string, mode string, hits []collectorpkg.SignalItem, checkedAt time.Time) map[string]interface{} {
