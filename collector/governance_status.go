@@ -65,6 +65,10 @@ func (r *Runtime) UnifiedGovernanceStatus(store *GovernanceStore, paths Governan
 	if err != nil {
 		return nil, err
 	}
+	lock, err = classifyGovernanceLockMetadata(lock, paths.LockPath)
+	if err != nil {
+		return nil, err
+	}
 
 	return &GovernanceStatusView{
 		Paths:   paths,
@@ -75,6 +79,25 @@ func (r *Runtime) UnifiedGovernanceStatus(store *GovernanceStore, paths Governan
 		Domains: domains,
 		Lock:    lock,
 	}, nil
+}
+
+func classifyGovernanceLockMetadata(lock *GovernanceLockMetadataRecord, lockPath string) (*GovernanceLockMetadataRecord, error) {
+	if lock == nil {
+		return nil, nil
+	}
+	probe, err := AcquireGovernanceLock(lockPath)
+	if err == nil {
+		_ = probe.Release()
+		lock.Active = false
+		lock.State = "stale"
+		return lock, nil
+	}
+	if IsGovernanceLockHeld(err) {
+		lock.Active = true
+		lock.State = "active"
+		return lock, nil
+	}
+	return nil, err
 }
 
 func buildGovernanceJobStatuses(runtimeStatus *RuntimeStatus, governanceRuns []GovernanceRunRecord) []GovernanceJobStatus {

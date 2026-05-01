@@ -164,6 +164,17 @@ func TestHandleCollectorStatusIncludesGovernanceView(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed governance window: %v", err)
 	}
+	if err := governanceStore.RecordLockMetadata(&collectorpkg.GovernanceLockMetadataRecord{
+		LockName:        "system_governance",
+		HolderPID:       1234,
+		HolderHostname:  "localhost",
+		HolderJobName:   string(collectorpkg.GovernanceJobStartupRecovery),
+		HolderRunID:     "startup-recovery-ended",
+		AcquiredAt:      now.Add(-time.Hour),
+		LastHeartbeatAt: now.Add(-30 * time.Minute),
+	}); err != nil {
+		t.Fatalf("seed stale lock metadata: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/collector/status", nil)
 	rec := httptest.NewRecorder()
@@ -193,6 +204,11 @@ func TestHandleCollectorStatusIncludesGovernanceView(t *testing.T) {
 					WindowKey string `json:"window_key"`
 					Status    string `json:"status"`
 				} `json:"windows"`
+				Lock *struct {
+					HolderRunID string `json:"holder_run_id"`
+					Active      bool   `json:"active"`
+					State       string `json:"state"`
+				} `json:"lock"`
 			} `json:"governance"`
 		} `json:"data"`
 	}
@@ -217,5 +233,14 @@ func TestHandleCollectorStatusIncludesGovernanceView(t *testing.T) {
 	}
 	if len(payload.Data.Governance.Windows) != 1 || payload.Data.Governance.Windows[0].Status != string(collectorpkg.GovernanceWindowStatusWaitingDependency) {
 		t.Fatalf("unexpected governance windows: %+v", payload.Data.Governance.Windows)
+	}
+	if payload.Data.Governance.Lock == nil || payload.Data.Governance.Lock.HolderRunID != "startup-recovery-ended" {
+		t.Fatalf("unexpected governance lock metadata: %+v", payload.Data.Governance.Lock)
+	}
+	if payload.Data.Governance.Lock.Active {
+		t.Fatalf("collector status reported stale governance lock as active: %+v", payload.Data.Governance.Lock)
+	}
+	if payload.Data.Governance.Lock.State != "stale" {
+		t.Fatalf("governance lock state = %q, want stale", payload.Data.Governance.Lock.State)
 	}
 }

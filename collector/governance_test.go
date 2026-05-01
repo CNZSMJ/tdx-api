@@ -778,6 +778,79 @@ func TestRuntimeUnifiedGovernanceStatusProjectsLegacyRunsAndDomains(t *testing.T
 	}
 }
 
+func TestRuntimeUnifiedGovernanceStatusMarksReleasedLockMetadataStale(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := OpenStore(filepath.Join(tmp, "collector.db"))
+	if err != nil {
+		t.Fatalf("open collector store: %v", err)
+	}
+	defer store.Close()
+
+	runtime, err := NewRuntime(store, &blockStubProvider{}, RuntimeConfig{
+		Metadata:     MetadataConfig{CodesDBPath: filepath.Join(tmp, "codes.db"), WorkdayDBPath: filepath.Join(tmp, "workday.db")},
+		Kline:        KlineConfig{BaseDir: filepath.Join(tmp, "kline")},
+		Trade:        TradeConfig{BaseDir: filepath.Join(tmp, "trade")},
+		OrderHistory: OrderHistoryConfig{BaseDir: filepath.Join(tmp, "order_history")},
+		Live:         LiveCaptureConfig{BaseDir: filepath.Join(tmp, "live")},
+		Fundamentals: FundamentalsConfig{BaseDir: filepath.Join(tmp, "fundamentals")},
+		Block:        BlockConfig{BaseDir: filepath.Join(tmp, "block"), DisableAutoRefresh: true},
+	})
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+	defer runtime.Close()
+
+	paths := ResolveGovernancePaths(tmp)
+	govStore, err := OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	defer govStore.Close()
+
+	now := time.Date(2026, 5, 1, 9, 0, 0, 0, time.Local)
+	if err := govStore.AddRun(&GovernanceRunRecord{
+		RunID:        "startup-recovery-ended",
+		JobName:      string(GovernanceJobStartupRecovery),
+		Trigger:      "startup",
+		Status:       GovernanceRunStatusPassed,
+		TargetWindow: "20260501",
+		StartedAt:    now.Add(-time.Hour),
+		EndedAt:      now.Add(-30 * time.Minute),
+	}); err != nil {
+		t.Fatalf("seed ended governance run: %v", err)
+	}
+	if err := govStore.RecordLockMetadata(&GovernanceLockMetadataRecord{
+		LockName:        "system_governance",
+		HolderPID:       int64(os.Getpid()),
+		HolderHostname:  "localhost",
+		HolderJobName:   string(GovernanceJobStartupRecovery),
+		HolderRunID:     "startup-recovery-ended",
+		AcquiredAt:      now.Add(-time.Hour),
+		LastHeartbeatAt: now.Add(-30 * time.Minute),
+	}); err != nil {
+		t.Fatalf("seed stale lock metadata: %v", err)
+	}
+
+	status, err := runtime.UnifiedGovernanceStatus(govStore, paths)
+	if err != nil {
+		t.Fatalf("unified governance status: %v", err)
+	}
+	if status.Lock == nil {
+		t.Fatalf("expected stale lock metadata to remain visible for diagnostics")
+	}
+	if status.Lock.Active {
+		t.Fatalf("lock metadata active = true, want false when file lock is acquirable: %+v", status.Lock)
+	}
+	if status.Lock.State != "stale" {
+		t.Fatalf("lock metadata state = %q, want stale", status.Lock.State)
+	}
+	if lock, err := AcquireGovernanceLock(paths.LockPath); err != nil {
+		t.Fatalf("real governance lock should remain acquirable: %v", err)
+	} else {
+		lock.Release()
+	}
+}
+
 func TestBuildDomainSnapshotDoesNotTreatDegradedGapsAsOpenCoverage(t *testing.T) {
 	tmp := t.TempDir()
 	store, err := OpenStore(filepath.Join(tmp, "collector.db"))

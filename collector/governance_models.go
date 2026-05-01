@@ -269,6 +269,8 @@ type GovernanceLockMetadataRecord struct {
 	HolderRunID     string    `xorm:"varchar(128)" json:"holder_run_id,omitempty"`
 	AcquiredAt      time.Time `json:"acquired_at,omitempty"`
 	LastHeartbeatAt time.Time `xorm:"index" json:"last_heartbeat_at,omitempty"`
+	Active          bool      `xorm:"-" json:"active"`
+	State           string    `xorm:"-" json:"state,omitempty"`
 	UpdatedAt       time.Time `xorm:"updated" json:"updated_at"`
 }
 
