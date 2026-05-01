@@ -10,12 +10,22 @@ import (
 
 type GovernanceStatusView struct {
 	Paths   GovernancePaths               `json:"paths"`
+	Health  GovernanceHealthView          `json:"health"`
 	Jobs    []GovernanceJobStatus         `json:"jobs"`
 	Runs    []GovernanceRunRecord         `json:"runs,omitempty"`
 	Tasks   []GovernanceTaskRecord        `json:"tasks,omitempty"`
 	Windows []GovernanceWindowRecord      `json:"windows,omitempty"`
 	Domains []DomainHealthSnapshotRecord  `json:"domains,omitempty"`
 	Lock    *GovernanceLockMetadataRecord `json:"lock,omitempty"`
+}
+
+type GovernanceHealthView struct {
+	Overall string   `json:"overall"`
+	Data    string   `json:"data"`
+	Windows string   `json:"windows"`
+	Backlog string   `json:"backlog"`
+	Lock    string   `json:"lock"`
+	Reasons []string `json:"reasons,omitempty"`
 }
 
 type GovernanceJobStatus struct {
@@ -72,6 +82,7 @@ func (r *Runtime) UnifiedGovernanceStatus(store *GovernanceStore, paths Governan
 
 	return &GovernanceStatusView{
 		Paths:   paths,
+		Health:  buildGovernanceHealth(domains, windows, tasks, lock),
 		Jobs:    buildGovernanceJobStatuses(runtimeStatus, runs),
 		Runs:    runs,
 		Tasks:   tasks,
@@ -98,6 +109,121 @@ func classifyGovernanceLockMetadata(lock *GovernanceLockMetadataRecord, lockPath
 		return lock, nil
 	}
 	return nil, err
+}
+
+func buildGovernanceHealth(domains []DomainHealthSnapshotRecord, windows []GovernanceWindowRecord, tasks []GovernanceTaskRecord, lock *GovernanceLockMetadataRecord) GovernanceHealthView {
+	health := GovernanceHealthView{
+		Data:    governanceDataHealth(domains),
+		Windows: governanceWindowHealth(windows),
+		Backlog: governanceBacklogHealth(tasks),
+		Lock:    governanceLockHealth(lock),
+	}
+	health.Overall = worstGovernanceHealth(health.Data, health.Windows, health.Backlog, health.Lock)
+	health.Reasons = governanceHealthReasons(domains, windows, tasks, lock)
+	return health
+}
+
+func governanceDataHealth(domains []DomainHealthSnapshotRecord) string {
+	if len(domains) == 0 {
+		return "unknown"
+	}
+	health := "healthy"
+	for _, domain := range domains {
+		if domain.Status != "healthy" || domain.Freshness != "fresh" || domain.Coverage != "covered" {
+			health = worstGovernanceHealth(health, "degraded")
+		}
+		if domain.Status == "missing" || domain.Status == "unknown" {
+			health = worstGovernanceHealth(health, "unhealthy")
+		}
+	}
+	return health
+}
+
+func governanceWindowHealth(windows []GovernanceWindowRecord) string {
+	health := "healthy"
+	for _, window := range windows {
+		switch window.Status {
+		case GovernanceWindowStatusTerminalFailed:
+			health = worstGovernanceHealth(health, "unhealthy")
+		case GovernanceWindowStatusWaitingDependency:
+			health = worstGovernanceHealth(health, "degraded")
+		}
+	}
+	return health
+}
+
+func governanceBacklogHealth(tasks []GovernanceTaskRecord) string {
+	health := "healthy"
+	for _, task := range tasks {
+		switch task.Status {
+		case GovernanceTaskStatusOpen, GovernanceTaskStatusInProgress, GovernanceTaskStatusBlocked:
+			health = worstGovernanceHealth(health, "unhealthy")
+		case GovernanceTaskStatusDegraded, GovernanceTaskStatusUnsupported:
+			health = worstGovernanceHealth(health, "degraded")
+		}
+	}
+	return health
+}
+
+func governanceLockHealth(lock *GovernanceLockMetadataRecord) string {
+	if lock == nil {
+		return "healthy"
+	}
+	switch lock.State {
+	case "active", "":
+		return "healthy"
+	case "stale":
+		return "degraded"
+	default:
+		return "unknown"
+	}
+}
+
+func governanceHealthReasons(domains []DomainHealthSnapshotRecord, windows []GovernanceWindowRecord, tasks []GovernanceTaskRecord, lock *GovernanceLockMetadataRecord) []string {
+	reasons := make([]string, 0, 4)
+	for _, domain := range domains {
+		if domain.Status != "healthy" || domain.Freshness != "fresh" || domain.Coverage != "covered" {
+			reasons = append(reasons, fmt.Sprintf("data:%s status=%s freshness=%s coverage=%s", domain.Domain, domain.Status, domain.Freshness, domain.Coverage))
+		}
+	}
+	for _, window := range windows {
+		if window.Status == GovernanceWindowStatusTerminalFailed || window.Status == GovernanceWindowStatusWaitingDependency {
+			reasons = append(reasons, fmt.Sprintf("window:%s status=%s", window.WindowKey, window.Status))
+		}
+	}
+	for _, task := range tasks {
+		switch task.Status {
+		case GovernanceTaskStatusOpen, GovernanceTaskStatusInProgress, GovernanceTaskStatusBlocked, GovernanceTaskStatusDegraded, GovernanceTaskStatusUnsupported:
+			reasons = append(reasons, fmt.Sprintf("backlog:%s status=%s", task.TaskKey, task.Status))
+		}
+	}
+	if lock != nil && lock.State == "stale" {
+		reasons = append(reasons, fmt.Sprintf("lock:%s state=stale holder_run_id=%s", lock.LockName, lock.HolderRunID))
+	}
+	return reasons
+}
+
+func worstGovernanceHealth(values ...string) string {
+	worst := "healthy"
+	for _, value := range values {
+		if governanceHealthSeverity(value) > governanceHealthSeverity(worst) {
+			worst = value
+		}
+	}
+	return worst
+}
+
+func governanceHealthSeverity(value string) int {
+	switch value {
+	case "unhealthy":
+		return 3
+	case "degraded":
+		return 2
+	case "unknown":
+		return 1
+	default:
+		return 0
+	}
 }
 
 func buildGovernanceJobStatuses(runtimeStatus *RuntimeStatus, governanceRuns []GovernanceRunRecord) []GovernanceJobStatus {

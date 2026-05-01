@@ -191,6 +191,12 @@ func TestHandleCollectorStatusIncludesGovernanceView(t *testing.T) {
 				Paths struct {
 					DBPath string `json:"db_path"`
 				} `json:"paths"`
+				Health struct {
+					Overall string `json:"overall"`
+					Windows string `json:"windows"`
+					Backlog string `json:"backlog"`
+					Lock    string `json:"lock"`
+				} `json:"health"`
 				Jobs []struct {
 					Name string `json:"name"`
 				} `json:"jobs"`
@@ -221,6 +227,18 @@ func TestHandleCollectorStatusIncludesGovernanceView(t *testing.T) {
 	}
 	if payload.Data.Governance.Paths.DBPath != governancePaths.DBPath {
 		t.Fatalf("governance db path = %s, want %s", payload.Data.Governance.Paths.DBPath, governancePaths.DBPath)
+	}
+	if payload.Data.Governance.Health.Overall != "unhealthy" {
+		t.Fatalf("governance overall health = %q, want unhealthy", payload.Data.Governance.Health.Overall)
+	}
+	if payload.Data.Governance.Health.Windows != "degraded" {
+		t.Fatalf("governance window health = %q, want degraded", payload.Data.Governance.Health.Windows)
+	}
+	if payload.Data.Governance.Health.Backlog != "unhealthy" {
+		t.Fatalf("governance backlog health = %q, want unhealthy", payload.Data.Governance.Health.Backlog)
+	}
+	if payload.Data.Governance.Health.Lock != "degraded" {
+		t.Fatalf("governance lock health = %q, want degraded", payload.Data.Governance.Health.Lock)
 	}
 	if len(payload.Data.Governance.Jobs) != 7 {
 		t.Fatalf("governance jobs = %d, want 7", len(payload.Data.Governance.Jobs))

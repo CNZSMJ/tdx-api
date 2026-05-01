@@ -851,6 +851,130 @@ func TestRuntimeUnifiedGovernanceStatusMarksReleasedLockMetadataStale(t *testing
 	}
 }
 
+func TestRuntimeUnifiedGovernanceStatusSeparatesDataAndExecutionHealth(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := OpenStore(filepath.Join(tmp, "collector.db"))
+	if err != nil {
+		t.Fatalf("open collector store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 5, 1, 10, 0, 0, 0, time.Local)
+	runtime, err := NewRuntime(store, &blockStubProvider{
+		blockFiles: map[string][]BlockInfo{
+			"block_gn.dat": {
+				{Name: "机器人概念", BlockType: BlockTypeConcept, Source: "block_gn.dat", Codes: []string{"300024"}},
+			},
+		},
+	}, RuntimeConfig{
+		Now:          func() time.Time { return now },
+		Metadata:     MetadataConfig{CodesDBPath: filepath.Join(tmp, "codes.db"), WorkdayDBPath: filepath.Join(tmp, "workday.db")},
+		Kline:        KlineConfig{BaseDir: filepath.Join(tmp, "kline")},
+		Trade:        TradeConfig{BaseDir: filepath.Join(tmp, "trade")},
+		OrderHistory: OrderHistoryConfig{BaseDir: filepath.Join(tmp, "order_history")},
+		Live:         LiveCaptureConfig{BaseDir: filepath.Join(tmp, "live")},
+		Fundamentals: FundamentalsConfig{BaseDir: filepath.Join(tmp, "fundamentals")},
+		Block:        BlockConfig{BaseDir: filepath.Join(tmp, "block"), DisableAutoRefresh: true},
+	})
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+	defer runtime.Close()
+	if err := runtime.BlockService().SyncBlocks(context.Background()); err != nil {
+		t.Fatalf("seed block sync: %v", err)
+	}
+
+	for _, cursor := range []CollectCursorRecord{
+		{Domain: "codes", AssetType: MetadataAssetType, Instrument: MetadataAllKey, Cursor: "1777629600"},
+		{Domain: "workday", AssetType: MetadataAssetType, Instrument: MetadataAllKey, Cursor: "20260501"},
+		{Domain: "kline", AssetType: string(AssetTypeStock), Instrument: "sh600000", Period: string(PeriodDay), Cursor: "20260501"},
+		{Domain: "trade_history", AssetType: string(AssetTypeStock), Instrument: "sh600000", Cursor: "20260501"},
+		{Domain: "order_history", AssetType: string(AssetTypeStock), Instrument: "sh600000", Cursor: "20260501"},
+		{Domain: "live_capture", AssetType: string(AssetTypeStock), Instrument: "sh600000", Cursor: "20260501"},
+		{Domain: "finance", AssetType: string(AssetTypeStock), Instrument: "sh600000", Cursor: "20260501"},
+		{Domain: "f10", AssetType: string(AssetTypeStock), Instrument: "sh600000", Cursor: "20260501"},
+	} {
+		cursor := cursor
+		if err := store.UpsertCollectCursor(&cursor); err != nil {
+			t.Fatalf("seed cursor %s: %v", cursor.Domain, err)
+		}
+	}
+
+	paths := ResolveGovernancePaths(tmp)
+	govStore, err := OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	defer govStore.Close()
+
+	if err := govStore.UpsertDomainHealthSnapshot(&DomainHealthSnapshotRecord{
+		Domain:          "professional_finance",
+		Status:          "healthy",
+		Freshness:       "fresh",
+		Coverage:        "covered",
+		LatestCursor:    "20260501",
+		LatestWatermark: "20260501",
+		Summary:         "professional finance ready",
+		SnapshotAt:      now,
+	}); err != nil {
+		t.Fatalf("seed professional finance snapshot: %v", err)
+	}
+	if err := govStore.UpsertWindow(&GovernanceWindowRecord{
+		WindowKey:    GovernanceWindowKey(GovernanceJobDailyAudit, "20260429,20260430"),
+		JobName:      string(GovernanceJobDailyAudit),
+		TargetWindow: "20260429,20260430",
+		DueAt:        now.Add(-time.Hour),
+		Priority:     GovernanceJobPriority(GovernanceJobDailyAudit),
+		Status:       GovernanceWindowStatusTerminalFailed,
+		LastError:    "dependency replay failed",
+		EndedAt:      now.Add(-30 * time.Minute),
+	}); err != nil {
+		t.Fatalf("seed terminal failed window: %v", err)
+	}
+	if err := govStore.UpsertTask(&GovernanceTaskRecord{
+		TaskKey:      "startup_recovery:interrupted:daily-audit-run",
+		JobName:      string(GovernanceJobStartupRecovery),
+		Domain:       "interrupted_run",
+		Status:       GovernanceTaskStatusDegraded,
+		Priority:     1,
+		Reason:       "replay window terminal_failed",
+		TargetWindow: "20260429,20260430",
+	}); err != nil {
+		t.Fatalf("seed degraded backlog task: %v", err)
+	}
+	if err := govStore.RecordLockMetadata(&GovernanceLockMetadataRecord{
+		LockName:        "system_governance",
+		HolderPID:       int64(os.Getpid()),
+		HolderHostname:  "localhost",
+		HolderJobName:   string(GovernanceJobStartupRecovery),
+		HolderRunID:     "completed-startup-recovery",
+		AcquiredAt:      now.Add(-2 * time.Hour),
+		LastHeartbeatAt: now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("seed stale lock metadata: %v", err)
+	}
+
+	status, err := runtime.UnifiedGovernanceStatus(govStore, paths)
+	if err != nil {
+		t.Fatalf("unified governance status: %v", err)
+	}
+	if status.Health.Data != "healthy" {
+		t.Fatalf("data health = %q, want healthy; domains=%+v", status.Health.Data, status.Domains)
+	}
+	if status.Health.Windows != "unhealthy" {
+		t.Fatalf("window health = %q, want unhealthy", status.Health.Windows)
+	}
+	if status.Health.Backlog != "degraded" {
+		t.Fatalf("backlog health = %q, want degraded", status.Health.Backlog)
+	}
+	if status.Health.Lock != "degraded" {
+		t.Fatalf("lock health = %q, want degraded", status.Health.Lock)
+	}
+	if status.Health.Overall != "unhealthy" {
+		t.Fatalf("overall health = %q, want unhealthy", status.Health.Overall)
+	}
+}
+
 func TestBuildDomainSnapshotDoesNotTreatDegradedGapsAsOpenCoverage(t *testing.T) {
 	tmp := t.TempDir()
 	store, err := OpenStore(filepath.Join(tmp, "collector.db"))
