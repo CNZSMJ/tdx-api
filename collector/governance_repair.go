@@ -581,6 +581,15 @@ func backupGovernanceRepairDB(dbPath, backupDir string, now time.Time) (string, 
 	}
 	stamp := now.UTC().Format("20060102T150405Z")
 	backupPath := filepath.Join(backupDir, fmt.Sprintf("%s.%s.bak", filepath.Base(dbPath), stamp))
+	for i := 1; ; i++ {
+		if _, err := os.Stat(backupPath); err != nil {
+			if os.IsNotExist(err) {
+				break
+			}
+			return "", err
+		}
+		backupPath = filepath.Join(backupDir, fmt.Sprintf("%s.%s.%d.bak", filepath.Base(dbPath), stamp, i))
+	}
 	src, err := os.Open(dbPath)
 	if err != nil {
 		return "", err

@@ -80,6 +80,37 @@ func TestGovernanceRepairBatchApplyBacksUpBeforeApplyingChanges(t *testing.T) {
 	}
 }
 
+func TestGovernanceRepairBackupUsesUniquePathWithinSameSecond(t *testing.T) {
+	baseDir := t.TempDir()
+	paths := ResolveGovernancePaths(baseDir)
+	store, err := OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close governance store: %v", err)
+	}
+
+	backupDir := filepath.Join(baseDir, "backups")
+	first, err := backupGovernanceRepairDB(paths.DBPath, backupDir, fixedRepairNow())
+	if err != nil {
+		t.Fatalf("first backup: %v", err)
+	}
+	second, err := backupGovernanceRepairDB(paths.DBPath, backupDir, fixedRepairNow())
+	if err != nil {
+		t.Fatalf("second backup: %v", err)
+	}
+	if first == second {
+		t.Fatalf("backup paths collided: %s", first)
+	}
+	if _, err := OpenGovernanceStore(first); err != nil {
+		t.Fatalf("first backup is not readable: %v", err)
+	}
+	if _, err := OpenGovernanceStore(second); err != nil {
+		t.Fatalf("second backup is not readable: %v", err)
+	}
+}
+
 func TestGovernanceRepairBatchDryRunUsesReadOnlyStore(t *testing.T) {
 	paths := ResolveGovernancePaths(t.TempDir())
 	store, err := OpenGovernanceStore(paths.DBPath)
