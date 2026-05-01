@@ -210,3 +210,58 @@ func TestRunCLIRepairsTerminalGovernanceWindows(t *testing.T) {
 		t.Fatalf("terminal window was not requeued: %+v", window)
 	}
 }
+
+func TestRunCLIRepairsDegradedProviderBacklog(t *testing.T) {
+	baseDir := t.TempDir()
+	paths := collectorpkg.ResolveGovernancePaths(baseDir)
+	store, err := collectorpkg.OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	task := collectorpkg.GovernanceTaskRecord{
+		TaskKey:      "daily_close_sync:live_capture:20260429:sh512143",
+		JobName:      string(collectorpkg.GovernanceJobDailyCloseSync),
+		Domain:       "live_capture",
+		Status:       collectorpkg.GovernanceTaskStatusDegraded,
+		Priority:     2,
+		Reason:       "超时",
+		TargetWindow: "20260429",
+	}
+	if err := store.UpsertTask(&task); err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close governance store: %v", err)
+	}
+
+	var out bytes.Buffer
+	err = runCLI([]string{
+		"--governance-db", paths.DBPath,
+		"--backup-dir", filepath.Join(baseDir, "backups"),
+		"--repair", "degraded-provider-backlog",
+		"--apply",
+	}, &out)
+	if err != nil {
+		t.Fatalf("run cli: %v", err)
+	}
+
+	var result collectorpkg.GovernanceRepairBatchResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("decode output %q: %v", out.String(), err)
+	}
+	if len(result.Operations) != 1 || result.Operations[0].Name != "degraded_provider_backlog" || result.Operations[0].Applied != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	store, err = collectorpkg.OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("reopen governance store: %v", err)
+	}
+	defer store.Close()
+	openTasks, err := store.ListTasksByStatus(collectorpkg.GovernanceTaskStatusOpen)
+	if err != nil {
+		t.Fatalf("list open tasks: %v", err)
+	}
+	if len(openTasks) != 1 || openTasks[0].TaskKey != task.TaskKey {
+		t.Fatalf("degraded provider task was not reopened: %+v", openTasks)
+	}
+}

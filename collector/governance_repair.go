@@ -332,6 +332,157 @@ func terminalWindowDependencyReady(store *GovernanceStore, window GovernanceWind
 	}
 }
 
+type DegradedProviderBacklogRepair struct {
+	MaxAttempts int
+}
+
+type degradedProviderBacklogPlan struct {
+	change GovernanceRepairChange
+	task   GovernanceTaskRecord
+}
+
+func (r DegradedProviderBacklogRepair) Name() string {
+	return "degraded_provider_backlog"
+}
+
+func (r DegradedProviderBacklogRepair) Plan(store *GovernanceStore) ([]GovernanceRepairChange, error) {
+	plans, err := r.plan(store)
+	if err != nil {
+		return nil, err
+	}
+	changes := make([]GovernanceRepairChange, 0, len(plans))
+	for _, plan := range plans {
+		changes = append(changes, plan.change)
+	}
+	return changes, nil
+}
+
+func (r DegradedProviderBacklogRepair) Apply(store *GovernanceStore) ([]GovernanceRepairChange, error) {
+	plans, err := r.plan(store)
+	if err != nil {
+		return nil, err
+	}
+	applied := make([]GovernanceRepairChange, 0, len(plans))
+	for _, plan := range plans {
+		task := plan.task
+		switch plan.change.Action {
+		case "requeue_provider_task":
+			task.Status = GovernanceTaskStatusOpen
+			if task.Priority <= 0 || task.Priority > 2 {
+				task.Priority = 2
+			}
+		case "classify_retry_exhausted":
+			task.Reason = providerRepairExhaustedReason(task, r.maxAttempts())
+		case "classify_non_retryable":
+			task.Reason = providerRepairNonRetryableReason(task)
+		default:
+			continue
+		}
+		ok, err := store.UpdateTaskIfStatus(&task, GovernanceTaskStatusDegraded)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			applied = append(applied, plan.change)
+		}
+	}
+	return applied, nil
+}
+
+func (r DegradedProviderBacklogRepair) plan(store *GovernanceStore) ([]degradedProviderBacklogPlan, error) {
+	tasks, err := store.ListTasksByStatus(GovernanceTaskStatusDegraded)
+	if err != nil {
+		return nil, err
+	}
+	plans := make([]degradedProviderBacklogPlan, 0, len(tasks))
+	for _, task := range tasks {
+		if !isProviderBacklogTask(task) {
+			continue
+		}
+		change := GovernanceRepairChange{
+			Operation: r.Name(),
+			Target:    task.TaskKey,
+			Reason:    providerBacklogRepairReason(task, r.maxAttempts()),
+		}
+		switch {
+		case isRetryableProviderBacklogReason(task.Reason) && !providerRepairBudgetExhausted(task, r.maxAttempts()):
+			change.Action = "requeue_provider_task"
+		case isRetryableProviderBacklogReason(task.Reason):
+			change.Action = "classify_retry_exhausted"
+		default:
+			change.Action = "classify_non_retryable"
+		}
+		plans = append(plans, degradedProviderBacklogPlan{change: change, task: task})
+	}
+	return plans, nil
+}
+
+func (r DegradedProviderBacklogRepair) maxAttempts() int {
+	if r.MaxAttempts > 0 {
+		return r.MaxAttempts
+	}
+	return 2
+}
+
+func isProviderBacklogTask(task GovernanceTaskRecord) bool {
+	switch GovernanceJob(task.JobName) {
+	case GovernanceJobDailyCloseSync, GovernanceJobDailyAudit:
+	default:
+		return false
+	}
+	switch task.Domain {
+	case "kline", "trade_history", "live_capture", "order_history", "finance", "f10":
+		return true
+	default:
+		return false
+	}
+}
+
+func providerRepairBudgetExhausted(task GovernanceTaskRecord, maxAttempts int) bool {
+	if strings.HasPrefix(strings.TrimSpace(task.Reason), "provider repair exhausted:") {
+		return true
+	}
+	return task.Attempts >= maxAttempts
+}
+
+func isRetryableProviderBacklogReason(reason string) bool {
+	text := strings.ToLower(strings.TrimSpace(reason))
+	if text == "" {
+		return false
+	}
+	return strings.Contains(text, "timeout") ||
+		strings.Contains(text, "超时") ||
+		strings.Contains(text, "eof") ||
+		strings.Contains(text, "broken pipe") ||
+		strings.Contains(text, "connection reset") ||
+		strings.Contains(text, "context canceled") ||
+		strings.Contains(text, "context cancelled") ||
+		strings.Contains(text, "use of closed network connection") ||
+		strings.Contains(text, "i/o timeout") ||
+		strings.Contains(text, "connection refused") ||
+		strings.Contains(text, "数据长度不足")
+}
+
+func providerBacklogRepairReason(task GovernanceTaskRecord, maxAttempts int) string {
+	return fmt.Sprintf("job=%s domain=%s date=%s attempts=%d/%d reason=%s", task.JobName, task.Domain, task.TargetWindow, task.Attempts, maxAttempts, strings.TrimSpace(task.Reason))
+}
+
+func providerRepairExhaustedReason(task GovernanceTaskRecord, maxAttempts int) string {
+	reason := strings.TrimSpace(task.Reason)
+	if strings.HasPrefix(reason, "provider repair exhausted:") {
+		return reason
+	}
+	return fmt.Sprintf("provider repair exhausted: retry budget %d/%d; original: %s", task.Attempts, maxAttempts, reason)
+}
+
+func providerRepairNonRetryableReason(task GovernanceTaskRecord) string {
+	reason := strings.TrimSpace(task.Reason)
+	if strings.HasPrefix(reason, "provider repair not retryable:") {
+		return reason
+	}
+	return "provider repair not retryable: original: " + reason
+}
+
 func RunGovernanceRepairBatch(opts GovernanceRepairBatchOptions, operations []GovernanceRepairOperation) (*GovernanceRepairBatchResult, error) {
 	if opts.DBPath == "" {
 		opts.DBPath = ResolveGovernancePaths("").DBPath
@@ -344,6 +495,9 @@ func RunGovernanceRepairBatch(opts GovernanceRepairBatchOptions, operations []Go
 	}
 	if opts.Now == nil {
 		opts.Now = time.Now
+	}
+	if err := prepareGovernanceRepairDB(opts.DBPath); err != nil {
+		return nil, err
 	}
 
 	store, err := OpenGovernanceStoreReadOnly(opts.DBPath)
@@ -394,6 +548,17 @@ func RunGovernanceRepairBatch(opts GovernanceRepairBatchOptions, operations []Go
 		result.Operations[i].Changes = changes
 	}
 	return result, nil
+}
+
+func prepareGovernanceRepairDB(dbPath string) error {
+	if _, err := os.Stat(dbPath); err != nil {
+		return err
+	}
+	store, err := OpenGovernanceStore(dbPath)
+	if err != nil {
+		return err
+	}
+	return store.Close()
 }
 
 func verifyGovernanceLockReleased(lockPath string) error {

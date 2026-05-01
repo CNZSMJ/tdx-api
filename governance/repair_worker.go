@@ -89,6 +89,7 @@ func (r *RepairWorkerRunner) claimNextOpenTask() (collectorpkg.GovernanceTaskRec
 
 	task := tasks[0]
 	task.Status = collectorpkg.GovernanceTaskStatusInProgress
+	task.Attempts++
 	if err := r.cfg.Store.UpsertTask(&task); err != nil {
 		return collectorpkg.GovernanceTaskRecord{}, false, err
 	}

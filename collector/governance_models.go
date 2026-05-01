@@ -203,6 +203,7 @@ type GovernanceTaskRecord struct {
 	Domain       string               `xorm:"varchar(64) index notnull" json:"domain"`
 	Status       GovernanceTaskStatus `xorm:"varchar(32) index notnull" json:"status"`
 	Priority     int                  `xorm:"notnull" json:"priority"`
+	Attempts     int                  `json:"attempts"`
 	Reason       string               `xorm:"text" json:"reason,omitempty"`
 	TargetWindow string               `xorm:"varchar(64)" json:"target_window,omitempty"`
 	PayloadJSON  string               `xorm:"text" json:"payload_json,omitempty"`

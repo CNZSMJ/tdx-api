@@ -306,6 +306,15 @@ func (s *GovernanceStore) UpdateTask(record *GovernanceTaskRecord) error {
 	return err
 }
 
+func (s *GovernanceStore) UpdateTaskIfStatus(record *GovernanceTaskRecord, expected GovernanceTaskStatus) (bool, error) {
+	if record.ID > 0 {
+		affected, err := s.engine.Where("ID = ? AND Status = ?", record.ID, expected).AllCols().Update(record)
+		return affected > 0, err
+	}
+	affected, err := s.engine.Where("TaskKey = ? AND Status = ?", record.TaskKey, expected).AllCols().Update(record)
+	return affected > 0, err
+}
+
 func (s *GovernanceStore) ListTasksByStatus(statuses ...GovernanceTaskStatus) ([]GovernanceTaskRecord, error) {
 	records := make([]GovernanceTaskRecord, 0, 16)
 	session := s.engine.Asc("Priority").Asc("CreatedAt")

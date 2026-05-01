@@ -77,6 +77,13 @@ func TestRepairWorkerExecutesOpenTasksAndPersistsOutcome(t *testing.T) {
 	if statusByKey["task-open"] != collectorpkg.GovernanceTaskStatusRepaired {
 		t.Fatalf("task-open status = %s, want repaired", statusByKey["task-open"])
 	}
+	records, err := store.ListTasksByStatus(collectorpkg.GovernanceTaskStatusRepaired)
+	if err != nil {
+		t.Fatalf("list repaired tasks: %v", err)
+	}
+	if len(records) != 1 || records[0].Attempts != 1 {
+		t.Fatalf("repaired task attempts = %+v, want one attempt", records)
+	}
 	if statusByKey["task-degraded"] != collectorpkg.GovernanceTaskStatusDegraded {
 		t.Fatalf("task-degraded status = %s, want degraded", statusByKey["task-degraded"])
 	}

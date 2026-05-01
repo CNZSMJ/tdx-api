@@ -115,6 +115,34 @@ func TestGovernanceRepairBatchDryRunUsesReadOnlyStore(t *testing.T) {
 	}
 }
 
+func TestGovernanceRepairBatchDryRunSyncsExistingSchemaBeforeReadOnlyPlan(t *testing.T) {
+	paths := ResolveGovernancePaths(t.TempDir())
+	store, err := OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	if _, err := store.engine.Exec(`ALTER TABLE governance_task DROP COLUMN Attempts`); err != nil {
+		t.Fatalf("drop attempts column to simulate old schema: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close governance store: %v", err)
+	}
+
+	result, err := RunGovernanceRepairBatch(GovernanceRepairBatchOptions{
+		DBPath: paths.DBPath,
+		Mode:   GovernanceRepairModeDryRun,
+		Now:    fixedRepairNow,
+	}, []GovernanceRepairOperation{
+		DegradedProviderBacklogRepair{},
+	})
+	if err != nil {
+		t.Fatalf("dry-run repair on old schema: %v", err)
+	}
+	if result.Mode != GovernanceRepairModeDryRun || result.BackupPath != "" {
+		t.Fatalf("unexpected dry-run result: %+v", result)
+	}
+}
+
 func TestStaleGovernanceLockMetadataRepairClearsOnlyReleasedLockMetadata(t *testing.T) {
 	paths := ResolveGovernancePaths(t.TempDir())
 	store, err := OpenGovernanceStore(paths.DBPath)
@@ -597,6 +625,148 @@ func TestTerminalGovernanceWindowRepairDoesNotOverwriteConcurrentCompletion(t *t
 	}
 	if window == nil || window.Status != GovernanceWindowStatusPassed || window.RunID != "run-concurrent-pass" {
 		t.Fatalf("concurrent completion was overwritten: %+v", window)
+	}
+}
+
+func TestDegradedProviderBacklogRepairRequeuesRetryableTasksWithinBudget(t *testing.T) {
+	paths := ResolveGovernancePaths(t.TempDir())
+	store, err := OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	for _, task := range []GovernanceTaskRecord{
+		{
+			TaskKey:      "daily_close_sync:live_capture:20260429:sh512143",
+			JobName:      string(GovernanceJobDailyCloseSync),
+			Domain:       "live_capture",
+			Status:       GovernanceTaskStatusDegraded,
+			Priority:     2,
+			Attempts:     0,
+			Reason:       "超时",
+			TargetWindow: "20260429",
+			PayloadJSON:  `{"domain":"live_capture","date":"20260429","instrument":"sh512143","reason":"超时"}`,
+		},
+		{
+			TaskKey:      "daily_audit:order_history:20260420",
+			JobName:      string(GovernanceJobDailyAudit),
+			Domain:       "order_history",
+			Status:       GovernanceTaskStatusDegraded,
+			Priority:     3,
+			Attempts:     1,
+			Reason:       "sz300344: 超时",
+			TargetWindow: "20260420",
+		},
+		{
+			TaskKey:      "daily_close_sync:live_capture:20260428:sh512143",
+			JobName:      string(GovernanceJobDailyCloseSync),
+			Domain:       "live_capture",
+			Status:       GovernanceTaskStatusDegraded,
+			Priority:     2,
+			Attempts:     2,
+			Reason:       "超时",
+			TargetWindow: "20260428",
+		},
+		{
+			TaskKey:      "daily_audit:f10:20260420",
+			JobName:      string(GovernanceJobDailyAudit),
+			Domain:       "f10",
+			Status:       GovernanceTaskStatusDegraded,
+			Priority:     3,
+			Reason:       "schema mismatch",
+			TargetWindow: "20260420",
+		},
+		{
+			TaskKey:      "daily_audit:quote_snapshot:20260420",
+			JobName:      string(GovernanceJobDailyAudit),
+			Domain:       "quote_snapshot",
+			Status:       GovernanceTaskStatusDegraded,
+			Priority:     3,
+			Reason:       "historical snapshot unavailable",
+			TargetWindow: "20260420",
+		},
+	} {
+		task := task
+		if err := store.UpsertTask(&task); err != nil {
+			t.Fatalf("seed task %s: %v", task.TaskKey, err)
+		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close governance store: %v", err)
+	}
+
+	result, err := RunGovernanceRepairBatch(GovernanceRepairBatchOptions{
+		DBPath: paths.DBPath,
+		Mode:   GovernanceRepairModeDryRun,
+		Now:    fixedRepairNow,
+	}, []GovernanceRepairOperation{
+		DegradedProviderBacklogRepair{MaxAttempts: 2},
+	})
+	if err != nil {
+		t.Fatalf("dry-run degraded provider backlog repair: %v", err)
+	}
+	if len(result.Operations) != 1 || result.Operations[0].Planned != 4 || result.Operations[0].Applied != 0 {
+		t.Fatalf("unexpected dry-run result: %+v", result.Operations)
+	}
+	actions := make(map[string]string, len(result.Operations[0].Changes))
+	for _, change := range result.Operations[0].Changes {
+		actions[change.Target] = change.Action
+	}
+	if actions["daily_close_sync:live_capture:20260429:sh512143"] != "requeue_provider_task" ||
+		actions["daily_audit:order_history:20260420"] != "requeue_provider_task" ||
+		actions["daily_close_sync:live_capture:20260428:sh512143"] != "classify_retry_exhausted" ||
+		actions["daily_audit:f10:20260420"] != "classify_non_retryable" {
+		t.Fatalf("unexpected actions: %+v", actions)
+	}
+	if _, ok := actions["daily_audit:quote_snapshot:20260420"]; ok {
+		t.Fatalf("non-provider quote snapshot task should not be planned: %+v", actions)
+	}
+
+	result, err = RunGovernanceRepairBatch(GovernanceRepairBatchOptions{
+		DBPath:    paths.DBPath,
+		BackupDir: filepath.Join(paths.BaseDataDir, "backups"),
+		Mode:      GovernanceRepairModeApply,
+		Now:       fixedRepairNow,
+	}, []GovernanceRepairOperation{
+		DegradedProviderBacklogRepair{MaxAttempts: 2},
+	})
+	if err != nil {
+		t.Fatalf("apply degraded provider backlog repair: %v", err)
+	}
+	if len(result.Operations) != 1 || result.Operations[0].Planned != 4 || result.Operations[0].Applied != 4 {
+		t.Fatalf("unexpected apply result: %+v", result.Operations)
+	}
+
+	store, err = OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("reopen governance store: %v", err)
+	}
+	defer store.Close()
+	tasks, err := store.ListTasksByStatus()
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	byKey := make(map[string]GovernanceTaskRecord, len(tasks))
+	for _, task := range tasks {
+		byKey[task.TaskKey] = task
+	}
+	for _, key := range []string{
+		"daily_close_sync:live_capture:20260429:sh512143",
+		"daily_audit:order_history:20260420",
+	} {
+		if byKey[key].Status != GovernanceTaskStatusOpen {
+			t.Fatalf("task %s status = %s, want open", key, byKey[key].Status)
+		}
+	}
+	if byKey["daily_close_sync:live_capture:20260428:sh512143"].Status != GovernanceTaskStatusDegraded ||
+		!strings.HasPrefix(byKey["daily_close_sync:live_capture:20260428:sh512143"].Reason, "provider repair exhausted:") {
+		t.Fatalf("exhausted task not classified: %+v", byKey["daily_close_sync:live_capture:20260428:sh512143"])
+	}
+	if byKey["daily_audit:f10:20260420"].Status != GovernanceTaskStatusDegraded ||
+		!strings.HasPrefix(byKey["daily_audit:f10:20260420"].Reason, "provider repair not retryable:") {
+		t.Fatalf("non-retryable task not classified: %+v", byKey["daily_audit:f10:20260420"])
+	}
+	if byKey["daily_audit:quote_snapshot:20260420"].Reason != "historical snapshot unavailable" {
+		t.Fatalf("non-provider task was changed: %+v", byKey["daily_audit:quote_snapshot:20260420"])
 	}
 }
 
