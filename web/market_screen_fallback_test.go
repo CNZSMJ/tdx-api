@@ -169,6 +169,88 @@ func TestMarketScreenUsesTodayTickerBeforeDailyKline(t *testing.T) {
 	}
 }
 
+func TestMarketStatsExactTradingDateDoesNotFallback(t *testing.T) {
+	originalDir := databaseDir
+	originalRuntime := collectorRuntime
+	defer func() {
+		databaseDir = originalDir
+		collectorRuntime = originalRuntime
+	}()
+
+	tmp := t.TempDir()
+	databaseDir = tmp
+	collectorRuntime = nil
+
+	mustCreateMarketScreenCodesDB(t, filepath.Join(tmp, "codes.db"))
+	mustCreateMarketScreenKlineDB(t, filepath.Join(tmp, "kline", "sh600000.db"), "sh600000", []marketScreenKlineFixture{
+		{At: time.Date(2026, 4, 29, 15, 0, 0, 0, time.Local), Open: 9360, High: 9420, Low: 9300, Close: 9380, Volume: 614950, Amount: 575654656000},
+	})
+
+	payload := callMarketStatsHandler(t, "/api/market-stats?trading_date=20260428")
+	data := payload["data"].(map[string]interface{})
+	summary := data["summary"].(map[string]interface{})
+	stock := summary["stock"].(map[string]interface{})
+
+	if data["trading_date"] != "20260428" {
+		t.Fatalf("trading_date = %v, want requested exact date 20260428", data["trading_date"])
+	}
+	if stock["total"].(float64) != 0 {
+		t.Fatalf("exact date fell back to another day: stock.total=%v data=%#v", stock["total"], data)
+	}
+}
+
+func TestMarketStatsUsesTodayTickerBeforeDailyKline(t *testing.T) {
+	originalNow := marketScreenNow
+	defer func() {
+		marketScreenNow = originalNow
+	}()
+	marketScreenNow = func() time.Time {
+		return time.Date(2026, 4, 29, 10, 0, 0, 0, time.Local)
+	}
+
+	ts := collectorpkg.NewTickerService(&marketScreenQuoteProvider{quotes: []collectorpkg.QuoteSnapshot{
+		{
+			Code:       "sh600000",
+			Name:       "浦发银行",
+			Exchange:   "sh",
+			AssetType:  collectorpkg.AssetTypeStock,
+			PreClose:   collectorpkg.PriceMilli(9000),
+			Open:       collectorpkg.PriceMilli(9100),
+			High:       collectorpkg.PriceMilli(9600),
+			Low:        collectorpkg.PriceMilli(9000),
+			Last:       collectorpkg.PriceMilli(9500),
+			VolumeHand: 100,
+			AmountYuan: 950000,
+		},
+	}}, nil, collectorpkg.TickerConfig{
+		Interval: time.Hour,
+		Now:      marketScreenNow,
+	})
+	ts.Start([]string{"sh600000"}, nil)
+	defer ts.Stop()
+	waitForMarketScreenTicker(t, ts)
+
+	req, err := parseMarketStatsRequest(httptest.NewRequest(http.MethodGet, "/api/market-stats", nil))
+	if err != nil {
+		t.Fatalf("parse request: %v", err)
+	}
+	resp, ok := buildMarketStatsTickerResponse(req, ts)
+	if !ok {
+		t.Fatalf("ticker response not selected for current trading day")
+	}
+	if resp["data_source"] != "ticker" {
+		t.Fatalf("data_source = %v, want ticker", resp["data_source"])
+	}
+	if resp["trading_date"] != "20260429" {
+		t.Fatalf("trading_date = %v, want 20260429", resp["trading_date"])
+	}
+	summary := resp["summary"].(map[string]interface{})
+	stock := summary["stock"].(map[string]interface{})
+	if stock["total"] != 1 {
+		t.Fatalf("stock.total = %v, want 1; resp=%#v", stock["total"], resp)
+	}
+}
+
 type marketScreenQuoteProvider struct {
 	quotes []collectorpkg.QuoteSnapshot
 }
@@ -187,6 +269,21 @@ func waitForMarketScreenTicker(t *testing.T, ts *collectorpkg.TickerService) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("ticker did not publish initial snapshot")
+}
+
+func callMarketStatsHandler(t *testing.T, path string) map[string]interface{} {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	handleGetMarketStats(rec, req)
+	var payload map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode %s: %v\nbody=%s", path, err, rec.Body.String())
+	}
+	if payload["code"].(float64) != 0 {
+		t.Fatalf("%s returned error payload: %s", path, rec.Body.String())
+	}
+	return payload
 }
 
 type marketScreenKlineFixture struct {

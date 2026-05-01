@@ -36,6 +36,12 @@ type marketScreenCloseSnapshot struct {
 	date int64
 }
 
+type marketStatsRequest struct {
+	assetType      string
+	tradingDate    string
+	hasTradingDate bool
+}
+
 var marketScreenNow = time.Now
 
 func parseMarketScreenRequest(r *http.Request) (marketScreenRequest, error) {
@@ -415,6 +421,57 @@ func addMarketScreenCloseSnapshotMeta(resp map[string]interface{}, tradingDate s
 	if parsed, err := time.ParseInLocation("20060102", tradingDate, time.Local); err == nil {
 		resp["updated_at"] = time.Date(parsed.Year(), parsed.Month(), parsed.Day(), 15, 0, 0, 0, time.Local).Format(time.RFC3339)
 	}
+}
+
+func parseMarketStatsRequest(r *http.Request) (marketStatsRequest, error) {
+	assetType, err := parseMarketStatsAssetType(r.URL.Query().Get("asset_type"))
+	if err != nil {
+		return marketStatsRequest{}, err
+	}
+	tradingDateRaw := strings.TrimSpace(r.URL.Query().Get("trading_date"))
+	tradingDate := ""
+	if tradingDateRaw != "" {
+		parsed, err := parseMarketScreenTradingDate(tradingDateRaw)
+		if err != nil {
+			return marketStatsRequest{}, err
+		}
+		tradingDate = parsed
+	}
+	return marketStatsRequest{
+		assetType:      assetType,
+		tradingDate:    tradingDate,
+		hasTradingDate: tradingDate != "",
+	}, nil
+}
+
+func buildMarketStatsTickerResponse(req marketStatsRequest, ts *collectorpkg.TickerService) (map[string]interface{}, bool) {
+	if !marketScreenShouldUseTicker(marketScreenRequest{
+		tradingDate:    req.tradingDate,
+		hasTradingDate: req.hasTradingDate,
+	}, ts) {
+		return nil, false
+	}
+	resp := buildMarketStatsData(ts.GetAllStocks(), req.assetType)
+	resp["data_source"] = "ticker"
+	resp["trading_date"] = ts.UpdatedAt().In(time.Local).Format("20060102")
+	addTickerMeta(resp, ts)
+	return resp, true
+}
+
+func buildMarketStatsCloseSnapshotResponse(req marketStatsRequest) (map[string]interface{}, bool) {
+	ticks, tradingDate, ok := loadMarketScreenCloseTicks(req.assetType, req.tradingDate)
+	if !ok && !req.hasTradingDate {
+		return nil, false
+	}
+	resp := buildMarketStatsData(ticks, req.assetType)
+	if req.hasTradingDate && !ok {
+		addMarketScreenCloseSnapshotMeta(resp, req.tradingDate)
+		resp["status"] = "empty"
+		resp["status_hint"] = "指定 trading_date 无日K收盘快照"
+		return resp, true
+	}
+	addMarketScreenCloseSnapshotMeta(resp, tradingDate)
+	return resp, true
 }
 
 func sortMarketScreenTicks(ticks []collectorpkg.StockTick, sortBy, order string) {

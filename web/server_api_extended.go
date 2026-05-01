@@ -616,15 +616,32 @@ func handleGetIndexAll(w http.ResponseWriter, r *http.Request) {
 
 // 获取市场统计（宽度指标来自 Ticker 预聚合；未就绪时不返回误导性的旧逻辑数据）
 func handleGetMarketStats(w http.ResponseWriter, r *http.Request) {
+	req, err := parseMarketStatsRequest(r)
+	if err != nil {
+		errorResponse(w, err.Error())
+		return
+	}
 	ts := getTickerService()
+	if resp, ok := buildMarketStatsTickerResponse(req, ts); ok {
+		successResponse(w, resp)
+		return
+	}
 	if ts == nil {
+		if resp, ok := buildMarketStatsCloseSnapshotResponse(req); ok {
+			successResponse(w, resp)
+			return
+		}
 		successResponse(w, map[string]interface{}{
 			"status":      "not_started",
 			"status_hint": "Ticker 服务未初始化，系统可能仍在启动中",
 		})
 		return
 	}
-	if ts.UpdatedAt().IsZero() {
+	if ts.UpdatedAt().IsZero() || req.hasTradingDate {
+		if resp, ok := buildMarketStatsCloseSnapshotResponse(req); ok {
+			successResponse(w, resp)
+			return
+		}
 		if ts.Running() {
 			successResponse(w, map[string]interface{}{
 				"status":      "warming_up",
@@ -639,22 +656,14 @@ func handleGetMarketStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	assetType, err := parseMarketStatsAssetType(r.URL.Query().Get("asset_type"))
-	if err != nil {
-		errorResponse(w, err.Error())
+	if resp, ok := buildMarketStatsCloseSnapshotResponse(req); ok {
+		successResponse(w, resp)
 		return
 	}
-
-	resp := buildMarketStatsData(ts.GetAllStocks(), assetType)
-	updatedAt := ts.UpdatedAt()
-	resp["updated_at"] = updatedAt.Format(time.RFC3339)
-	if age := time.Since(updatedAt); age < 10*time.Second {
-		resp["status"] = "live"
-	} else {
-		resp["status"] = "stale"
-		resp["status_hint"] = fmt.Sprintf("数据已过期 %s，当前可能处于非交易时段", age.Truncate(time.Second))
-	}
-	successResponse(w, resp)
+	successResponse(w, map[string]interface{}{
+		"status":      "out_of_session",
+		"status_hint": "当前处于非交易时段或 Ticker 尚未启动",
+	})
 }
 
 // 获取各交易所证券数量
