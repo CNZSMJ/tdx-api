@@ -1422,9 +1422,11 @@ func recoverStaleInProgressGovernanceTasks(reason string) (staleInProgressRecove
 	for _, task := range tasks {
 		switch task.JobName {
 		case string(collectorpkg.GovernanceJobStartupRecovery):
-			task.Status = collectorpkg.GovernanceTaskStatusDegraded
-			task.Reason = reason
-			counts.Degraded++
+			task.Status = collectorpkg.GovernanceTaskStatusOpen
+			if strings.TrimSpace(task.Reason) == "" {
+				task.Reason = reason
+			}
+			counts.Reopened++
 		case string(collectorpkg.GovernanceJobDailyAudit):
 			task.Status = collectorpkg.GovernanceTaskStatusDegraded
 			if strings.TrimSpace(task.Reason) == "" || isDailyAuditTaskWithLostStaleReason(task) {

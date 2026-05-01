@@ -74,11 +74,11 @@ func executeGovernanceRepairTask(ctx context.Context, task collectorpkg.Governan
 func executeStartupRecoveryTask(ctx context.Context, task collectorpkg.GovernanceTaskRecord) (collectorpkg.GovernanceTaskStatus, string, error) {
 	switch collectorpkg.GovernanceJob(task.Domain) {
 	case collectorpkg.GovernanceJobDailyOpenRefresh:
-		return collectorpkg.GovernanceTaskStatusDegraded, "missed daily_open_refresh window recorded; full replay is deferred to scheduled open-refresh window", nil
+		return collectorpkg.GovernanceTaskStatusUnsupported, "missed daily_open_refresh cannot be replayed without an explicit target-date runner", nil
 	case collectorpkg.GovernanceJobDailyCloseSync:
-		return collectorpkg.GovernanceTaskStatusDegraded, "missed daily_close_sync window recorded; full replay is deferred to bounded close-sync scheduling", nil
+		return executeStartupRecoveryReplayWindow(ctx, collectorpkg.GovernanceJobDailyCloseSync, task.TargetWindow, task.Reason)
 	case collectorpkg.GovernanceJobDailyAudit:
-		return collectorpkg.GovernanceTaskStatusDegraded, "missed daily_audit window recorded; full replay is deferred to audit-only scheduling", nil
+		return executeStartupRecoveryReplayWindow(ctx, collectorpkg.GovernanceJobDailyAudit, task.TargetWindow, task.Reason)
 	case "interrupted_run":
 		return executeInterruptedStartupRecoveryTask(ctx, task)
 	default:
@@ -104,13 +104,48 @@ func executeInterruptedStartupRecoveryTask(ctx context.Context, task collectorpk
 
 	switch collectorpkg.GovernanceJob(run.JobName) {
 	case collectorpkg.GovernanceJobDailyOpenRefresh:
-		return collectorpkg.GovernanceTaskStatusDegraded, "interrupted daily_open_refresh run recorded; full replay is deferred to scheduled open-refresh window", nil
+		return collectorpkg.GovernanceTaskStatusUnsupported, "interrupted daily_open_refresh cannot be replayed without an explicit target-date runner", nil
 	case collectorpkg.GovernanceJobDailyCloseSync:
-		return collectorpkg.GovernanceTaskStatusDegraded, "interrupted daily_close_sync run recorded; full replay is deferred to bounded close-sync scheduling", nil
+		return executeStartupRecoveryReplayWindow(ctx, collectorpkg.GovernanceJobDailyCloseSync, run.TargetWindow, task.Reason)
 	case collectorpkg.GovernanceJobDailyAudit:
-		return collectorpkg.GovernanceTaskStatusDegraded, "interrupted daily_audit run recorded; full replay is deferred to audit-only scheduling", nil
+		return executeStartupRecoveryReplayWindow(ctx, collectorpkg.GovernanceJobDailyAudit, run.TargetWindow, task.Reason)
 	default:
 		return collectorpkg.GovernanceTaskStatusUnsupported, fmt.Sprintf("unsupported interrupted governance job: %s", run.JobName), nil
+	}
+}
+
+func executeStartupRecoveryReplayWindow(ctx context.Context, job collectorpkg.GovernanceJob, targetWindow, reason string) (collectorpkg.GovernanceTaskStatus, string, error) {
+	targetWindow = strings.TrimSpace(targetWindow)
+	if targetWindow == "" {
+		return collectorpkg.GovernanceTaskStatusBlocked, "missing replay target window", nil
+	}
+	if governanceStore == nil {
+		return collectorpkg.GovernanceTaskStatusBlocked, "governance store unavailable", nil
+	}
+	if err := upsertGovernanceWindowIntent(job, targetWindow, "", reason, time.Now()); err != nil {
+		return collectorpkg.GovernanceTaskStatusOpen, "", err
+	}
+	if governanceWindowDispatcher == nil {
+		return collectorpkg.GovernanceTaskStatusOpen, fmt.Sprintf("queued replay window %s", collectorpkg.GovernanceWindowKey(job, targetWindow)), nil
+	}
+	if _, err := runGovernanceWindowDispatcherWithContext(ctx, "startup-recovery-repair"); err != nil {
+		return collectorpkg.GovernanceTaskStatusOpen, "", err
+	}
+
+	window, err := governanceStore.GetWindowByKey(collectorpkg.GovernanceWindowKey(job, targetWindow))
+	if err != nil {
+		return collectorpkg.GovernanceTaskStatusOpen, "", err
+	}
+	if window == nil {
+		return collectorpkg.GovernanceTaskStatusOpen, fmt.Sprintf("replay window missing for %s %s", job, targetWindow), nil
+	}
+	switch window.Status {
+	case collectorpkg.GovernanceWindowStatusPassed, collectorpkg.GovernanceWindowStatusPartial, collectorpkg.GovernanceWindowStatusSkipped:
+		return collectorpkg.GovernanceTaskStatusRepaired, fmt.Sprintf("replayed %s window %s: %s", job, targetWindow, window.Status), nil
+	case collectorpkg.GovernanceWindowStatusTerminalFailed, collectorpkg.GovernanceWindowStatusManualClosed:
+		return collectorpkg.GovernanceTaskStatusDegraded, fmt.Sprintf("replay window %s ended as %s: %s", window.WindowKey, window.Status, window.LastError), nil
+	default:
+		return collectorpkg.GovernanceTaskStatusOpen, fmt.Sprintf("queued replay window %s status=%s", window.WindowKey, window.Status), nil
 	}
 }
 

@@ -72,16 +72,11 @@ func TestRunGovernanceRepairWorkerDoesNotReplayMissedOpenRefreshTask(t *testing.
 	if len(updated) != 1 {
 		t.Fatalf("updated tasks = %d, want 1", len(updated))
 	}
+	if updated[0].Status != collectorpkg.GovernanceTaskStatusUnsupported {
+		t.Fatalf("task status = %s, want unsupported", updated[0].Status)
+	}
 	if calls != 0 {
 		t.Fatalf("daily open refresh calls = %d, want 0", calls)
-	}
-
-	tasks, err := store.ListTasksByStatus()
-	if err != nil {
-		t.Fatalf("list tasks: %v", err)
-	}
-	if len(tasks) != 1 || tasks[0].Status != collectorpkg.GovernanceTaskStatusDegraded {
-		t.Fatalf("unexpected tasks after repair worker run: %+v", tasks)
 	}
 
 	runs, err := store.ListRecentRuns(10)
@@ -100,16 +95,18 @@ func TestRunGovernanceRepairWorkerDoesNotReplayMissedOpenRefreshTask(t *testing.
 	}
 }
 
-func TestRunGovernanceRepairWorkerDoesNotReplayMissedCloseSyncTask(t *testing.T) {
+func TestRunGovernanceRepairWorkerReplaysMissedCloseSyncTask(t *testing.T) {
 	originalStore := governanceStore
 	originalPaths := governancePaths
 	originalRepairWorker := repairWorker
 	originalDailyCloseSync := dailyCloseSync
+	originalDispatcher := governanceWindowDispatcher
 	defer func() {
 		governanceStore = originalStore
 		governancePaths = originalPaths
 		repairWorker = originalRepairWorker
 		dailyCloseSync = originalDailyCloseSync
+		governanceWindowDispatcher = originalDispatcher
 	}()
 
 	tmp := t.TempDir()
@@ -143,6 +140,12 @@ func TestRunGovernanceRepairWorkerDoesNotReplayMissedCloseSyncTask(t *testing.T)
 	if err != nil {
 		t.Fatalf("new daily close sync runner: %v", err)
 	}
+	governanceWindowDispatcher = systemgov.NewWindowDispatcher(systemgov.WindowDispatcherConfig{
+		Store:   store,
+		Now:     time.Now,
+		Owner:   "test-repair-worker",
+		Execute: executeGovernanceWindow,
+	})
 
 	if err := store.UpsertTask(&collectorpkg.GovernanceTaskRecord{
 		TaskKey:      "startup_recovery:missed:daily_close_sync:20260417,20260418",
@@ -165,24 +168,33 @@ func TestRunGovernanceRepairWorkerDoesNotReplayMissedCloseSyncTask(t *testing.T)
 	if len(updated) != 1 {
 		t.Fatalf("updated tasks = %d, want 1", len(updated))
 	}
-	if updated[0].Status != collectorpkg.GovernanceTaskStatusDegraded {
-		t.Fatalf("task status = %s, want degraded", updated[0].Status)
+	if updated[0].Status != collectorpkg.GovernanceTaskStatusRepaired {
+		t.Fatalf("task status = %s, want repaired", updated[0].Status)
 	}
-	if len(receivedDates) != 0 {
-		t.Fatalf("received close-sync dates = %+v, want none", receivedDates)
+	if len(receivedDates) != 2 || receivedDates[0] != "20260417" || receivedDates[1] != "20260418" {
+		t.Fatalf("received close-sync dates = %+v, want [20260417 20260418]", receivedDates)
+	}
+	window, err := store.GetWindowByKey(collectorpkg.GovernanceWindowKey(collectorpkg.GovernanceJobDailyCloseSync, "20260417,20260418"))
+	if err != nil {
+		t.Fatalf("get replay window: %v", err)
+	}
+	if window == nil || window.Status != collectorpkg.GovernanceWindowStatusPassed {
+		t.Fatalf("replay window = %+v, want passed", window)
 	}
 }
 
-func TestRunGovernanceRepairWorkerDoesNotReplayInterruptedCloseSyncRun(t *testing.T) {
+func TestRunGovernanceRepairWorkerReplaysInterruptedCloseSyncRun(t *testing.T) {
 	originalStore := governanceStore
 	originalPaths := governancePaths
 	originalRepairWorker := repairWorker
 	originalDailyCloseSync := dailyCloseSync
+	originalDispatcher := governanceWindowDispatcher
 	defer func() {
 		governanceStore = originalStore
 		governancePaths = originalPaths
 		repairWorker = originalRepairWorker
 		dailyCloseSync = originalDailyCloseSync
+		governanceWindowDispatcher = originalDispatcher
 	}()
 
 	tmp := t.TempDir()
@@ -216,6 +228,12 @@ func TestRunGovernanceRepairWorkerDoesNotReplayInterruptedCloseSyncRun(t *testin
 	if err != nil {
 		t.Fatalf("new daily close sync runner: %v", err)
 	}
+	governanceWindowDispatcher = systemgov.NewWindowDispatcher(systemgov.WindowDispatcherConfig{
+		Store:   store,
+		Now:     time.Now,
+		Owner:   "test-repair-worker",
+		Execute: executeGovernanceWindow,
+	})
 
 	interruptedRun := collectorpkg.GovernanceRunRecord{
 		RunID:        "interrupted-close-sync-run",
@@ -250,24 +268,26 @@ func TestRunGovernanceRepairWorkerDoesNotReplayInterruptedCloseSyncRun(t *testin
 	if len(updated) != 1 {
 		t.Fatalf("updated tasks = %d, want 1", len(updated))
 	}
-	if updated[0].Status != collectorpkg.GovernanceTaskStatusDegraded {
-		t.Fatalf("task status = %s, want degraded", updated[0].Status)
+	if updated[0].Status != collectorpkg.GovernanceTaskStatusRepaired {
+		t.Fatalf("task status = %s, want repaired", updated[0].Status)
 	}
-	if len(receivedDates) != 0 {
-		t.Fatalf("received close-sync dates = %+v, want none", receivedDates)
+	if len(receivedDates) != 2 || receivedDates[0] != "20260417" || receivedDates[1] != "20260418" {
+		t.Fatalf("received close-sync dates = %+v, want [20260417 20260418]", receivedDates)
 	}
 }
 
-func TestRunGovernanceRepairWorkerDoesNotReplayMissedDailyAudit(t *testing.T) {
+func TestRunGovernanceRepairWorkerReplaysMissedDailyAudit(t *testing.T) {
 	originalStore := governanceStore
 	originalPaths := governancePaths
 	originalRepairWorker := repairWorker
 	originalDailyAudit := dailyAudit
+	originalDispatcher := governanceWindowDispatcher
 	defer func() {
 		governanceStore = originalStore
 		governancePaths = originalPaths
 		repairWorker = originalRepairWorker
 		dailyAudit = originalDailyAudit
+		governanceWindowDispatcher = originalDispatcher
 	}()
 
 	tmp := t.TempDir()
@@ -278,7 +298,45 @@ func TestRunGovernanceRepairWorkerDoesNotReplayMissedDailyAudit(t *testing.T) {
 	}
 	defer store.Close()
 	governanceStore = store
-	dailyAudit = nil
+	var auditedDates []string
+	dailyAudit, err = systemgov.NewDailyAuditRunner(systemgov.DailyAuditConfig{
+		Store: store,
+		Paths: governancePaths,
+		Now: func() time.Time {
+			return time.Date(2026, 4, 21, 19, 5, 0, 0, time.Local)
+		},
+		CalendarGate: func(day time.Time) (bool, error) {
+			return true, nil
+		},
+		ResolveTargetDates: func(ctx context.Context, now time.Time) ([]string, error) {
+			t.Fatalf("missed audit replay should use stored target window, not resolve current dates")
+			return nil, nil
+		},
+		Execute: func(ctx context.Context, date string, trigger string) (*systemgov.AuditResult, error) {
+			auditedDates = append(auditedDates, date)
+			return &systemgov.AuditResult{Date: date, Status: "passed"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("new daily audit runner: %v", err)
+	}
+	governanceWindowDispatcher = systemgov.NewWindowDispatcher(systemgov.WindowDispatcherConfig{
+		Store:   store,
+		Now:     time.Now,
+		Owner:   "test-repair-worker",
+		Execute: executeGovernanceWindow,
+	})
+	if err := store.UpsertWindow(&collectorpkg.GovernanceWindowRecord{
+		WindowKey:    collectorpkg.GovernanceWindowKey(collectorpkg.GovernanceJobDailyCloseSync, "20260420,20260421"),
+		JobName:      string(collectorpkg.GovernanceJobDailyCloseSync),
+		TargetWindow: "20260420,20260421",
+		DueAt:        time.Now().Add(-time.Hour),
+		Priority:     collectorpkg.GovernanceJobPriority(collectorpkg.GovernanceJobDailyCloseSync),
+		Status:       collectorpkg.GovernanceWindowStatusPassed,
+		EndedAt:      time.Now().Add(-30 * time.Minute),
+	}); err != nil {
+		t.Fatalf("seed close-sync dependency window: %v", err)
+	}
 
 	if err := store.UpsertTask(&collectorpkg.GovernanceTaskRecord{
 		TaskKey:      "startup_recovery:missed:daily_audit:20260420,20260421",
@@ -301,21 +359,26 @@ func TestRunGovernanceRepairWorkerDoesNotReplayMissedDailyAudit(t *testing.T) {
 	if len(updated) != 1 {
 		t.Fatalf("updated tasks = %d, want 1", len(updated))
 	}
-	if updated[0].Status != collectorpkg.GovernanceTaskStatusDegraded {
-		t.Fatalf("task status = %s, want degraded", updated[0].Status)
+	if updated[0].Status != collectorpkg.GovernanceTaskStatusRepaired {
+		t.Fatalf("task status = %s, want repaired", updated[0].Status)
+	}
+	if len(auditedDates) != 2 || auditedDates[0] != "20260420" || auditedDates[1] != "20260421" {
+		t.Fatalf("audited dates = %+v, want [20260420 20260421]", auditedDates)
 	}
 }
 
-func TestRunGovernanceRepairWorkerDoesNotReplayInterruptedDailyAudit(t *testing.T) {
+func TestRunGovernanceRepairWorkerReplaysInterruptedDailyAudit(t *testing.T) {
 	originalStore := governanceStore
 	originalPaths := governancePaths
 	originalRepairWorker := repairWorker
 	originalDailyAudit := dailyAudit
+	originalDispatcher := governanceWindowDispatcher
 	defer func() {
 		governanceStore = originalStore
 		governancePaths = originalPaths
 		repairWorker = originalRepairWorker
 		dailyAudit = originalDailyAudit
+		governanceWindowDispatcher = originalDispatcher
 	}()
 
 	tmp := t.TempDir()
@@ -326,7 +389,45 @@ func TestRunGovernanceRepairWorkerDoesNotReplayInterruptedDailyAudit(t *testing.
 	}
 	defer store.Close()
 	governanceStore = store
-	dailyAudit = nil
+	var auditedDates []string
+	dailyAudit, err = systemgov.NewDailyAuditRunner(systemgov.DailyAuditConfig{
+		Store: store,
+		Paths: governancePaths,
+		Now: func() time.Time {
+			return time.Date(2026, 4, 21, 20, 5, 0, 0, time.Local)
+		},
+		CalendarGate: func(day time.Time) (bool, error) {
+			return true, nil
+		},
+		ResolveTargetDates: func(ctx context.Context, now time.Time) ([]string, error) {
+			t.Fatalf("interrupted audit replay should use original target window, not resolve current dates")
+			return nil, nil
+		},
+		Execute: func(ctx context.Context, date string, trigger string) (*systemgov.AuditResult, error) {
+			auditedDates = append(auditedDates, date)
+			return &systemgov.AuditResult{Date: date, Status: "passed"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("new daily audit runner: %v", err)
+	}
+	governanceWindowDispatcher = systemgov.NewWindowDispatcher(systemgov.WindowDispatcherConfig{
+		Store:   store,
+		Now:     time.Now,
+		Owner:   "test-repair-worker",
+		Execute: executeGovernanceWindow,
+	})
+	if err := store.UpsertWindow(&collectorpkg.GovernanceWindowRecord{
+		WindowKey:    collectorpkg.GovernanceWindowKey(collectorpkg.GovernanceJobDailyCloseSync, "20260420,20260421"),
+		JobName:      string(collectorpkg.GovernanceJobDailyCloseSync),
+		TargetWindow: "20260420,20260421",
+		DueAt:        time.Now().Add(-time.Hour),
+		Priority:     collectorpkg.GovernanceJobPriority(collectorpkg.GovernanceJobDailyCloseSync),
+		Status:       collectorpkg.GovernanceWindowStatusPassed,
+		EndedAt:      time.Now().Add(-30 * time.Minute),
+	}); err != nil {
+		t.Fatalf("seed close-sync dependency window: %v", err)
+	}
 
 	interruptedRun := collectorpkg.GovernanceRunRecord{
 		RunID:        "interrupted-daily-audit-run",
@@ -361,8 +462,11 @@ func TestRunGovernanceRepairWorkerDoesNotReplayInterruptedDailyAudit(t *testing.
 	if len(updated) != 1 {
 		t.Fatalf("updated tasks = %d, want 1", len(updated))
 	}
-	if updated[0].Status != collectorpkg.GovernanceTaskStatusDegraded {
-		t.Fatalf("task status = %s, want degraded", updated[0].Status)
+	if updated[0].Status != collectorpkg.GovernanceTaskStatusRepaired {
+		t.Fatalf("task status = %s, want repaired", updated[0].Status)
+	}
+	if len(auditedDates) != 2 || auditedDates[0] != "20260420" || auditedDates[1] != "20260421" {
+		t.Fatalf("audited dates = %+v, want [20260420 20260421]", auditedDates)
 	}
 }
 
@@ -525,8 +629,8 @@ func TestRecoverStaleInProgressGovernanceTasks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recover stale in-progress governance tasks: %v", err)
 	}
-	if counts.Degraded != 3 || counts.Reopened != 1 {
-		t.Fatalf("recovery counts = %+v, want degraded=3 reopened=1", counts)
+	if counts.Degraded != 2 || counts.Reopened != 2 {
+		t.Fatalf("recovery counts = %+v, want degraded=2 reopened=2", counts)
 	}
 
 	tasks, err := store.ListTasksByStatus()
@@ -537,8 +641,8 @@ func TestRecoverStaleInProgressGovernanceTasks(t *testing.T) {
 	for _, task := range tasks {
 		byKey[task.TaskKey] = task
 	}
-	if byKey["startup_recovery:interrupted:close-sync-run"].Status != collectorpkg.GovernanceTaskStatusDegraded {
-		t.Fatalf("startup task status = %s, want degraded", byKey["startup_recovery:interrupted:close-sync-run"].Status)
+	if byKey["startup_recovery:interrupted:close-sync-run"].Status != collectorpkg.GovernanceTaskStatusOpen {
+		t.Fatalf("startup task status = %s, want open", byKey["startup_recovery:interrupted:close-sync-run"].Status)
 	}
 	if byKey["daily_audit:order_history:20260424"].Status != collectorpkg.GovernanceTaskStatusDegraded {
 		t.Fatalf("stale daily audit status = %s, want degraded", byKey["daily_audit:order_history:20260424"].Status)
