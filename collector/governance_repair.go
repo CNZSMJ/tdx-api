@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -382,6 +383,159 @@ func terminalWindowDependencyReady(store *GovernanceStore, window GovernanceWind
 	default:
 		return false, fmt.Sprintf("dependency %s is %s", dependencyKey, dependency.Status), nil
 	}
+}
+
+type CoveredCloseSyncWindowRepair struct {
+	Now func() time.Time
+}
+
+type coveredCloseSyncWindowPlan struct {
+	change GovernanceRepairChange
+	window GovernanceWindowRecord
+}
+
+func (r CoveredCloseSyncWindowRepair) Name() string {
+	return "covered_close_sync_windows"
+}
+
+func (r CoveredCloseSyncWindowRepair) Plan(store *GovernanceStore) ([]GovernanceRepairChange, error) {
+	plans, err := r.plan(store)
+	if err != nil {
+		return nil, err
+	}
+	changes := make([]GovernanceRepairChange, 0, len(plans))
+	for _, plan := range plans {
+		changes = append(changes, plan.change)
+	}
+	return changes, nil
+}
+
+func (r CoveredCloseSyncWindowRepair) Apply(store *GovernanceStore) ([]GovernanceRepairChange, error) {
+	plans, err := r.plan(store)
+	if err != nil {
+		return nil, err
+	}
+	now := r.now()
+	applied := make([]GovernanceRepairChange, 0, len(plans))
+	for _, plan := range plans {
+		window := plan.window
+		window.Status = GovernanceWindowStatusPassed
+		window.LastError = ""
+		window.ResultSummary = plan.change.Reason
+		window.LeaseOwner = ""
+		window.LeaseUntil = time.Time{}
+		window.NextRunAt = time.Time{}
+		if window.EndedAt.IsZero() {
+			window.EndedAt = now
+		}
+		ok, err := store.UpdateWindowIfStatus(&window, GovernanceWindowStatusQueued)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			ok, err = store.UpdateWindowIfStatus(&window, GovernanceWindowStatusTerminalFailed)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if ok {
+			applied = append(applied, plan.change)
+		}
+	}
+	return applied, nil
+}
+
+func (r CoveredCloseSyncWindowRepair) plan(store *GovernanceStore) ([]coveredCloseSyncWindowPlan, error) {
+	snapshots, err := store.ListLatestDomainHealthSnapshots()
+	if err != nil {
+		return nil, err
+	}
+	coverage := closeSyncSnapshotCoverage(snapshots)
+	windows, err := store.ListWindowsByStatus(GovernanceWindowStatusQueued, GovernanceWindowStatusTerminalFailed)
+	if err != nil {
+		return nil, err
+	}
+	plans := make([]coveredCloseSyncWindowPlan, 0, len(windows))
+	for _, window := range windows {
+		if GovernanceJob(window.JobName) != GovernanceJobDailyCloseSync {
+			continue
+		}
+		target, ok := maxWindowTargetDate(window.TargetWindow)
+		if !ok || !coverage.covers(target) {
+			continue
+		}
+		change := GovernanceRepairChange{
+			Operation: r.Name(),
+			Target:    window.WindowKey,
+			Action:    "close_covered_window",
+			Reason:    fmt.Sprintf("data health snapshots cover target %s", target),
+		}
+		plans = append(plans, coveredCloseSyncWindowPlan{change: change, window: window})
+	}
+	return plans, nil
+}
+
+func (r CoveredCloseSyncWindowRepair) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now()
+}
+
+type closeSyncCoverage struct {
+	healthy    bool
+	watermarks map[string]string
+}
+
+func closeSyncSnapshotCoverage(snapshots []DomainHealthSnapshotRecord) closeSyncCoverage {
+	required := []string{"trade_history", "live_capture", "order_history", "finance", "f10", "kline"}
+	byDomain := make(map[string]DomainHealthSnapshotRecord, len(snapshots))
+	for _, snapshot := range snapshots {
+		byDomain[snapshot.Domain] = snapshot
+	}
+	coverage := closeSyncCoverage{healthy: true, watermarks: make(map[string]string, len(required))}
+	for _, domain := range required {
+		snapshot, ok := byDomain[domain]
+		if !ok || snapshot.Status != "healthy" || snapshot.Freshness != "fresh" || snapshot.Coverage != "covered" {
+			coverage.healthy = false
+			continue
+		}
+		coverage.watermarks[domain] = strings.TrimSpace(snapshot.LatestWatermark)
+	}
+	return coverage
+}
+
+func (c closeSyncCoverage) covers(target string) bool {
+	if !c.healthy {
+		return false
+	}
+	for _, domain := range []string{"trade_history", "live_capture", "order_history", "finance"} {
+		watermark := c.watermarks[domain]
+		if !dateWatermarkCovers(watermark, target) {
+			return false
+		}
+	}
+	return true
+}
+
+var yyyymmddPattern = regexp.MustCompile(`^\d{8}$`)
+
+func maxWindowTargetDate(targetWindow string) (string, bool) {
+	maxDate := ""
+	for _, part := range strings.Split(targetWindow, ",") {
+		date := strings.TrimSpace(part)
+		if !yyyymmddPattern.MatchString(date) {
+			return "", false
+		}
+		if date > maxDate {
+			maxDate = date
+		}
+	}
+	return maxDate, maxDate != ""
+}
+
+func dateWatermarkCovers(watermark, target string) bool {
+	return yyyymmddPattern.MatchString(watermark) && watermark >= target
 }
 
 type DegradedProviderBacklogRepair struct {
