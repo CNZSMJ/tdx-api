@@ -178,6 +178,20 @@ func (r *Runtime) ensureTickerStarted(instruments []Instrument) {
 	log.Printf("ticker: launched with %d codes (early start during catch-up)", len(codes))
 }
 
+func (r *Runtime) EnsureRealtimeServicesStarted(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	instruments, err := r.provider.Instruments(ctx, InstrumentQuery{
+		AssetTypes: []AssetType{AssetTypeStock, AssetTypeETF, AssetTypeIndex},
+	})
+	if err != nil {
+		return err
+	}
+	r.ensureTickerStarted(normalizeInstruments(instruments))
+	return ctx.Err()
+}
+
 // ensureSignalStarted launches the K-line signal scanner (stocks only).
 func (r *Runtime) ensureSignalStarted(instruments []Instrument) {
 	if r.signal == nil || r.ticker == nil || r.signal.Running() {

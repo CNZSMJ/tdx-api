@@ -1081,6 +1081,13 @@ func runCollectorStartupSequence() {
 		log.Printf("collector: startup sequence skipped because collector is paused")
 		return
 	}
+	if collectorRuntime != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		if err := collectorRuntime.EnsureRealtimeServicesStarted(ctx); err != nil {
+			log.Printf("collector realtime startup 失败: %v", err)
+		}
+		cancel()
+	}
 	if _, err := runStartupRecovery("startup"); err != nil {
 		log.Printf("startup_recovery 失败: %v", err)
 	}

@@ -168,6 +168,52 @@ func TestCollectorRuntimeStartupCatchUpAcrossDomains(t *testing.T) {
 	}
 }
 
+func TestRuntimeEnsureRealtimeServicesStartsTickerWithoutCatchUp(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := OpenStore(filepath.Join(tmp, "collector.db"))
+	if err != nil {
+		t.Fatalf("open collector store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 4, 29, 10, 0, 0, 0, time.Local)
+	runtime, err := NewRuntime(store, &acceptanceProvider{
+		instruments: []Instrument{{Code: "sh600000", Name: "浦发银行", Exchange: "sh", AssetType: AssetTypeStock}},
+		quotes:      []QuoteSnapshot{{Code: "sh600000", Name: "浦发银行", Exchange: "sh", AssetType: AssetTypeStock, PreClose: 9000, Open: 9100, High: 9600, Low: 9000, Last: 9500, VolumeHand: 100, AmountYuan: 950000}},
+	}, RuntimeConfig{
+		Now: func() time.Time { return now },
+		Ticker: TickerConfig{
+			Interval: time.Hour,
+			Now:      func() time.Time { return now },
+		},
+		Metadata:     MetadataConfig{CodesDBPath: filepath.Join(tmp, "codes.db"), WorkdayDBPath: filepath.Join(tmp, "workday.db")},
+		Kline:        KlineConfig{BaseDir: filepath.Join(tmp, "kline")},
+		Trade:        TradeConfig{BaseDir: filepath.Join(tmp, "trade")},
+		OrderHistory: OrderHistoryConfig{BaseDir: filepath.Join(tmp, "order_history")},
+		Live:         LiveCaptureConfig{BaseDir: filepath.Join(tmp, "live")},
+		Fundamentals: FundamentalsConfig{BaseDir: filepath.Join(tmp, "fundamentals")},
+	})
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+	defer runtime.Close()
+
+	if err := runtime.EnsureRealtimeServicesStarted(context.Background()); err != nil {
+		t.Fatalf("ensure realtime services: %v", err)
+	}
+	if !runtime.TickerService().Running() {
+		t.Fatalf("ticker not running after EnsureRealtimeServicesStarted")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for runtime.TickerService().UpdatedAt().IsZero() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if runtime.TickerService().UpdatedAt().IsZero() {
+		t.Fatalf("ticker did not publish initial snapshot")
+	}
+}
+
 func TestCollectorRuntimeStartupCatchUpBootstrapsAllTradingDays(t *testing.T) {
 	tmp := t.TempDir()
 	store, err := OpenStore(filepath.Join(tmp, "collector.db"))

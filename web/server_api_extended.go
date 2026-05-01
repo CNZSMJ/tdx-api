@@ -1739,15 +1739,32 @@ func getSignalService() *collectorpkg.SignalService {
 }
 
 func handleMarketScreen(w http.ResponseWriter, r *http.Request) {
+	req, err := parseMarketScreenRequest(r)
+	if err != nil {
+		errorResponse(w, "trading_date 参数格式错误，应为 YYYYMMDD 或 YYYY-MM-DD")
+		return
+	}
 	ts := getTickerService()
+	if resp, ok := buildMarketScreenTickerResponse(req, ts); ok {
+		successResponse(w, resp)
+		return
+	}
 	if ts == nil {
+		if resp, ok := buildMarketScreenCloseSnapshotResponse(req); ok {
+			successResponse(w, resp)
+			return
+		}
 		successResponse(w, map[string]interface{}{
 			"status": "not_started", "status_hint": "Ticker 服务未初始化",
 			"count": 0, "list": []interface{}{},
 		})
 		return
 	}
-	if ts.UpdatedAt().IsZero() {
+	if ts.UpdatedAt().IsZero() || req.hasTradingDate {
+		if resp, ok := buildMarketScreenCloseSnapshotResponse(req); ok {
+			successResponse(w, resp)
+			return
+		}
 		if ts.Running() {
 			successResponse(w, map[string]interface{}{
 				"status": "warming_up", "status_hint": "等待首次行情数据",
@@ -1762,52 +1779,14 @@ func handleMarketScreen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sortBy := strings.TrimSpace(r.URL.Query().Get("sort"))
-	if sortBy == "" {
-		sortBy = "change_pct"
+	if resp, ok := buildMarketScreenCloseSnapshotResponse(req); ok {
+		successResponse(w, resp)
+		return
 	}
-	order := strings.TrimSpace(r.URL.Query().Get("order"))
-	if order == "" {
-		order = "desc"
-	}
-	filter := strings.TrimSpace(r.URL.Query().Get("filter"))
-	assetType := strings.TrimSpace(r.URL.Query().Get("asset_type"))
-	if assetType == "" {
-		assetType = "stock"
-	}
-	limit := 50
-	if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-		}
-	}
-
-	ticks, filterNote := ts.MarketScreen(sortBy, order, filter, assetType, limit)
-	list := make([]map[string]interface{}, 0, len(ticks))
-	for i := range ticks {
-		item := stockTickToScreenMap(&ticks[i])
-		switch filter {
-		case "limit_up":
-			if p := ts.GetLimitUpPublic(ticks[i].Code); p != nil {
-				mergeLimitPublic(item, p, true)
-			}
-		case "limit_down":
-			if p := ts.GetLimitDownPublic(ticks[i].Code); p != nil {
-				mergeLimitPublic(item, p, false)
-			}
-		}
-		list = append(list, item)
-	}
-
-	resp := map[string]interface{}{
-		"count": len(list),
-		"list":  list,
-	}
-	if filterNote != "" {
-		resp["filter_note"] = filterNote
-	}
-	addTickerMeta(resp, ts)
-	successResponse(w, resp)
+	successResponse(w, map[string]interface{}{
+		"status": "out_of_session", "status_hint": "Ticker 尚未启动或无数据",
+		"count": 0, "list": []interface{}{},
+	})
 }
 
 func stockTickToScreenMap(t *collectorpkg.StockTick) map[string]interface{} {
