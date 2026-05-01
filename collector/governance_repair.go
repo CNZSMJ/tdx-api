@@ -49,6 +49,48 @@ type GovernanceRepairOperationResult struct {
 	Changes []GovernanceRepairChange `json:"changes,omitempty"`
 }
 
+type StaleGovernanceLockMetadataRepair struct {
+	LockPath string
+}
+
+func (r StaleGovernanceLockMetadataRepair) Name() string {
+	return "stale_lock_metadata"
+}
+
+func (r StaleGovernanceLockMetadataRepair) Plan(store *GovernanceStore) ([]GovernanceRepairChange, error) {
+	lock, err := store.LatestLockMetadata()
+	if err != nil {
+		return nil, err
+	}
+	if lock == nil {
+		return nil, nil
+	}
+	if err := verifyGovernanceLockReleased(r.LockPath); err != nil {
+		return nil, err
+	}
+	return []GovernanceRepairChange{{
+		Operation: r.Name(),
+		Target:    lock.LockName,
+		Action:    "delete_stale_lock_metadata",
+		Reason:    fmt.Sprintf("real governance lock is acquirable; stale holder_run_id=%s", lock.HolderRunID),
+	}}, nil
+}
+
+func (r StaleGovernanceLockMetadataRepair) Apply(store *GovernanceStore) ([]GovernanceRepairChange, error) {
+	planned, err := r.Plan(store)
+	if err != nil || len(planned) == 0 {
+		return planned, err
+	}
+	affected, err := store.DeleteLockMetadata(planned[0].Target)
+	if err != nil {
+		return nil, err
+	}
+	if affected == 0 {
+		return nil, nil
+	}
+	return planned, nil
+}
+
 func RunGovernanceRepairBatch(opts GovernanceRepairBatchOptions, operations []GovernanceRepairOperation) (*GovernanceRepairBatchResult, error) {
 	if opts.DBPath == "" {
 		opts.DBPath = ResolveGovernancePaths("").DBPath
@@ -111,6 +153,17 @@ func RunGovernanceRepairBatch(opts GovernanceRepairBatchOptions, operations []Go
 		result.Operations[i].Changes = changes
 	}
 	return result, nil
+}
+
+func verifyGovernanceLockReleased(lockPath string) error {
+	lock, err := AcquireGovernanceLock(lockPath)
+	if err != nil {
+		if IsGovernanceLockHeld(err) {
+			return fmt.Errorf("active governance lock: %w", err)
+		}
+		return err
+	}
+	return lock.Release()
 }
 
 func backupGovernanceRepairDB(dbPath, backupDir string, now time.Time) (string, error) {

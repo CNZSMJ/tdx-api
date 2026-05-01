@@ -407,6 +407,10 @@ func (s *GovernanceStore) LatestLockMetadata() (*GovernanceLockMetadataRecord, e
 	return record, nil
 }
 
+func (s *GovernanceStore) DeleteLockMetadata(lockName string) (int64, error) {
+	return s.engine.Where("LockName = ?", lockName).Delete(new(GovernanceLockMetadataRecord))
+}
+
 func (s *GovernanceStore) AddEvidence(record *GovernanceEvidenceRecord) error {
 	_, err := s.engine.Insert(record)
 	return err

@@ -2,6 +2,7 @@ package collector
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -111,6 +112,109 @@ func TestGovernanceRepairBatchDryRunUsesReadOnlyStore(t *testing.T) {
 	}
 	if len(tasks) != 0 {
 		t.Fatalf("dry-run persisted a planning write: %+v", tasks)
+	}
+}
+
+func TestStaleGovernanceLockMetadataRepairClearsOnlyReleasedLockMetadata(t *testing.T) {
+	paths := ResolveGovernancePaths(t.TempDir())
+	store, err := OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	now := fixedRepairNow()
+	if err := store.RecordLockMetadata(&GovernanceLockMetadataRecord{
+		LockName:        "system_governance",
+		HolderPID:       12345,
+		HolderHostname:  "localhost",
+		HolderJobName:   string(GovernanceJobStartupRecovery),
+		HolderRunID:     "startup-recovery-ended",
+		AcquiredAt:      now.Add(-time.Hour),
+		LastHeartbeatAt: now.Add(-30 * time.Minute),
+	}); err != nil {
+		t.Fatalf("seed stale lock metadata: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close governance store: %v", err)
+	}
+
+	result, err := RunGovernanceRepairBatch(GovernanceRepairBatchOptions{
+		DBPath:    paths.DBPath,
+		BackupDir: filepath.Join(paths.BaseDataDir, "backups"),
+		Mode:      GovernanceRepairModeApply,
+		Now:       fixedRepairNow,
+	}, []GovernanceRepairOperation{
+		StaleGovernanceLockMetadataRepair{LockPath: paths.LockPath},
+	})
+	if err != nil {
+		t.Fatalf("repair stale lock metadata: %v", err)
+	}
+	if len(result.Operations) != 1 || result.Operations[0].Planned != 1 || result.Operations[0].Applied != 1 {
+		t.Fatalf("unexpected repair result: %+v", result)
+	}
+
+	store, err = OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("reopen governance store: %v", err)
+	}
+	defer store.Close()
+	lock, err := store.LatestLockMetadata()
+	if err != nil {
+		t.Fatalf("latest lock metadata: %v", err)
+	}
+	if lock != nil {
+		t.Fatalf("stale lock metadata was not cleared: %+v", lock)
+	}
+}
+
+func TestStaleGovernanceLockMetadataRepairRefusesActiveLock(t *testing.T) {
+	paths := ResolveGovernancePaths(t.TempDir())
+	store, err := OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	now := fixedRepairNow()
+	if err := store.RecordLockMetadata(&GovernanceLockMetadataRecord{
+		LockName:        "system_governance",
+		HolderPID:       12345,
+		HolderHostname:  "localhost",
+		HolderJobName:   string(GovernanceJobStartupRecovery),
+		HolderRunID:     "startup-recovery-running",
+		AcquiredAt:      now.Add(-time.Minute),
+		LastHeartbeatAt: now.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("seed lock metadata: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close governance store: %v", err)
+	}
+	heldLock, err := AcquireGovernanceLock(paths.LockPath)
+	if err != nil {
+		t.Fatalf("acquire real governance lock: %v", err)
+	}
+	defer heldLock.Release()
+
+	_, err = RunGovernanceRepairBatch(GovernanceRepairBatchOptions{
+		DBPath: paths.DBPath,
+		Mode:   GovernanceRepairModeDryRun,
+		Now:    fixedRepairNow,
+	}, []GovernanceRepairOperation{
+		StaleGovernanceLockMetadataRepair{LockPath: paths.LockPath},
+	})
+	if err == nil || !strings.Contains(err.Error(), "active governance lock") {
+		t.Fatalf("expected active lock refusal, got %v", err)
+	}
+
+	store, err = OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("reopen governance store: %v", err)
+	}
+	defer store.Close()
+	lock, err := store.LatestLockMetadata()
+	if err != nil {
+		t.Fatalf("latest lock metadata: %v", err)
+	}
+	if lock == nil || lock.HolderRunID != "startup-recovery-running" {
+		t.Fatalf("active lock metadata was changed: %+v", lock)
 	}
 }
 
