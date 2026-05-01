@@ -265,3 +265,109 @@ func TestRunCLIRepairsDegradedProviderBacklog(t *testing.T) {
 		t.Fatalf("degraded provider task was not reopened: %+v", openTasks)
 	}
 }
+
+func TestRunCLIRepairsCoveredAuditWindows(t *testing.T) {
+	baseDir := t.TempDir()
+	paths := collectorpkg.ResolveGovernancePaths(baseDir)
+	store, err := collectorpkg.OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	now := time.Date(2026, 4, 28, 21, 0, 0, 0, time.UTC)
+	windowKey := collectorpkg.GovernanceWindowKey(collectorpkg.GovernanceJobDailyAudit, "20260423,20260424")
+	if err := store.UpsertWindow(&collectorpkg.GovernanceWindowRecord{
+		WindowKey:    windowKey,
+		JobName:      string(collectorpkg.GovernanceJobDailyAudit),
+		TargetWindow: "20260423,20260424",
+		DueAt:        now.Add(-time.Hour),
+		Priority:     4,
+		Status:       collectorpkg.GovernanceWindowStatusQueued,
+	}); err != nil {
+		t.Fatalf("seed window: %v", err)
+	}
+	seedCoveredSnapshots(t, store, now)
+	if err := store.Close(); err != nil {
+		t.Fatalf("close governance store: %v", err)
+	}
+
+	var out bytes.Buffer
+	err = runCLI([]string{
+		"--governance-db", paths.DBPath,
+		"--backup-dir", filepath.Join(baseDir, "backups"),
+		"--repair", "covered-audit-windows",
+		"--apply",
+	}, &out)
+	if err != nil {
+		t.Fatalf("run cli: %v", err)
+	}
+
+	var result collectorpkg.GovernanceRepairBatchResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("decode output %q: %v", out.String(), err)
+	}
+	if len(result.Operations) != 1 || result.Operations[0].Name != "covered_audit_windows" || result.Operations[0].Applied != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+}
+
+func TestRunCLIRepairsCoveredBacklog(t *testing.T) {
+	baseDir := t.TempDir()
+	paths := collectorpkg.ResolveGovernancePaths(baseDir)
+	store, err := collectorpkg.OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	now := time.Date(2026, 4, 28, 21, 0, 0, 0, time.UTC)
+	seedCoveredSnapshots(t, store, now)
+	task := collectorpkg.GovernanceTaskRecord{
+		TaskKey:      "daily_close_sync:live_capture:20260428:sh512143",
+		JobName:      string(collectorpkg.GovernanceJobDailyCloseSync),
+		Domain:       "live_capture",
+		Status:       collectorpkg.GovernanceTaskStatusDegraded,
+		Priority:     2,
+		Reason:       "provider repair exhausted",
+		TargetWindow: "20260428",
+	}
+	if err := store.UpsertTask(&task); err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close governance store: %v", err)
+	}
+
+	var out bytes.Buffer
+	err = runCLI([]string{
+		"--governance-db", paths.DBPath,
+		"--backup-dir", filepath.Join(baseDir, "backups"),
+		"--repair", "covered-backlog",
+		"--apply",
+	}, &out)
+	if err != nil {
+		t.Fatalf("run cli: %v", err)
+	}
+
+	var result collectorpkg.GovernanceRepairBatchResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("decode output %q: %v", out.String(), err)
+	}
+	if len(result.Operations) != 1 || result.Operations[0].Name != "covered_backlog" || result.Operations[0].Applied != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+}
+
+func seedCoveredSnapshots(t *testing.T, store *collectorpkg.GovernanceStore, now time.Time) {
+	t.Helper()
+	for _, snapshot := range []collectorpkg.DomainHealthSnapshotRecord{
+		{Domain: "trade_history", Status: "healthy", Freshness: "fresh", Coverage: "covered", LatestWatermark: "20260430", SnapshotAt: now},
+		{Domain: "live_capture", Status: "healthy", Freshness: "fresh", Coverage: "covered", LatestWatermark: "20260430", SnapshotAt: now},
+		{Domain: "order_history", Status: "healthy", Freshness: "fresh", Coverage: "covered", LatestWatermark: "20260430", SnapshotAt: now},
+		{Domain: "finance", Status: "healthy", Freshness: "fresh", Coverage: "covered", LatestWatermark: "20260429", SnapshotAt: now},
+		{Domain: "f10", Status: "healthy", Freshness: "fresh", Coverage: "covered", LatestWatermark: "hash", SnapshotAt: now},
+		{Domain: "kline", Status: "healthy", Freshness: "fresh", Coverage: "covered", LatestWatermark: "1777532400", SnapshotAt: now},
+	} {
+		snapshot := snapshot
+		if err := store.UpsertDomainHealthSnapshot(&snapshot); err != nil {
+			t.Fatalf("seed snapshot %s: %v", snapshot.Domain, err)
+		}
+	}
+}

@@ -128,6 +128,69 @@ func TestCollectStartupRecoverySnapshotQueuesPreviousTradingWindowsBeforeEvening
 	}
 }
 
+func TestCollectStartupRecoverySnapshotSkipsTerminalInterruptedRunTasks(t *testing.T) {
+	paths := collectorpkg.ResolveGovernancePaths(t.TempDir())
+	store, err := collectorpkg.OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 4, 21, 8, 0, 0, 0, time.Local)
+	run := collectorpkg.GovernanceRunRecord{
+		RunID:        "daily-close-sync-interrupted",
+		JobName:      string(collectorpkg.GovernanceJobDailyCloseSync),
+		Status:       collectorpkg.GovernanceRunStatusInterrupted,
+		TargetWindow: "20260420",
+		StartedAt:    now.Add(-time.Hour),
+		EndedAt:      now.Add(-30 * time.Minute),
+	}
+	if err := store.AddRun(&run); err != nil {
+		t.Fatalf("seed interrupted run: %v", err)
+	}
+	task := collectorpkg.GovernanceTaskRecord{
+		TaskKey:      "startup_recovery:interrupted:daily-close-sync-interrupted",
+		JobName:      string(collectorpkg.GovernanceJobStartupRecovery),
+		Domain:       "interrupted_run",
+		Status:       collectorpkg.GovernanceTaskStatusClosed,
+		Priority:     1,
+		Reason:       "data health snapshots cover target 20260420",
+		TargetWindow: "20260502",
+	}
+	if err := store.UpsertTask(&task); err != nil {
+		t.Fatalf("seed closed recovery task: %v", err)
+	}
+	unsupportedQuoteSnapshot := collectorpkg.GovernanceTaskRecord{
+		TaskKey:      "daily_audit:quote_snapshot:20260420",
+		JobName:      string(collectorpkg.GovernanceJobDailyAudit),
+		Domain:       "quote_snapshot",
+		Status:       collectorpkg.GovernanceTaskStatusUnsupported,
+		Priority:     3,
+		Reason:       "historical intraday quote snapshots cannot be rebuilt",
+		TargetWindow: "20260420",
+	}
+	if err := store.UpsertTask(&unsupportedQuoteSnapshot); err != nil {
+		t.Fatalf("seed accepted unsupported task: %v", err)
+	}
+
+	snapshot, err := collectStartupRecoverySnapshot(
+		context.Background(),
+		now,
+		store,
+		func(day time.Time) (bool, error) { return false, nil },
+		func(ctx context.Context, anchor time.Time, limit int) ([]string, error) { return nil, nil },
+	)
+	if err != nil {
+		t.Fatalf("collect startup recovery snapshot: %v", err)
+	}
+	if len(snapshot.InterruptedRuns) != 0 {
+		t.Fatalf("interrupted runs = %+v, want none", snapshot.InterruptedRuns)
+	}
+	if snapshot.OpenBacklogCount != 0 {
+		t.Fatalf("open backlog count = %d, want 0", snapshot.OpenBacklogCount)
+	}
+}
+
 func TestMissedGovernanceWindowCreatesDurableWindowIntent(t *testing.T) {
 	originalStore := governanceStore
 	defer func() {

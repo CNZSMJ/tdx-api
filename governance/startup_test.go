@@ -128,4 +128,11 @@ func TestStartupRecoveryPassesWhenNoBacklogExists(t *testing.T) {
 	if len(tasks) != 0 {
 		t.Fatalf("unexpected tasks for empty startup recovery: %+v", tasks)
 	}
+	lock, err := store.LatestLockMetadata()
+	if err != nil {
+		t.Fatalf("latest lock metadata: %v", err)
+	}
+	if lock != nil {
+		t.Fatalf("startup recovery left stale lock metadata: %+v", lock)
+	}
 }

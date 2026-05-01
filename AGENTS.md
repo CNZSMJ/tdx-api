@@ -146,3 +146,4 @@ When the user corrects your approach, append a one-line rule here before ending 
 
 - When designing governance or scheduler behavior, identify the durable fact object and its lifecycle owner before adding cron callbacks, locks, runners, or status projections.
 - For market snapshot APIs, resolve the requested business trading date before choosing ticker memory or DB fallback; exact-date requests must never fall back to another date.
+- Governance startup recovery and task upserts must not reopen terminal facts; closed or repaired tasks are durable outcomes unless an explicit repair changes them.

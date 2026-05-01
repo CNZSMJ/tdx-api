@@ -389,6 +389,12 @@ type CoveredCloseSyncWindowRepair struct {
 	Now func() time.Time
 }
 
+type CoveredAuditWindowRepair struct {
+	Now func() time.Time
+}
+
+type CoveredBacklogRepair struct{}
+
 type coveredCloseSyncWindowPlan struct {
 	change GovernanceRepairChange
 	window GovernanceWindowRecord
@@ -419,6 +425,7 @@ func (r CoveredCloseSyncWindowRepair) Apply(store *GovernanceStore) ([]Governanc
 	applied := make([]GovernanceRepairChange, 0, len(plans))
 	for _, plan := range plans {
 		window := plan.window
+		expected := window.Status
 		window.Status = GovernanceWindowStatusPassed
 		window.LastError = ""
 		window.ResultSummary = plan.change.Reason
@@ -428,15 +435,9 @@ func (r CoveredCloseSyncWindowRepair) Apply(store *GovernanceStore) ([]Governanc
 		if window.EndedAt.IsZero() {
 			window.EndedAt = now
 		}
-		ok, err := store.UpdateWindowIfStatus(&window, GovernanceWindowStatusQueued)
+		ok, err := store.UpdateWindowIfStatus(&window, expected)
 		if err != nil {
 			return nil, err
-		}
-		if !ok {
-			ok, err = store.UpdateWindowIfStatus(&window, GovernanceWindowStatusTerminalFailed)
-			if err != nil {
-				return nil, err
-			}
 		}
 		if ok {
 			applied = append(applied, plan.change)
@@ -451,7 +452,7 @@ func (r CoveredCloseSyncWindowRepair) plan(store *GovernanceStore) ([]coveredClo
 		return nil, err
 	}
 	coverage := closeSyncSnapshotCoverage(snapshots)
-	windows, err := store.ListWindowsByStatus(GovernanceWindowStatusQueued, GovernanceWindowStatusTerminalFailed)
+	windows, err := store.ListWindowsByStatus(GovernanceWindowStatusQueued, GovernanceWindowStatusTerminalFailed, GovernanceWindowStatusRunning, GovernanceWindowStatusWaitingDependency)
 	if err != nil {
 		return nil, err
 	}
@@ -459,6 +460,15 @@ func (r CoveredCloseSyncWindowRepair) plan(store *GovernanceStore) ([]coveredClo
 	for _, window := range windows {
 		if GovernanceJob(window.JobName) != GovernanceJobDailyCloseSync {
 			continue
+		}
+		if window.Status == GovernanceWindowStatusRunning {
+			run, err := store.LatestRunForWindow(window.JobName, window.TargetWindow)
+			if err != nil {
+				return nil, err
+			}
+			if run == nil || run.Status == GovernanceRunStatusRunning {
+				continue
+			}
 		}
 		target, ok := maxWindowTargetDate(window.TargetWindow)
 		if !ok || !coverage.covers(target) {
@@ -482,10 +492,241 @@ func (r CoveredCloseSyncWindowRepair) now() time.Time {
 	return time.Now()
 }
 
+func (r CoveredAuditWindowRepair) Name() string {
+	return "covered_audit_windows"
+}
+
+func (r CoveredAuditWindowRepair) Plan(store *GovernanceStore) ([]GovernanceRepairChange, error) {
+	plans, err := r.plan(store)
+	if err != nil {
+		return nil, err
+	}
+	changes := make([]GovernanceRepairChange, 0, len(plans))
+	for _, plan := range plans {
+		changes = append(changes, plan.change)
+	}
+	return changes, nil
+}
+
+func (r CoveredAuditWindowRepair) Apply(store *GovernanceStore) ([]GovernanceRepairChange, error) {
+	plans, err := r.plan(store)
+	if err != nil {
+		return nil, err
+	}
+	now := r.now()
+	applied := make([]GovernanceRepairChange, 0, len(plans))
+	for _, plan := range plans {
+		window := plan.window
+		expected := window.Status
+		window.Status = GovernanceWindowStatusPassed
+		window.LastError = ""
+		window.ResultSummary = plan.change.Reason
+		window.LeaseOwner = ""
+		window.LeaseUntil = time.Time{}
+		window.NextRunAt = time.Time{}
+		if window.EndedAt.IsZero() {
+			window.EndedAt = now
+		}
+		ok, err := store.UpdateWindowIfStatus(&window, expected)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			applied = append(applied, plan.change)
+		}
+	}
+	return applied, nil
+}
+
+func (r CoveredAuditWindowRepair) plan(store *GovernanceStore) ([]coveredCloseSyncWindowPlan, error) {
+	snapshots, err := store.ListLatestDomainHealthSnapshots()
+	if err != nil {
+		return nil, err
+	}
+	coverage := closeSyncSnapshotCoverage(snapshots)
+	windows, err := store.ListWindowsByStatus(GovernanceWindowStatusQueued, GovernanceWindowStatusTerminalFailed, GovernanceWindowStatusRunning, GovernanceWindowStatusWaitingDependency)
+	if err != nil {
+		return nil, err
+	}
+	plans := make([]coveredCloseSyncWindowPlan, 0, len(windows))
+	for _, window := range windows {
+		if GovernanceJob(window.JobName) != GovernanceJobDailyAudit {
+			continue
+		}
+		if window.Status == GovernanceWindowStatusRunning {
+			run, err := store.LatestRunForWindow(window.JobName, window.TargetWindow)
+			if err != nil {
+				return nil, err
+			}
+			if run == nil || run.Status == GovernanceRunStatusRunning {
+				continue
+			}
+		}
+		target, ok := maxWindowTargetDate(window.TargetWindow)
+		if !ok || !coverage.covers(target) {
+			continue
+		}
+		change := GovernanceRepairChange{
+			Operation: r.Name(),
+			Target:    window.WindowKey,
+			Action:    "close_covered_window",
+			Reason:    fmt.Sprintf("data health snapshots cover target %s", target),
+		}
+		plans = append(plans, coveredCloseSyncWindowPlan{change: change, window: window})
+	}
+	return plans, nil
+}
+
+func (r CoveredAuditWindowRepair) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now()
+}
+
+type coveredBacklogPlan struct {
+	change GovernanceRepairChange
+	task   GovernanceTaskRecord
+}
+
+func (r CoveredBacklogRepair) Name() string {
+	return "covered_backlog"
+}
+
+func (r CoveredBacklogRepair) Plan(store *GovernanceStore) ([]GovernanceRepairChange, error) {
+	plans, err := r.plan(store)
+	if err != nil {
+		return nil, err
+	}
+	changes := make([]GovernanceRepairChange, 0, len(plans))
+	for _, plan := range plans {
+		changes = append(changes, plan.change)
+	}
+	return changes, nil
+}
+
+func (r CoveredBacklogRepair) Apply(store *GovernanceStore) ([]GovernanceRepairChange, error) {
+	plans, err := r.plan(store)
+	if err != nil {
+		return nil, err
+	}
+	applied := make([]GovernanceRepairChange, 0, len(plans))
+	for _, plan := range plans {
+		task := plan.task
+		expected := task.Status
+		task.Status = GovernanceTaskStatusClosed
+		task.Reason = plan.change.Reason
+		ok, err := store.UpdateTaskIfStatus(&task, expected)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			applied = append(applied, plan.change)
+		}
+	}
+	return applied, nil
+}
+
+func (r CoveredBacklogRepair) plan(store *GovernanceStore) ([]coveredBacklogPlan, error) {
+	snapshots, err := store.ListLatestDomainHealthSnapshots()
+	if err != nil {
+		return nil, err
+	}
+	coverage := closeSyncSnapshotCoverage(snapshots)
+	domainCoverage := domainSnapshotCoverage(snapshots)
+	tasks, err := store.ListTasksByStatus(
+		GovernanceTaskStatusOpen,
+		GovernanceTaskStatusInProgress,
+		GovernanceTaskStatusBlocked,
+		GovernanceTaskStatusDegraded,
+		GovernanceTaskStatusUnsupported,
+	)
+	if err != nil {
+		return nil, err
+	}
+	plans := make([]coveredBacklogPlan, 0, len(tasks))
+	for _, task := range tasks {
+		target, ok, err := coveredBacklogTaskTarget(store, task)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		if isProviderBacklogTask(task) {
+			if !domainCoverage.covers(task.Domain, target) {
+				continue
+			}
+		} else if !coverage.covers(target) {
+			continue
+		}
+		change := GovernanceRepairChange{
+			Operation: r.Name(),
+			Target:    task.TaskKey,
+			Action:    "close_covered_task",
+			Reason:    fmt.Sprintf("data health snapshots cover target %s", target),
+		}
+		plans = append(plans, coveredBacklogPlan{change: change, task: task})
+	}
+	return plans, nil
+}
+
+func coveredBacklogTaskTarget(store *GovernanceStore, task GovernanceTaskRecord) (string, bool, error) {
+	switch GovernanceJob(task.JobName) {
+	case GovernanceJobDailyCloseSync, GovernanceJobDailyAudit:
+		if !isProviderBacklogTask(task) {
+			return "", false, nil
+		}
+		target, ok := maxWindowTargetDate(task.TargetWindow)
+		return target, ok, nil
+	case GovernanceJobStartupRecovery:
+		switch task.Domain {
+		case string(GovernanceJobDailyCloseSync), string(GovernanceJobDailyAudit):
+			target, ok := maxWindowTargetDate(task.TargetWindow)
+			return target, ok, nil
+		case "interrupted_run":
+			return coveredInterruptedRunTaskTarget(store, task)
+		default:
+			return "", false, nil
+		}
+	default:
+		return "", false, nil
+	}
+}
+
+func coveredInterruptedRunTaskTarget(store *GovernanceStore, task GovernanceTaskRecord) (string, bool, error) {
+	runID := strings.TrimSpace(task.Reason)
+	if runID == "" {
+		runID = strings.TrimPrefix(task.TaskKey, string(GovernanceJobStartupRecovery)+":interrupted:")
+	}
+	if runID != "" {
+		run, err := store.GetRunByRunID(runID)
+		if err != nil {
+			return "", false, err
+		}
+		if run != nil && coveredBacklogRunJobSupported(GovernanceJob(run.JobName)) {
+			target, ok := maxWindowTargetDate(run.TargetWindow)
+			return target, ok, nil
+		}
+	}
+	return coveredWindowTargetFromText(task.Reason)
+}
+
+func coveredBacklogRunJobSupported(job GovernanceJob) bool {
+	switch job {
+	case GovernanceJobDailyCloseSync, GovernanceJobDailyAudit:
+		return true
+	default:
+		return false
+	}
+}
+
 type closeSyncCoverage struct {
 	healthy    bool
 	watermarks map[string]string
 }
+
+type domainCoverage map[string]DomainHealthSnapshotRecord
 
 func closeSyncSnapshotCoverage(snapshots []DomainHealthSnapshotRecord) closeSyncCoverage {
 	required := []string{"trade_history", "live_capture", "order_history", "finance", "f10", "kline"}
@@ -505,6 +746,27 @@ func closeSyncSnapshotCoverage(snapshots []DomainHealthSnapshotRecord) closeSync
 	return coverage
 }
 
+func domainSnapshotCoverage(snapshots []DomainHealthSnapshotRecord) domainCoverage {
+	coverage := make(domainCoverage, len(snapshots))
+	for _, snapshot := range snapshots {
+		coverage[snapshot.Domain] = snapshot
+	}
+	return coverage
+}
+
+func (c domainCoverage) covers(domain, target string) bool {
+	snapshot, ok := c[domain]
+	if !ok || snapshot.Status != "healthy" || snapshot.Freshness != "fresh" || snapshot.Coverage != "covered" {
+		return false
+	}
+	switch domain {
+	case "trade_history", "live_capture", "order_history", "finance":
+		return dateWatermarkCovers(strings.TrimSpace(snapshot.LatestWatermark), target)
+	default:
+		return true
+	}
+}
+
 func (c closeSyncCoverage) covers(target string) bool {
 	if !c.healthy {
 		return false
@@ -519,6 +781,7 @@ func (c closeSyncCoverage) covers(target string) bool {
 }
 
 var yyyymmddPattern = regexp.MustCompile(`^\d{8}$`)
+var governanceWindowKeyPattern = regexp.MustCompile(`\b(daily_close_sync|daily_audit):(\d{8}(?:,\d{8})*)\b`)
 
 func maxWindowTargetDate(targetWindow string) (string, bool) {
 	maxDate := ""
@@ -536,6 +799,15 @@ func maxWindowTargetDate(targetWindow string) (string, bool) {
 
 func dateWatermarkCovers(watermark, target string) bool {
 	return yyyymmddPattern.MatchString(watermark) && watermark >= target
+}
+
+func coveredWindowTargetFromText(text string) (string, bool, error) {
+	matches := governanceWindowKeyPattern.FindStringSubmatch(text)
+	if len(matches) < 3 {
+		return "", false, nil
+	}
+	target, ok := maxWindowTargetDate(matches[2])
+	return target, ok, nil
 }
 
 type DegradedProviderBacklogRepair struct {

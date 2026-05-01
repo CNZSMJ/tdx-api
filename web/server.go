@@ -769,7 +769,25 @@ func collectStartupRecoverySnapshot(
 	if err != nil {
 		return snapshot, err
 	}
-	snapshot.OpenBacklogCount = len(openTasks)
+	for _, task := range openTasks {
+		if isAcceptedStartupRecoveryBacklogException(task) {
+			continue
+		}
+		snapshot.OpenBacklogCount++
+	}
+	allTasks, err := store.ListTasksByStatus()
+	if err != nil {
+		return snapshot, err
+	}
+	terminalRecoveryTasks := make(map[string]struct{}, len(allTasks))
+	for _, task := range allTasks {
+		if task.JobName != string(collectorpkg.GovernanceJobStartupRecovery) || task.Domain != "interrupted_run" {
+			continue
+		}
+		if task.Status == collectorpkg.GovernanceTaskStatusClosed || task.Status == collectorpkg.GovernanceTaskStatusRepaired {
+			terminalRecoveryTasks[task.TaskKey] = struct{}{}
+		}
+	}
 
 	recentRuns, err := store.ListRecentRuns(200)
 	if err != nil {
@@ -780,6 +798,9 @@ func collectStartupRecoverySnapshot(
 			continue
 		}
 		if startupReplaySupportedJob(collectorpkg.GovernanceJob(run.JobName)) {
+			if _, ok := terminalRecoveryTasks[fmt.Sprintf("%s:interrupted:%s", collectorpkg.GovernanceJobStartupRecovery, run.RunID)]; ok {
+				continue
+			}
 			snapshot.InterruptedRuns = append(snapshot.InterruptedRuns, run.RunID)
 		}
 	}
@@ -808,6 +829,12 @@ func collectStartupRecoverySnapshot(
 	}
 
 	return snapshot, nil
+}
+
+func isAcceptedStartupRecoveryBacklogException(task collectorpkg.GovernanceTaskRecord) bool {
+	return task.JobName == string(collectorpkg.GovernanceJobDailyAudit) &&
+		task.Domain == "quote_snapshot" &&
+		task.Status == collectorpkg.GovernanceTaskStatusUnsupported
 }
 
 func startupReplaySupportedJob(job collectorpkg.GovernanceJob) bool {

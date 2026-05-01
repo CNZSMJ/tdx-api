@@ -344,6 +344,13 @@ func (s *GovernanceStore) UpsertTask(record *GovernanceTaskRecord) error {
 		return err
 	}
 	if has {
+		if governanceTaskStatusIsTerminal(existing.Status) && !governanceTaskStatusIsTerminal(record.Status) {
+			record.Status = existing.Status
+			record.Reason = existing.Reason
+			if record.Priority < existing.Priority {
+				record.Priority = existing.Priority
+			}
+		}
 		if existing.Status == GovernanceTaskStatusDegraded && record.Status == GovernanceTaskStatusOpen {
 			record.Status = existing.Status
 			record.Reason = existing.Reason
@@ -356,6 +363,15 @@ func (s *GovernanceStore) UpsertTask(record *GovernanceTaskRecord) error {
 	}
 	_, err = s.engine.Insert(record)
 	return err
+}
+
+func governanceTaskStatusIsTerminal(status GovernanceTaskStatus) bool {
+	switch status {
+	case GovernanceTaskStatusRepaired, GovernanceTaskStatusClosed:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *GovernanceStore) UpdateTask(record *GovernanceTaskRecord) error {

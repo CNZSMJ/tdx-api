@@ -561,6 +561,52 @@ func TestGovernanceStoreUpsertTaskPreservesDegradedStatus(t *testing.T) {
 	}
 }
 
+func TestGovernanceStoreUpsertTaskDoesNotReopenTerminalTask(t *testing.T) {
+	paths := ResolveGovernancePaths(t.TempDir())
+	store, err := OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	defer store.Close()
+
+	if err := store.UpsertTask(&GovernanceTaskRecord{
+		TaskKey:      "startup_recovery:interrupted:run-1",
+		JobName:      string(GovernanceJobStartupRecovery),
+		Domain:       "interrupted_run",
+		Status:       GovernanceTaskStatusClosed,
+		Priority:     1,
+		Reason:       "data health snapshots cover target 20260420",
+		TargetWindow: "20260502",
+	}); err != nil {
+		t.Fatalf("seed closed task: %v", err)
+	}
+	if err := store.UpsertTask(&GovernanceTaskRecord{
+		TaskKey:      "startup_recovery:interrupted:run-1",
+		JobName:      string(GovernanceJobStartupRecovery),
+		Domain:       "interrupted_run",
+		Status:       GovernanceTaskStatusOpen,
+		Priority:     1,
+		Reason:       "run-1",
+		TargetWindow: "20260502",
+	}); err != nil {
+		t.Fatalf("re-upsert task: %v", err)
+	}
+
+	tasks, err := store.ListTasksByStatus()
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want 1", len(tasks))
+	}
+	if tasks[0].Status != GovernanceTaskStatusClosed {
+		t.Fatalf("task status = %s, want closed", tasks[0].Status)
+	}
+	if tasks[0].Reason != "data health snapshots cover target 20260420" {
+		t.Fatalf("task reason = %q, want preserved closed reason", tasks[0].Reason)
+	}
+}
+
 func TestGovernanceStoreListsLowerNumericPrioritiesFirst(t *testing.T) {
 	paths := ResolveGovernancePaths(t.TempDir())
 	store, err := OpenGovernanceStore(paths.DBPath)

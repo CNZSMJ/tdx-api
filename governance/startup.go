@@ -76,6 +76,7 @@ func (r *StartupRecoveryRunner) Run(ctx context.Context, trigger string) (*colle
 	}); err != nil {
 		return nil, err
 	}
+	defer r.cfg.Store.DeleteLockMetadata("system_governance")
 
 	snapshot, err := r.cfg.Inspect(ctx, startedAt)
 	if err != nil {
