@@ -260,6 +260,22 @@ func (s *GovernanceStore) GetRunByRunID(runID string) (*GovernanceRunRecord, err
 	return record, nil
 }
 
+func (s *GovernanceStore) LatestRunForWindow(jobName, targetWindow string) (*GovernanceRunRecord, error) {
+	record := new(GovernanceRunRecord)
+	has, err := s.engine.
+		Where("JobName = ? AND TargetWindow = ?", jobName, targetWindow).
+		Desc("StartedAt").
+		Desc("ID").
+		Get(record)
+	if err != nil {
+		return nil, err
+	}
+	if !has {
+		return nil, nil
+	}
+	return record, nil
+}
+
 func (s *GovernanceStore) UpsertTask(record *GovernanceTaskRecord) error {
 	existing := new(GovernanceTaskRecord)
 	has, err := s.engine.Where("TaskKey = ?", record.TaskKey).Get(existing)
@@ -332,6 +348,15 @@ func (s *GovernanceStore) UpdateWindow(record *GovernanceWindowRecord) error {
 	}
 	_, err := s.engine.Where("WindowKey = ?", record.WindowKey).AllCols().Update(record)
 	return err
+}
+
+func (s *GovernanceStore) UpdateWindowIfStatus(record *GovernanceWindowRecord, expected GovernanceWindowStatus) (bool, error) {
+	if record.ID > 0 {
+		affected, err := s.engine.Where("ID = ? AND Status = ?", record.ID, expected).AllCols().Update(record)
+		return affected > 0, err
+	}
+	affected, err := s.engine.Where("WindowKey = ? AND Status = ?", record.WindowKey, expected).AllCols().Update(record)
+	return affected > 0, err
 }
 
 func (s *GovernanceStore) GetWindowByKey(windowKey string) (*GovernanceWindowRecord, error) {

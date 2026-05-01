@@ -349,6 +349,257 @@ func TestStartupRecoveryDeferredBacklogRepairReopensOnlyLegacyDeferredTasks(t *t
 	}
 }
 
+func TestTerminalGovernanceWindowRepairRequeuesOnlySafeTerminalWindows(t *testing.T) {
+	paths := ResolveGovernancePaths(t.TempDir())
+	store, err := OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	now := fixedRepairNow()
+	closeTarget := "20260428,20260429"
+	closeKey := GovernanceWindowKey(GovernanceJobDailyCloseSync, closeTarget)
+	auditMissingTarget := "20260427,20260428"
+	auditMissingKey := GovernanceWindowKey(GovernanceJobDailyAudit, auditMissingTarget)
+	auditReadyTarget := "20260426,20260427"
+	auditReadyKey := GovernanceWindowKey(GovernanceJobDailyAudit, auditReadyTarget)
+	closeReadyKey := GovernanceWindowKey(GovernanceJobDailyCloseSync, auditReadyTarget)
+	for _, window := range []GovernanceWindowRecord{
+		{
+			WindowKey:     closeKey,
+			JobName:       string(GovernanceJobDailyCloseSync),
+			TargetWindow:  closeTarget,
+			DueAt:         now.Add(-3 * time.Hour),
+			Priority:      3,
+			Status:        GovernanceWindowStatusTerminalFailed,
+			LastError:     "governance window lease expired",
+			ResultSummary: "governance window lease expired",
+		},
+		{
+			WindowKey:     auditMissingKey,
+			JobName:       string(GovernanceJobDailyAudit),
+			TargetWindow:  auditMissingTarget,
+			DueAt:         now.Add(-2 * time.Hour),
+			Priority:      4,
+			Status:        GovernanceWindowStatusTerminalFailed,
+			DependencyKey: GovernanceWindowKey(GovernanceJobDailyCloseSync, auditMissingTarget),
+			LastError:     "missing dependency " + GovernanceWindowKey(GovernanceJobDailyCloseSync, auditMissingTarget),
+			ResultSummary: "dependency missing; terminally deferred " + GovernanceWindowKey(GovernanceJobDailyCloseSync, auditMissingTarget),
+		},
+		{
+			WindowKey:    closeReadyKey,
+			JobName:      string(GovernanceJobDailyCloseSync),
+			TargetWindow: auditReadyTarget,
+			DueAt:        now.Add(-3 * time.Hour),
+			Priority:     3,
+			Status:       GovernanceWindowStatusPassed,
+			RunID:        "run-close-ready",
+		},
+		{
+			WindowKey:     auditReadyKey,
+			JobName:       string(GovernanceJobDailyAudit),
+			TargetWindow:  auditReadyTarget,
+			DueAt:         now.Add(-2 * time.Hour),
+			Priority:      4,
+			Status:        GovernanceWindowStatusTerminalFailed,
+			DependencyKey: closeReadyKey,
+			LastError:     "context canceled",
+			ResultSummary: "run_id=run-audit-interrupted status=interrupted target=" + auditReadyTarget,
+		},
+	} {
+		window := window
+		if err := store.UpsertWindow(&window); err != nil {
+			t.Fatalf("seed window %s: %v", window.WindowKey, err)
+		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close governance store: %v", err)
+	}
+
+	result, err := RunGovernanceRepairBatch(GovernanceRepairBatchOptions{
+		DBPath: paths.DBPath,
+		Mode:   GovernanceRepairModeDryRun,
+		Now:    fixedRepairNow,
+	}, []GovernanceRepairOperation{
+		TerminalGovernanceWindowRepair{Now: fixedRepairNow},
+	})
+	if err != nil {
+		t.Fatalf("dry-run terminal window repair: %v", err)
+	}
+	if len(result.Operations) != 1 || result.Operations[0].Planned != 3 || result.Operations[0].Applied != 0 {
+		t.Fatalf("unexpected dry-run result: %+v", result.Operations)
+	}
+	actions := make(map[string]string, len(result.Operations[0].Changes))
+	for _, change := range result.Operations[0].Changes {
+		actions[change.Target] = change.Action
+	}
+	if actions[closeKey] != "requeue_window" || actions[auditReadyKey] != "requeue_window" || actions[auditMissingKey] != "keep_terminal_failed" {
+		t.Fatalf("unexpected planned actions: %+v", actions)
+	}
+
+	result, err = RunGovernanceRepairBatch(GovernanceRepairBatchOptions{
+		DBPath:    paths.DBPath,
+		BackupDir: filepath.Join(paths.BaseDataDir, "backups"),
+		Mode:      GovernanceRepairModeApply,
+		Now:       fixedRepairNow,
+	}, []GovernanceRepairOperation{
+		TerminalGovernanceWindowRepair{Now: fixedRepairNow},
+	})
+	if err != nil {
+		t.Fatalf("apply terminal window repair: %v", err)
+	}
+	if len(result.Operations) != 1 || result.Operations[0].Planned != 3 || result.Operations[0].Applied != 2 {
+		t.Fatalf("unexpected apply result: %+v", result.Operations)
+	}
+
+	store, err = OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("reopen governance store: %v", err)
+	}
+	defer store.Close()
+	for _, key := range []string{closeKey, auditReadyKey} {
+		window, err := store.GetWindowByKey(key)
+		if err != nil {
+			t.Fatalf("get window %s: %v", key, err)
+		}
+		if window == nil || window.Status != GovernanceWindowStatusQueued {
+			t.Fatalf("window %s = %+v, want queued", key, window)
+		}
+		if window.LastError != "" || window.LeaseOwner != "" || !window.LeaseUntil.IsZero() || !window.NextRunAt.IsZero() {
+			t.Fatalf("window %s kept stale failure metadata: %+v", key, window)
+		}
+	}
+	auditMissing, err := store.GetWindowByKey(auditMissingKey)
+	if err != nil {
+		t.Fatalf("get missing-dependency audit window: %v", err)
+	}
+	if auditMissing == nil || auditMissing.Status != GovernanceWindowStatusTerminalFailed {
+		t.Fatalf("missing-dependency audit window = %+v, want terminal_failed", auditMissing)
+	}
+}
+
+func TestTerminalGovernanceWindowRepairMirrorsCompletedDurableRun(t *testing.T) {
+	paths := ResolveGovernancePaths(t.TempDir())
+	store, err := OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	now := fixedRepairNow()
+	targetWindow := "20260428,20260429"
+	windowKey := GovernanceWindowKey(GovernanceJobDailyCloseSync, targetWindow)
+	if err := store.UpsertWindow(&GovernanceWindowRecord{
+		WindowKey:    windowKey,
+		JobName:      string(GovernanceJobDailyCloseSync),
+		TargetWindow: targetWindow,
+		DueAt:        now.Add(-3 * time.Hour),
+		Priority:     3,
+		Status:       GovernanceWindowStatusTerminalFailed,
+		LastError:    "governance window lease expired",
+		LeaseOwner:   "old-dispatcher",
+		LeaseUntil:   now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("seed window: %v", err)
+	}
+	runEndedAt := now.Add(-time.Minute)
+	if err := store.AddRun(&GovernanceRunRecord{
+		RunID:        "run-close-passed",
+		JobName:      string(GovernanceJobDailyCloseSync),
+		Status:       GovernanceRunStatusPassed,
+		TargetWindow: targetWindow,
+		StartedAt:    now.Add(-2 * time.Hour),
+		EndedAt:      runEndedAt,
+	}); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close governance store: %v", err)
+	}
+
+	result, err := RunGovernanceRepairBatch(GovernanceRepairBatchOptions{
+		DBPath:    paths.DBPath,
+		BackupDir: filepath.Join(paths.BaseDataDir, "backups"),
+		Mode:      GovernanceRepairModeApply,
+		Now:       fixedRepairNow,
+	}, []GovernanceRepairOperation{
+		TerminalGovernanceWindowRepair{Now: fixedRepairNow},
+	})
+	if err != nil {
+		t.Fatalf("apply terminal window repair: %v", err)
+	}
+	if len(result.Operations) != 1 || result.Operations[0].Planned != 1 || result.Operations[0].Applied != 1 {
+		t.Fatalf("unexpected apply result: %+v", result.Operations)
+	}
+
+	store, err = OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("reopen governance store: %v", err)
+	}
+	defer store.Close()
+	window, err := store.GetWindowByKey(windowKey)
+	if err != nil {
+		t.Fatalf("get window: %v", err)
+	}
+	if window == nil || window.Status != GovernanceWindowStatusPassed {
+		t.Fatalf("window = %+v, want passed", window)
+	}
+	if window.RunID != "run-close-passed" || !window.EndedAt.Equal(runEndedAt) || window.LastError != "" {
+		t.Fatalf("window did not mirror completed run: %+v", window)
+	}
+}
+
+func TestTerminalGovernanceWindowRepairDoesNotOverwriteConcurrentCompletion(t *testing.T) {
+	paths := ResolveGovernancePaths(t.TempDir())
+	store, err := OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	now := fixedRepairNow()
+	targetWindow := "20260428,20260429"
+	windowKey := GovernanceWindowKey(GovernanceJobDailyCloseSync, targetWindow)
+	if err := store.UpsertWindow(&GovernanceWindowRecord{
+		WindowKey:    windowKey,
+		JobName:      string(GovernanceJobDailyCloseSync),
+		TargetWindow: targetWindow,
+		DueAt:        now.Add(-3 * time.Hour),
+		Priority:     3,
+		Status:       GovernanceWindowStatusTerminalFailed,
+		LastError:    "governance window lease expired",
+	}); err != nil {
+		t.Fatalf("seed window: %v", err)
+	}
+	planned, err := (TerminalGovernanceWindowRepair{Now: fixedRepairNow}).Plan(store)
+	if err != nil {
+		t.Fatalf("plan terminal window repair: %v", err)
+	}
+	if len(planned) != 1 || planned[0].Action != "requeue_window" {
+		t.Fatalf("unexpected plan: %+v", planned)
+	}
+	window, err := store.GetWindowByKey(windowKey)
+	if err != nil {
+		t.Fatalf("get window: %v", err)
+	}
+	window.Status = GovernanceWindowStatusPassed
+	window.LastError = ""
+	window.RunID = "run-concurrent-pass"
+	if err := store.UpdateWindow(window); err != nil {
+		t.Fatalf("mark window concurrently passed: %v", err)
+	}
+
+	applied, err := (TerminalGovernanceWindowRepair{Now: fixedRepairNow}).Apply(store)
+	if err != nil {
+		t.Fatalf("apply terminal window repair: %v", err)
+	}
+	if len(applied) != 0 {
+		t.Fatalf("repair overwrote concurrent completion: %+v", applied)
+	}
+	window, err = store.GetWindowByKey(windowKey)
+	if err != nil {
+		t.Fatalf("reload window: %v", err)
+	}
+	if window == nil || window.Status != GovernanceWindowStatusPassed || window.RunID != "run-concurrent-pass" {
+		t.Fatalf("concurrent completion was overwritten: %+v", window)
+	}
+}
+
 func fixedRepairNow() time.Time {
 	return time.Date(2026, 4, 28, 21, 0, 0, 0, time.UTC)
 }

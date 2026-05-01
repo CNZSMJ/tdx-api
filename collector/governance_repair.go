@@ -170,6 +170,168 @@ func requeuedStartupRecoveryTaskReason(task GovernanceTaskRecord) string {
 	return "legacy startup recovery deferred backlog requeued"
 }
 
+type TerminalGovernanceWindowRepair struct {
+	Now func() time.Time
+}
+
+type terminalGovernanceWindowRepairPlan struct {
+	change GovernanceRepairChange
+	window GovernanceWindowRecord
+	run    *GovernanceRunRecord
+}
+
+func (r TerminalGovernanceWindowRepair) Name() string {
+	return "terminal_governance_windows"
+}
+
+func (r TerminalGovernanceWindowRepair) Plan(store *GovernanceStore) ([]GovernanceRepairChange, error) {
+	plans, err := r.plan(store)
+	if err != nil {
+		return nil, err
+	}
+	changes := make([]GovernanceRepairChange, 0, len(plans))
+	for _, plan := range plans {
+		changes = append(changes, plan.change)
+	}
+	return changes, nil
+}
+
+func (r TerminalGovernanceWindowRepair) Apply(store *GovernanceStore) ([]GovernanceRepairChange, error) {
+	plans, err := r.plan(store)
+	if err != nil {
+		return nil, err
+	}
+	now := r.now()
+	applied := make([]GovernanceRepairChange, 0, len(plans))
+	for _, plan := range plans {
+		if plan.change.Action == "keep_terminal_failed" {
+			continue
+		}
+		window := plan.window
+		switch plan.change.Action {
+		case "mirror_completed_run":
+			if plan.run == nil {
+				continue
+			}
+			window.Status = governanceWindowStatusFromRunStatus(plan.run.Status)
+			window.RunID = plan.run.RunID
+			window.ResultSummary = fmt.Sprintf("run_id=%s status=%s target=%s", plan.run.RunID, plan.run.Status, plan.run.TargetWindow)
+			window.LastError = ""
+			if !plan.run.EndedAt.IsZero() {
+				window.EndedAt = plan.run.EndedAt
+			} else {
+				window.EndedAt = now
+			}
+		case "requeue_window":
+			window.Status = GovernanceWindowStatusQueued
+			window.NextRunAt = time.Time{}
+			window.EnqueuedAt = now
+			window.EndedAt = time.Time{}
+			window.LastError = ""
+			window.ResultSummary = plan.change.Reason
+		default:
+			continue
+		}
+		window.LeaseOwner = ""
+		window.LeaseUntil = time.Time{}
+		ok, err := store.UpdateWindowIfStatus(&window, GovernanceWindowStatusTerminalFailed)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			applied = append(applied, plan.change)
+		}
+	}
+	return applied, nil
+}
+
+func (r TerminalGovernanceWindowRepair) plan(store *GovernanceStore) ([]terminalGovernanceWindowRepairPlan, error) {
+	windows, err := store.ListWindowsByStatus(GovernanceWindowStatusTerminalFailed)
+	if err != nil {
+		return nil, err
+	}
+	plans := make([]terminalGovernanceWindowRepairPlan, 0, len(windows))
+	for _, window := range windows {
+		plan, err := r.planWindow(store, window)
+		if err != nil {
+			return nil, err
+		}
+		plans = append(plans, plan)
+	}
+	return plans, nil
+}
+
+func (r TerminalGovernanceWindowRepair) planWindow(store *GovernanceStore, window GovernanceWindowRecord) (terminalGovernanceWindowRepairPlan, error) {
+	latestRun, err := store.LatestRunForWindow(window.JobName, window.TargetWindow)
+	if err != nil {
+		return terminalGovernanceWindowRepairPlan{}, err
+	}
+	change := GovernanceRepairChange{
+		Operation: r.Name(),
+		Target:    window.WindowKey,
+	}
+	if latestRun != nil {
+		switch governanceWindowStatusFromRunStatus(latestRun.Status) {
+		case GovernanceWindowStatusPassed, GovernanceWindowStatusPartial, GovernanceWindowStatusSkipped:
+			change.Action = "mirror_completed_run"
+			change.Reason = fmt.Sprintf("durable run_id=%s ended with status=%s", latestRun.RunID, latestRun.Status)
+			return terminalGovernanceWindowRepairPlan{change: change, window: window, run: latestRun}, nil
+		}
+		if latestRun.Status == GovernanceRunStatusRunning {
+			change.Action = "keep_terminal_failed"
+			change.Reason = fmt.Sprintf("latest durable run_id=%s is still running", latestRun.RunID)
+			return terminalGovernanceWindowRepairPlan{change: change, window: window, run: latestRun}, nil
+		}
+	}
+
+	ready, reason, err := terminalWindowDependencyReady(store, window)
+	if err != nil {
+		return terminalGovernanceWindowRepairPlan{}, err
+	}
+	if !ready {
+		change.Action = "keep_terminal_failed"
+		change.Reason = reason
+		return terminalGovernanceWindowRepairPlan{change: change, window: window, run: latestRun}, nil
+	}
+	change.Action = "requeue_window"
+	if latestRun != nil {
+		change.Reason = fmt.Sprintf("durable run_id=%s ended with status=%s; dependency state allows replay", latestRun.RunID, latestRun.Status)
+	} else {
+		change.Reason = "no durable completed run; dependency state allows replay"
+	}
+	return terminalGovernanceWindowRepairPlan{change: change, window: window, run: latestRun}, nil
+}
+
+func (r TerminalGovernanceWindowRepair) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now()
+}
+
+func terminalWindowDependencyReady(store *GovernanceStore, window GovernanceWindowRecord) (bool, string, error) {
+	dependencyKey := strings.TrimSpace(window.DependencyKey)
+	if dependencyKey == "" {
+		dependencyKey = GovernanceWindowDependencyKey(GovernanceJob(window.JobName), window.TargetWindow)
+	}
+	if dependencyKey == "" {
+		return true, "", nil
+	}
+	dependency, err := store.GetWindowByKey(dependencyKey)
+	if err != nil {
+		return false, "", err
+	}
+	if dependency == nil {
+		return false, "missing dependency " + dependencyKey, nil
+	}
+	switch dependency.Status {
+	case GovernanceWindowStatusPassed, GovernanceWindowStatusPartial, GovernanceWindowStatusSkipped:
+		return true, "", nil
+	default:
+		return false, fmt.Sprintf("dependency %s is %s", dependencyKey, dependency.Status), nil
+	}
+}
+
 func RunGovernanceRepairBatch(opts GovernanceRepairBatchOptions, operations []GovernanceRepairOperation) (*GovernanceRepairBatchResult, error) {
 	if opts.DBPath == "" {
 		opts.DBPath = ResolveGovernancePaths("").DBPath

@@ -154,3 +154,59 @@ func TestRunCLIRequeuesStartupRecoveryDeferredBacklog(t *testing.T) {
 		t.Fatalf("deferred task was not reopened: %+v", openTasks)
 	}
 }
+
+func TestRunCLIRepairsTerminalGovernanceWindows(t *testing.T) {
+	baseDir := t.TempDir()
+	paths := collectorpkg.ResolveGovernancePaths(baseDir)
+	store, err := collectorpkg.OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	now := time.Date(2026, 4, 28, 21, 0, 0, 0, time.UTC)
+	windowKey := collectorpkg.GovernanceWindowKey(collectorpkg.GovernanceJobDailyCloseSync, "20260428,20260429")
+	if err := store.UpsertWindow(&collectorpkg.GovernanceWindowRecord{
+		WindowKey:    windowKey,
+		JobName:      string(collectorpkg.GovernanceJobDailyCloseSync),
+		TargetWindow: "20260428,20260429",
+		DueAt:        now.Add(-3 * time.Hour),
+		Priority:     3,
+		Status:       collectorpkg.GovernanceWindowStatusTerminalFailed,
+		LastError:    "governance window lease expired",
+	}); err != nil {
+		t.Fatalf("seed window: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close governance store: %v", err)
+	}
+
+	var out bytes.Buffer
+	err = runCLI([]string{
+		"--governance-db", paths.DBPath,
+		"--backup-dir", filepath.Join(baseDir, "backups"),
+		"--repair", "terminal-windows",
+		"--apply",
+	}, &out)
+	if err != nil {
+		t.Fatalf("run cli: %v", err)
+	}
+
+	var result collectorpkg.GovernanceRepairBatchResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("decode output %q: %v", out.String(), err)
+	}
+	if len(result.Operations) != 1 || result.Operations[0].Name != "terminal_governance_windows" || result.Operations[0].Applied != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	store, err = collectorpkg.OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("reopen governance store: %v", err)
+	}
+	defer store.Close()
+	window, err := store.GetWindowByKey(windowKey)
+	if err != nil {
+		t.Fatalf("get window: %v", err)
+	}
+	if window == nil || window.Status != collectorpkg.GovernanceWindowStatusQueued {
+		t.Fatalf("terminal window was not requeued: %+v", window)
+	}
+}
