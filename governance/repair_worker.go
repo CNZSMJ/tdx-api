@@ -96,10 +96,16 @@ func (r *RepairWorkerRunner) claimNextOpenTask() (collectorpkg.GovernanceTaskRec
 }
 
 func (r *RepairWorkerRunner) persistTask(task collectorpkg.GovernanceTaskRecord) error {
-	lock, err := collectorpkg.AcquireGovernanceLock(r.cfg.Paths.LockPath)
-	if err != nil {
-		return err
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		lock, err := collectorpkg.AcquireGovernanceLock(r.cfg.Paths.LockPath)
+		if err == nil {
+			defer lock.Release()
+			return r.cfg.Store.UpsertTask(&task)
+		}
+		if !collectorpkg.IsGovernanceLockHeld(err) || !time.Now().Before(deadline) {
+			return err
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
-	defer lock.Release()
-	return r.cfg.Store.UpsertTask(&task)
 }

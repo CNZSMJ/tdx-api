@@ -155,3 +155,85 @@ func TestRepairWorkerClaimsTaskBeforeExecutionAndReleasesLockForNestedGovernance
 		t.Fatalf("task status = %s, want repaired", tasks[0].Status)
 	}
 }
+
+func TestRepairWorkerRetriesFinalPersistWhenGovernanceLockIsTemporarilyHeld(t *testing.T) {
+	paths := collectorpkg.ResolveGovernancePaths(t.TempDir())
+	store, err := collectorpkg.OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	defer store.Close()
+
+	task := collectorpkg.GovernanceTaskRecord{
+		TaskKey:      "startup_recovery:interrupted:daily-close-sync-run",
+		JobName:      string(collectorpkg.GovernanceJobStartupRecovery),
+		Domain:       "interrupted_run",
+		Status:       collectorpkg.GovernanceTaskStatusOpen,
+		Priority:     1,
+		Reason:       "daily-close-sync-run",
+		TargetWindow: "20260502",
+	}
+	if err := store.UpsertTask(&task); err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+
+	holdLock := make(chan struct{})
+	releaseLock := make(chan struct{})
+	lockReleased := make(chan struct{})
+	runner, err := NewRepairWorkerRunner(RepairWorkerConfig{
+		Store: store,
+		Paths: paths,
+		Now: func() time.Time {
+			return time.Date(2026, 5, 2, 0, 20, 0, 0, time.Local)
+		},
+		Execute: func(ctx context.Context, task collectorpkg.GovernanceTaskRecord) (collectorpkg.GovernanceTaskStatus, string, error) {
+			lock, err := collectorpkg.AcquireGovernanceLock(paths.LockPath)
+			if err != nil {
+				return "", "", err
+			}
+			close(holdLock)
+			go func() {
+				<-releaseLock
+				_ = lock.Release()
+				close(lockReleased)
+			}()
+			return collectorpkg.GovernanceTaskStatusRepaired, "interrupted run replayed", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("new repair worker runner: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := runner.Run(context.Background(), 1)
+		done <- err
+	}()
+	<-holdLock
+	time.Sleep(20 * time.Millisecond)
+	close(releaseLock)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run repair worker: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("repair worker did not finish after lock release")
+	}
+	<-lockReleased
+
+	tasks, err := store.ListTasksByStatus()
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want 1", len(tasks))
+	}
+	if tasks[0].Status == collectorpkg.GovernanceTaskStatusInProgress {
+		t.Fatalf("task remained in_progress after worker returned: %+v", tasks[0])
+	}
+	if tasks[0].Status != collectorpkg.GovernanceTaskStatusRepaired {
+		t.Fatalf("task status = %s, want repaired", tasks[0].Status)
+	}
+}
