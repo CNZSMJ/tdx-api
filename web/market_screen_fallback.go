@@ -42,6 +42,15 @@ type marketStatsRequest struct {
 	hasTradingDate bool
 }
 
+type marketBlockRequest struct {
+	key            blockProviderKey
+	sortBy         string
+	order          string
+	limit          int
+	tradingDate    string
+	hasTradingDate bool
+}
+
 var marketScreenNow = time.Now
 
 func parseMarketScreenRequest(r *http.Request) (marketScreenRequest, error) {
@@ -472,6 +481,340 @@ func buildMarketStatsCloseSnapshotResponse(req marketStatsRequest) (map[string]i
 	}
 	addMarketScreenCloseSnapshotMeta(resp, tradingDate)
 	return resp, true
+}
+
+func parseMarketBlockRequest(r *http.Request, requirement blockProviderKeyRequirement) (marketBlockRequest, error) {
+	key, err := parseBlockProviderKey(r, requirement)
+	if err != nil {
+		return marketBlockRequest{}, err
+	}
+	tradingDateRaw := strings.TrimSpace(r.URL.Query().Get("trading_date"))
+	tradingDate := ""
+	if tradingDateRaw != "" {
+		parsed, err := parseMarketScreenTradingDate(tradingDateRaw)
+		if err != nil {
+			return marketBlockRequest{}, err
+		}
+		tradingDate = parsed
+	}
+	return marketBlockRequest{
+		key:            key,
+		sortBy:         strings.TrimSpace(r.URL.Query().Get("sort_by")),
+		order:          strings.TrimSpace(r.URL.Query().Get("order")),
+		limit:          parsePositiveInt(strings.TrimSpace(r.URL.Query().Get("limit"))),
+		tradingDate:    tradingDate,
+		hasTradingDate: tradingDate != "",
+	}, nil
+}
+
+func buildBlockRankingTickerResponse(req marketBlockRequest, ts *collectorpkg.TickerService) (map[string]interface{}, bool) {
+	if !marketScreenShouldUseTicker(marketScreenRequest{
+		tradingDate:    req.tradingDate,
+		hasTradingDate: req.hasTradingDate,
+	}, ts) {
+		return nil, false
+	}
+	ranks := ts.GetBlockRanking(req.key.Source, req.key.BlockType, req.sortBy, req.order, req.limit)
+	items := make([]map[string]interface{}, 0, len(ranks))
+	for _, rank := range ranks {
+		if req.key.Name != "" && rank.Name != req.key.Name {
+			continue
+		}
+		items = append(items, blockRankToProviderMap(rank))
+	}
+	resp := map[string]interface{}{
+		"count":        len(items),
+		"items":        items,
+		"data_source":  "ticker",
+		"trading_date": ts.UpdatedAt().In(time.Local).Format("20060102"),
+	}
+	addTickerMeta(resp, ts)
+	return resp, true
+}
+
+func buildBlockStocksTickerResponse(req marketBlockRequest, ts *collectorpkg.TickerService) (map[string]interface{}, bool) {
+	if !marketScreenShouldUseTicker(marketScreenRequest{
+		tradingDate:    req.tradingDate,
+		hasTradingDate: req.hasTradingDate,
+	}, ts) {
+		return nil, false
+	}
+	blockPct, ticks := ts.GetBlockStocks(req.key.Source, req.key.BlockType, req.key.Name, req.sortBy, req.order, req.limit)
+	items := make([]map[string]interface{}, 0, len(ticks))
+	for _, tick := range ticks {
+		items = append(items, stockTickToProviderMap(tick))
+	}
+	resp := map[string]interface{}{
+		"source":           req.key.Source,
+		"block_type":       req.key.BlockType,
+		"name":             req.key.Name,
+		"block_pct_change": blockPct,
+		"count":            len(items),
+		"items":            items,
+		"data_source":      "ticker",
+		"trading_date":     ts.UpdatedAt().In(time.Local).Format("20060102"),
+	}
+	addTickerMeta(resp, ts)
+	return resp, true
+}
+
+func buildBlockRankingCloseSnapshotResponse(req marketBlockRequest) (map[string]interface{}, bool) {
+	ticks, tradingDate, ok := loadMarketScreenCloseTicks("all", req.tradingDate)
+	if !ok && !req.hasTradingDate {
+		return nil, false
+	}
+	items := make([]map[string]interface{}, 0)
+	if ok {
+		items = buildBlockRankingCloseSnapshotItems(req, ticks)
+	}
+	resp := map[string]interface{}{
+		"count": len(items),
+		"items": items,
+	}
+	if req.hasTradingDate && !ok {
+		addMarketScreenCloseSnapshotMeta(resp, req.tradingDate)
+		resp["status"] = "empty"
+		resp["status_hint"] = "指定 trading_date 无日K收盘快照"
+		return resp, true
+	}
+	addMarketScreenCloseSnapshotMeta(resp, tradingDate)
+	return resp, true
+}
+
+func buildBlockRankingCloseSnapshotItems(req marketBlockRequest, ticks []collectorpkg.StockTick) []map[string]interface{} {
+	tickByCode := make(map[string]collectorpkg.StockTick, len(ticks)*2)
+	for _, tick := range ticks {
+		addMarketScreenTickLookup(tickByCode, tick)
+	}
+	groups, err := loadMarketScreenBlockGroups(req.key)
+	if err != nil || len(groups) == 0 {
+		return nil
+	}
+	ranks := make([]collectorpkg.BlockRank, 0, len(groups))
+	for _, group := range groups {
+		members, err := loadMarketScreenBlockMembers(group.Source, group.BlockType, group.Name)
+		if err != nil || len(members) == 0 {
+			continue
+		}
+		rank := collectorpkg.BlockRank{
+			Name:        group.Name,
+			Source:      group.Source,
+			BlockType:   group.BlockType,
+			MemberCount: len(members),
+		}
+		var totalPct float64
+		var leading *collectorpkg.StockTick
+		for _, code := range members {
+			tick, ok := tickByCode[code]
+			if !ok {
+				continue
+			}
+			rank.AvailableCount++
+			totalPct += tick.PctChange
+			rank.Amount += tick.Amount
+			if tick.PctChange > 0 {
+				rank.RiseCount++
+			} else if tick.PctChange < 0 {
+				rank.FallCount++
+			} else {
+				rank.FlatCount++
+			}
+			if tick.IsLimitUp {
+				rank.LimitUpCount++
+			}
+			if tick.IsLimitDown {
+				rank.LimitDownCount++
+			}
+			if leading == nil || tick.PctChange > leading.PctChange {
+				copyTick := tick
+				leading = &copyTick
+			}
+		}
+		if rank.AvailableCount == 0 {
+			continue
+		}
+		rank.PctChange = roundMarketScreen(totalPct/float64(rank.AvailableCount), 2)
+		if leading != nil {
+			rank.LeadingCode = leading.Code
+			rank.LeadingName = leading.Name
+			rank.LeadingPct = leading.PctChange
+		}
+		ranks = append(ranks, rank)
+	}
+	sortMarketScreenBlockRanks(ranks, req.sortBy, req.order)
+	if req.limit > 0 && len(ranks) > req.limit {
+		ranks = ranks[:req.limit]
+	}
+	items := make([]map[string]interface{}, 0, len(ranks))
+	for _, rank := range ranks {
+		items = append(items, blockRankToProviderMap(rank))
+	}
+	return items
+}
+
+func buildBlockStocksCloseSnapshotResponse(req marketBlockRequest) (map[string]interface{}, bool) {
+	ticks, tradingDate, ok := loadMarketScreenCloseTicks("all", req.tradingDate)
+	if !ok && !req.hasTradingDate {
+		return nil, false
+	}
+	items := make([]map[string]interface{}, 0)
+	blockPct := 0.0
+	if ok {
+		blockPct, items = buildBlockStocksCloseSnapshotItems(req, ticks)
+	}
+	resp := map[string]interface{}{
+		"source":           req.key.Source,
+		"block_type":       req.key.BlockType,
+		"name":             req.key.Name,
+		"block_pct_change": blockPct,
+		"count":            len(items),
+		"items":            items,
+	}
+	if req.hasTradingDate && !ok {
+		addMarketScreenCloseSnapshotMeta(resp, req.tradingDate)
+		resp["status"] = "empty"
+		resp["status_hint"] = "指定 trading_date 无日K收盘快照"
+		return resp, true
+	}
+	addMarketScreenCloseSnapshotMeta(resp, tradingDate)
+	return resp, true
+}
+
+func buildBlockStocksCloseSnapshotItems(req marketBlockRequest, ticks []collectorpkg.StockTick) (float64, []map[string]interface{}) {
+	tickByCode := make(map[string]collectorpkg.StockTick, len(ticks)*2)
+	for _, tick := range ticks {
+		addMarketScreenTickLookup(tickByCode, tick)
+	}
+	members, err := loadMarketScreenBlockMembers(req.key.Source, req.key.BlockType, req.key.Name)
+	if err != nil || len(members) == 0 {
+		return 0, nil
+	}
+	blockTicks := make([]collectorpkg.StockTick, 0, len(members))
+	var totalPct float64
+	for _, code := range members {
+		tick, ok := tickByCode[code]
+		if !ok {
+			continue
+		}
+		totalPct += tick.PctChange
+		blockTicks = append(blockTicks, tick)
+	}
+	if len(blockTicks) == 0 {
+		return 0, nil
+	}
+	sortMarketScreenTicks(blockTicks, req.sortBy, req.order)
+	if req.limit > 0 && len(blockTicks) > req.limit {
+		blockTicks = blockTicks[:req.limit]
+	}
+	items := make([]map[string]interface{}, 0, len(blockTicks))
+	for _, tick := range blockTicks {
+		items = append(items, stockTickToProviderMap(tick))
+	}
+	return roundMarketScreen(totalPct/float64(len(blockTicks)), 2), items
+}
+
+func blockRankToProviderMap(rank collectorpkg.BlockRank) map[string]interface{} {
+	return map[string]interface{}{
+		"source":            rank.Source,
+		"block_type":        rank.BlockType,
+		"name":              rank.Name,
+		"pct_change":        rank.PctChange,
+		"amount":            rank.Amount,
+		"member_count":      rank.MemberCount,
+		"available_count":   rank.AvailableCount,
+		"rise_count":        rank.RiseCount,
+		"fall_count":        rank.FallCount,
+		"flat_count":        rank.FlatCount,
+		"limit_up_count":    rank.LimitUpCount,
+		"limit_down_count":  rank.LimitDownCount,
+		"leading_full_code": rank.LeadingCode,
+		"leading_name":      rank.LeadingName,
+		"leading_pct":       rank.LeadingPct,
+		"leading_code":      bareCode(rank.LeadingCode),
+	}
+}
+
+func addMarketScreenTickLookup(dst map[string]collectorpkg.StockTick, tick collectorpkg.StockTick) {
+	dst[tick.Code] = tick
+	dst[bareCode(tick.Code)] = tick
+}
+
+func loadMarketScreenBlockGroups(key blockProviderKey) ([]collectorpkg.BlockGroupRecord, error) {
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(databaseDir, "block", "blocks.db")+"?mode=ro")
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+
+	query := `SELECT Name, BlockType, Source, StockCount, UpdatedAt FROM block_group WHERE Source = ?`
+	args := []interface{}{key.Source}
+	if key.BlockType != "" {
+		query += ` AND BlockType = ?`
+		args = append(args, key.BlockType)
+	}
+	if key.Name != "" {
+		query += ` AND Name = ?`
+		args = append(args, key.Name)
+	}
+	query += ` ORDER BY Name`
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	groups := make([]collectorpkg.BlockGroupRecord, 0, 256)
+	for rows.Next() {
+		var group collectorpkg.BlockGroupRecord
+		if err := rows.Scan(&group.Name, &group.BlockType, &group.Source, &group.StockCount, &group.UpdatedAt); err != nil {
+			return nil, err
+		}
+		groups = append(groups, group)
+	}
+	return groups, rows.Err()
+}
+
+func loadMarketScreenBlockMembers(source, blockType, name string) ([]string, error) {
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(databaseDir, "block", "blocks.db")+"?mode=ro")
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	rows, err := db.Query(`SELECT Code FROM block_member WHERE Source = ? AND BlockType = ? AND BlockName = ? ORDER BY Code`, source, blockType, name)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	codes := make([]string, 0, 512)
+	for rows.Next() {
+		var code string
+		if err := rows.Scan(&code); err != nil {
+			return nil, err
+		}
+		codes = append(codes, strings.TrimSpace(code))
+	}
+	return codes, rows.Err()
+}
+
+func sortMarketScreenBlockRanks(ranks []collectorpkg.BlockRank, sortBy, order string) {
+	desc := !strings.EqualFold(order, "asc")
+	sort.SliceStable(ranks, func(i, j int) bool {
+		var a, b float64
+		switch sortBy {
+		case "amount":
+			a, b = ranks[i].Amount, ranks[j].Amount
+		case "limit_up":
+			a, b = float64(ranks[i].LimitUpCount), float64(ranks[j].LimitUpCount)
+		case "rise_count":
+			a, b = float64(ranks[i].RiseCount), float64(ranks[j].RiseCount)
+		default:
+			a, b = ranks[i].PctChange, ranks[j].PctChange
+		}
+		if desc {
+			return a > b
+		}
+		return a < b
+	})
 }
 
 func sortMarketScreenTicks(ticks []collectorpkg.StockTick, sortBy, order string) {

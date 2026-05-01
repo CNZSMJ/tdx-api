@@ -607,84 +607,79 @@ func serveStockBlocks(w http.ResponseWriter, r *http.Request) {
 }
 
 func serveBlockRanking(w http.ResponseWriter, r *http.Request) {
-	ts := getTickerService()
-	if ts == nil {
-		errorResponse(w, "实时行情服务未初始化")
-		return
-	}
-	key, err := parseBlockProviderKey(r, blockProviderKeyRequirement{RequireSource: true, RequireBlockType: true})
+	req, err := parseMarketBlockRequest(r, blockProviderKeyRequirement{RequireSource: true, RequireBlockType: true})
 	if err != nil {
 		errorResponse(w, err.Error())
 		return
 	}
-	sortBy := strings.TrimSpace(r.URL.Query().Get("sort_by"))
-	order := strings.TrimSpace(r.URL.Query().Get("order"))
-	limit := parsePositiveInt(strings.TrimSpace(r.URL.Query().Get("limit")))
+	ts := getTickerService()
+	if resp, ok := buildBlockRankingTickerResponse(req, ts); ok {
+		successResponse(w, resp)
+		return
+	}
+	if ts == nil {
+		if resp, ok := buildBlockRankingCloseSnapshotResponse(req); ok {
+			successResponse(w, resp)
+			return
+		}
+		errorResponse(w, "实时行情服务未初始化")
+		return
+	}
+	if ts.UpdatedAt().IsZero() || req.hasTradingDate {
+		if resp, ok := buildBlockRankingCloseSnapshotResponse(req); ok {
+			successResponse(w, resp)
+			return
+		}
+	}
 
-	ranks := ts.GetBlockRanking(key.Source, key.BlockType, sortBy, order, limit)
-	items := make([]map[string]interface{}, 0, len(ranks))
-	for _, rank := range ranks {
-		if key.Name != "" && rank.Name != key.Name {
-			continue
-		}
-		item := map[string]interface{}{
-			"source":            rank.Source,
-			"block_type":        rank.BlockType,
-			"name":              rank.Name,
-			"pct_change":        rank.PctChange,
-			"amount":            rank.Amount,
-			"member_count":      rank.MemberCount,
-			"available_count":   rank.AvailableCount,
-			"rise_count":        rank.RiseCount,
-			"fall_count":        rank.FallCount,
-			"flat_count":        rank.FlatCount,
-			"limit_up_count":    rank.LimitUpCount,
-			"limit_down_count":  rank.LimitDownCount,
-			"leading_full_code": rank.LeadingCode,
-			"leading_name":      rank.LeadingName,
-			"leading_pct":       rank.LeadingPct,
-		}
-		item["leading_code"] = bareCode(rank.LeadingCode)
-		items = append(items, item)
+	if resp, ok := buildBlockRankingCloseSnapshotResponse(req); ok {
+		successResponse(w, resp)
+		return
 	}
-	resp := map[string]interface{}{
-		"count": len(items),
-		"items": items,
-	}
-	addTickerMeta(resp, ts)
-	successResponse(w, resp)
+	successResponse(w, map[string]interface{}{
+		"count": 0,
+		"items": []interface{}{},
+	})
 }
 
 func serveBlockStocks(w http.ResponseWriter, r *http.Request) {
-	ts := getTickerService()
-	if ts == nil {
-		errorResponse(w, "实时行情服务未初始化")
-		return
-	}
-	key, err := parseBlockProviderKey(r, blockProviderKeyRequirement{RequireSource: true, RequireBlockType: true, RequireName: true})
+	req, err := parseMarketBlockRequest(r, blockProviderKeyRequirement{RequireSource: true, RequireBlockType: true, RequireName: true})
 	if err != nil {
 		errorResponse(w, err.Error())
 		return
 	}
-	sortBy := strings.TrimSpace(r.URL.Query().Get("sort_by"))
-	order := strings.TrimSpace(r.URL.Query().Get("order"))
-	limit := parsePositiveInt(strings.TrimSpace(r.URL.Query().Get("limit")))
+	ts := getTickerService()
+	if resp, ok := buildBlockStocksTickerResponse(req, ts); ok {
+		successResponse(w, resp)
+		return
+	}
+	if ts == nil {
+		if resp, ok := buildBlockStocksCloseSnapshotResponse(req); ok {
+			successResponse(w, resp)
+			return
+		}
+		errorResponse(w, "实时行情服务未初始化")
+		return
+	}
+	if ts.UpdatedAt().IsZero() || req.hasTradingDate {
+		if resp, ok := buildBlockStocksCloseSnapshotResponse(req); ok {
+			successResponse(w, resp)
+			return
+		}
+	}
 
-	blockPct, ticks := ts.GetBlockStocks(key.Source, key.BlockType, key.Name, sortBy, order, limit)
-	items := make([]map[string]interface{}, 0, len(ticks))
-	for _, tick := range ticks {
-		items = append(items, stockTickToProviderMap(tick))
+	if resp, ok := buildBlockStocksCloseSnapshotResponse(req); ok {
+		successResponse(w, resp)
+		return
 	}
-	resp := map[string]interface{}{
-		"source":           key.Source,
-		"block_type":       key.BlockType,
-		"name":             key.Name,
-		"block_pct_change": blockPct,
-		"count":            len(items),
-		"items":            items,
-	}
-	addTickerMeta(resp, ts)
-	successResponse(w, resp)
+	successResponse(w, map[string]interface{}{
+		"source":           req.key.Source,
+		"block_type":       req.key.BlockType,
+		"name":             req.key.Name,
+		"block_pct_change": 0,
+		"count":            0,
+		"items":            []interface{}{},
+	})
 }
 
 func handleMarketSignalCheck(w http.ResponseWriter, r *http.Request) {

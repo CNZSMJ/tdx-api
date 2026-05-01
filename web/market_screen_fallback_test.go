@@ -251,6 +251,91 @@ func TestMarketStatsUsesTodayTickerBeforeDailyKline(t *testing.T) {
 	}
 }
 
+func TestBlockRankingAndStocksFallbackToDailyKlineCloseSnapshot(t *testing.T) {
+	originalDir := databaseDir
+	originalRuntime := collectorRuntime
+	defer func() {
+		databaseDir = originalDir
+		collectorRuntime = originalRuntime
+	}()
+
+	tmp := t.TempDir()
+	databaseDir = tmp
+	collectorRuntime = nil
+
+	mustCreateMarketScreenCodesDB(t, filepath.Join(tmp, "codes.db"))
+	mustCreateMarketScreenKlineDB(t, filepath.Join(tmp, "kline", "sh600000.db"), "sh600000", []marketScreenKlineFixture{
+		{At: time.Date(2026, 4, 28, 15, 0, 0, 0, time.Local), Open: 9340, High: 9400, Low: 9300, Close: 9370, Volume: 594549, Amount: 554217472000},
+		{At: time.Date(2026, 4, 29, 15, 0, 0, 0, time.Local), Open: 9360, High: 9420, Low: 9300, Close: 9380, Volume: 614950, Amount: 575654656000},
+	})
+	mustCreateMarketScreenKlineDB(t, filepath.Join(tmp, "kline", "sz000001.db"), "sz000001", []marketScreenKlineFixture{
+		{At: time.Date(2026, 4, 28, 15, 0, 0, 0, time.Local), Open: 11200, High: 11300, Low: 11100, Close: 11200, Volume: 100000, Amount: 112000000000},
+		{At: time.Date(2026, 4, 29, 15, 0, 0, 0, time.Local), Open: 11200, High: 11400, Low: 11100, Close: 11300, Volume: 120000, Amount: 135600000000},
+	})
+	mustCreateMarketScreenBlockDB(t, filepath.Join(tmp, "block", "blocks.db"), []string{"600000", "000001"})
+
+	ranking := callMarketScreenHandler(t, "/api/block/ranking?source=block_gn.dat&block_type=concept&limit=10", handleBlockRanking)
+	rankingData := ranking["data"].(map[string]interface{})
+	if rankingData["status"] != "closed_snapshot" || rankingData["data_source"] != "daily_kline" {
+		t.Fatalf("block ranking fallback metadata = %#v", rankingData)
+	}
+	if rankingData["trading_date"] != "20260429" {
+		t.Fatalf("block ranking trading_date = %v, want 20260429", rankingData["trading_date"])
+	}
+	if rankingData["count"].(float64) != 1 {
+		t.Fatalf("block ranking count = %v, want 1; data=%#v", rankingData["count"], rankingData)
+	}
+
+	stocks := callMarketScreenHandler(t, "/api/block/stocks?source=block_gn.dat&block_type=concept&name=复盘测试&limit=10", handleBlockStocks)
+	stocksData := stocks["data"].(map[string]interface{})
+	if stocksData["status"] != "closed_snapshot" || stocksData["data_source"] != "daily_kline" {
+		t.Fatalf("block stocks fallback metadata = %#v", stocksData)
+	}
+	if stocksData["trading_date"] != "20260429" {
+		t.Fatalf("block stocks trading_date = %v, want 20260429", stocksData["trading_date"])
+	}
+	if stocksData["count"].(float64) != 2 {
+		t.Fatalf("block stocks count = %v, want 2; data=%#v", stocksData["count"], stocksData)
+	}
+}
+
+func TestBlockRankingAndStocksExactTradingDateDoesNotFallback(t *testing.T) {
+	originalDir := databaseDir
+	originalRuntime := collectorRuntime
+	defer func() {
+		databaseDir = originalDir
+		collectorRuntime = originalRuntime
+	}()
+
+	tmp := t.TempDir()
+	databaseDir = tmp
+	collectorRuntime = nil
+
+	mustCreateMarketScreenCodesDB(t, filepath.Join(tmp, "codes.db"))
+	mustCreateMarketScreenKlineDB(t, filepath.Join(tmp, "kline", "sh600000.db"), "sh600000", []marketScreenKlineFixture{
+		{At: time.Date(2026, 4, 29, 15, 0, 0, 0, time.Local), Open: 9360, High: 9420, Low: 9300, Close: 9380, Volume: 614950, Amount: 575654656000},
+	})
+	mustCreateMarketScreenBlockDB(t, filepath.Join(tmp, "block", "blocks.db"), []string{"600000"})
+
+	ranking := callMarketScreenHandler(t, "/api/block/ranking?source=block_gn.dat&block_type=concept&trading_date=20260428&limit=10", handleBlockRanking)
+	rankingData := ranking["data"].(map[string]interface{})
+	if rankingData["trading_date"] != "20260428" {
+		t.Fatalf("block ranking trading_date = %v, want exact 20260428", rankingData["trading_date"])
+	}
+	if rankingData["count"].(float64) != 0 {
+		t.Fatalf("block ranking exact date fell back: count=%v data=%#v", rankingData["count"], rankingData)
+	}
+
+	stocks := callMarketScreenHandler(t, "/api/block/stocks?source=block_gn.dat&block_type=concept&name=复盘测试&trading_date=20260428&limit=10", handleBlockStocks)
+	stocksData := stocks["data"].(map[string]interface{})
+	if stocksData["trading_date"] != "20260428" {
+		t.Fatalf("block stocks trading_date = %v, want exact 20260428", stocksData["trading_date"])
+	}
+	if stocksData["count"].(float64) != 0 {
+		t.Fatalf("block stocks exact date fell back: count=%v data=%#v", stocksData["count"], stocksData)
+	}
+}
+
 type marketScreenQuoteProvider struct {
 	quotes []collectorpkg.QuoteSnapshot
 }
@@ -276,6 +361,21 @@ func callMarketStatsHandler(t *testing.T, path string) map[string]interface{} {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, path, nil)
 	handleGetMarketStats(rec, req)
+	var payload map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode %s: %v\nbody=%s", path, err, rec.Body.String())
+	}
+	if payload["code"].(float64) != 0 {
+		t.Fatalf("%s returned error payload: %s", path, rec.Body.String())
+	}
+	return payload
+}
+
+func callMarketScreenHandler(t *testing.T, path string, handler http.HandlerFunc) map[string]interface{} {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	handler(rec, req)
 	var payload map[string]interface{}
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode %s: %v\nbody=%s", path, err, rec.Body.String())
@@ -337,6 +437,32 @@ func mustCreateMarketScreenKlineDB(t *testing.T, path, code string, rows []marke
 	for _, row := range rows {
 		if _, err := db.Exec(`INSERT INTO DayKline(Code, Date, Open, High, Low, Close, Volume, Amount) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`, code, row.At.Unix(), row.Open, row.High, row.Low, row.Close, row.Volume, row.Amount); err != nil {
 			t.Fatalf("insert kline %s: %v", code, err)
+		}
+	}
+}
+
+func mustCreateMarketScreenBlockDB(t *testing.T, path string, codes []string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir block dir: %v", err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open block db: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE block_group (ID INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, Name TEXT NOT NULL, BlockType TEXT NOT NULL, Source TEXT NOT NULL, StockCount INTEGER NOT NULL, UpdatedAt DATETIME NOT NULL)`); err != nil {
+		t.Fatalf("create block_group: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE block_member (ID INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, Source TEXT NOT NULL, BlockName TEXT NOT NULL, BlockType TEXT NOT NULL, Code TEXT NOT NULL, UpdatedAt DATETIME NOT NULL)`); err != nil {
+		t.Fatalf("create block_member: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO block_group(Name, BlockType, Source, StockCount, UpdatedAt) VALUES('复盘测试', 'concept', 'block_gn.dat', ?, ?)`, len(codes), time.Now()); err != nil {
+		t.Fatalf("insert block_group: %v", err)
+	}
+	for _, code := range codes {
+		if _, err := db.Exec(`INSERT INTO block_member(Source, BlockName, BlockType, Code, UpdatedAt) VALUES('block_gn.dat', '复盘测试', 'concept', ?, ?)`, code, time.Now()); err != nil {
+			t.Fatalf("insert block_member: %v", err)
 		}
 	}
 }
