@@ -670,9 +670,10 @@ func initDailyCloseSyncRunner() {
 		return
 	}
 	runner, err := systemgov.NewDailyCloseSyncRunner(systemgov.DailyCloseSyncConfig{
-		Store: governanceStore,
-		Paths: governancePaths,
-		Now:   time.Now,
+		Store:           governanceStore,
+		Paths:           governancePaths,
+		Now:             time.Now,
+		UseExternalLock: true,
 		CalendarGate: func(day time.Time) (bool, error) {
 			return resolveTradingDay(day)
 		},

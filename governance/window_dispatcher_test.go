@@ -142,8 +142,8 @@ func TestWindowDispatcherDefersWindowUntilDependencyIsSuccessful(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get audit window: %v", err)
 	}
-	if audit == nil || audit.Status != collectorpkg.GovernanceWindowStatusWaitingDependency {
-		t.Fatalf("audit window = %+v, want waiting_dependency", audit)
+	if audit == nil || audit.Status != collectorpkg.GovernanceWindowStatusQueued {
+		t.Fatalf("audit window = %+v, want still queued", audit)
 	}
 }
 
@@ -432,6 +432,82 @@ func TestWindowDispatcherDoesNotExpireWindowWithRunningRun(t *testing.T) {
 	}
 	if window == nil || window.Status != collectorpkg.GovernanceWindowStatusRunning {
 		t.Fatalf("close window = %+v, want still running", window)
+	}
+}
+
+func TestWindowDispatcherDoesNotStartQueuedWindowWhileAnotherWindowIsRunning(t *testing.T) {
+	paths := collectorpkg.ResolveGovernancePaths(t.TempDir())
+	store, err := collectorpkg.OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 4, 28, 20, 0, 0, 0, time.Local)
+	runningKey := collectorpkg.GovernanceWindowKey(collectorpkg.GovernanceJobDailyCloseSync, "20260420")
+	queuedKey := collectorpkg.GovernanceWindowKey(collectorpkg.GovernanceJobDailyCloseSync, "20260427,20260428")
+	for _, window := range []collectorpkg.GovernanceWindowRecord{
+		{
+			WindowKey:    runningKey,
+			JobName:      string(collectorpkg.GovernanceJobDailyCloseSync),
+			TargetWindow: "20260420",
+			DueAt:        now.Add(-2 * time.Hour),
+			Priority:     3,
+			Status:       collectorpkg.GovernanceWindowStatusRunning,
+			StartedAt:    now.Add(-time.Hour),
+			LeaseOwner:   "active-dispatcher",
+			LeaseUntil:   now.Add(time.Hour),
+		},
+		{
+			WindowKey:    queuedKey,
+			JobName:      string(collectorpkg.GovernanceJobDailyCloseSync),
+			TargetWindow: "20260427,20260428",
+			DueAt:        now.Add(-time.Hour),
+			Priority:     3,
+			Status:       collectorpkg.GovernanceWindowStatusQueued,
+			EnqueuedAt:   now.Add(-time.Hour),
+		},
+	} {
+		window := window
+		if err := store.UpsertWindow(&window); err != nil {
+			t.Fatalf("seed window %s: %v", window.WindowKey, err)
+		}
+	}
+	if err := store.AddRun(&collectorpkg.GovernanceRunRecord{
+		RunID:        "run-close-active",
+		JobName:      string(collectorpkg.GovernanceJobDailyCloseSync),
+		Status:       collectorpkg.GovernanceRunStatusRunning,
+		TargetWindow: "20260420",
+		StartedAt:    now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("seed running run: %v", err)
+	}
+
+	dispatcher := NewWindowDispatcher(WindowDispatcherConfig{
+		Store: store,
+		Now: func() time.Time {
+			return now
+		},
+		Owner: "test-dispatcher",
+		Execute: func(ctx context.Context, window collectorpkg.GovernanceWindowRecord) (WindowExecutionResult, error) {
+			t.Fatalf("dispatcher should not start %s while another window is running", window.WindowKey)
+			return WindowExecutionResult{}, nil
+		},
+	})
+
+	ran, err := dispatcher.RunNext(context.Background())
+	if err != nil {
+		t.Fatalf("run next: %v", err)
+	}
+	if ran {
+		t.Fatalf("dispatcher ran a queued window while another window is running")
+	}
+	queued, err := store.GetWindowByKey(queuedKey)
+	if err != nil {
+		t.Fatalf("get queued window: %v", err)
+	}
+	if queued == nil || queued.Status != collectorpkg.GovernanceWindowStatusQueued {
+		t.Fatalf("queued window = %+v, want still queued", queued)
 	}
 }
 

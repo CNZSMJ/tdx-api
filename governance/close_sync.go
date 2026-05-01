@@ -16,6 +16,7 @@ type DailyCloseSyncConfig struct {
 	Paths              collectorpkg.GovernancePaths
 	Now                func() time.Time
 	Hostname           string
+	UseExternalLock    bool
 	CalendarGate       func(day time.Time) (bool, error)
 	ResolveTargetDates func(context.Context, time.Time) ([]string, error)
 	Execute            func(context.Context, []string) ([]collectorpkg.CloseSyncFailure, error)
@@ -56,11 +57,16 @@ func (r *DailyCloseSyncRunner) RunWithDates(ctx context.Context, trigger string,
 }
 
 func (r *DailyCloseSyncRunner) run(ctx context.Context, trigger string, targetDates []string) (*collectorpkg.GovernanceRunRecord, error) {
-	lock, err := collectorpkg.AcquireGovernanceLock(r.cfg.Paths.LockPath)
-	if err != nil {
-		return nil, err
+	var lock *collectorpkg.GovernanceLock
+	var err error
+	if !r.cfg.UseExternalLock {
+		acquired, err := collectorpkg.AcquireGovernanceLock(r.cfg.Paths.LockPath)
+		if err != nil {
+			return nil, err
+		}
+		lock = acquired
+		defer lock.Release()
 	}
-	defer lock.Release()
 
 	startedAt := r.cfg.Now()
 	run := &collectorpkg.GovernanceRunRecord{
@@ -74,16 +80,18 @@ func (r *DailyCloseSyncRunner) run(ctx context.Context, trigger string, targetDa
 	if err := r.cfg.Store.AddRun(run); err != nil {
 		return nil, err
 	}
-	if err := r.cfg.Store.RecordLockMetadata(&collectorpkg.GovernanceLockMetadataRecord{
-		LockName:        "system_governance",
-		HolderPID:       int64(os.Getpid()),
-		HolderHostname:  r.cfg.Hostname,
-		HolderJobName:   string(collectorpkg.GovernanceJobDailyCloseSync),
-		HolderRunID:     run.RunID,
-		AcquiredAt:      startedAt,
-		LastHeartbeatAt: startedAt,
-	}); err != nil {
-		return nil, err
+	if !r.cfg.UseExternalLock {
+		if err := r.cfg.Store.RecordLockMetadata(&collectorpkg.GovernanceLockMetadataRecord{
+			LockName:        "system_governance",
+			HolderPID:       int64(os.Getpid()),
+			HolderHostname:  r.cfg.Hostname,
+			HolderJobName:   string(collectorpkg.GovernanceJobDailyCloseSync),
+			HolderRunID:     run.RunID,
+			AcquiredAt:      startedAt,
+			LastHeartbeatAt: startedAt,
+		}); err != nil {
+			return nil, err
+		}
 	}
 
 	var resultErr error

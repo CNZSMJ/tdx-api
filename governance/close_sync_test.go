@@ -214,3 +214,49 @@ func TestDailyCloseSyncMarksRunInterruptedWhenCanceled(t *testing.T) {
 		t.Fatalf("run target window = %q, want 20260416,20260417", runs[0].TargetWindow)
 	}
 }
+
+func TestDailyCloseSyncCanUseWindowLeaseInsteadOfGlobalLock(t *testing.T) {
+	paths := collectorpkg.ResolveGovernancePaths(t.TempDir())
+	store, err := collectorpkg.OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	defer store.Close()
+
+	lock, err := collectorpkg.AcquireGovernanceLock(paths.LockPath)
+	if err != nil {
+		t.Fatalf("acquire governance lock: %v", err)
+	}
+	defer lock.Release()
+
+	executed := false
+	runner, err := NewDailyCloseSyncRunner(DailyCloseSyncConfig{
+		Store:           store,
+		Paths:           paths,
+		UseExternalLock: true,
+		Now: func() time.Time {
+			return time.Date(2026, 4, 20, 18, 0, 0, 0, time.Local)
+		},
+		CalendarGate: func(day time.Time) (bool, error) {
+			return true, nil
+		},
+		ResolveTargetDates: func(ctx context.Context, now time.Time) ([]string, error) {
+			return []string{"20260420"}, nil
+		},
+		Execute: func(ctx context.Context, dates []string) ([]collectorpkg.CloseSyncFailure, error) {
+			executed = true
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("new runner: %v", err)
+	}
+
+	run, err := runner.RunWithDates(context.Background(), "window-dispatcher:daily_close_sync:20260420", []string{"20260420"})
+	if err != nil {
+		t.Fatalf("run with external window lease: %v", err)
+	}
+	if !executed || run.Status != collectorpkg.GovernanceRunStatusPassed {
+		t.Fatalf("run = %+v executed=%v, want passed execution", run, executed)
+	}
+}

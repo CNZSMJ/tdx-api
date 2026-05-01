@@ -58,6 +58,9 @@ func (d *WindowDispatcher) RunNext(ctx context.Context) (bool, error) {
 	if recovered {
 		return true, nil
 	}
+	if d.hasActiveRunningWindow(now) {
+		return false, nil
+	}
 
 	windows, err := d.cfg.Store.ListWindowsByStatus(
 		collectorpkg.GovernanceWindowStatusQueued,
@@ -172,6 +175,19 @@ func (d *WindowDispatcher) recoverExpiredRunningWindow(now time.Time) (bool, err
 		}
 	}
 	return false, nil
+}
+
+func (d *WindowDispatcher) hasActiveRunningWindow(now time.Time) bool {
+	windows, err := d.cfg.Store.ListWindowsByStatus(collectorpkg.GovernanceWindowStatusRunning)
+	if err != nil {
+		return false
+	}
+	for _, window := range windows {
+		if !window.LeaseUntil.IsZero() && window.LeaseUntil.After(now) {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *WindowDispatcher) createMissingDependencyWindow(window collectorpkg.GovernanceWindowRecord, now time.Time) (bool, error) {
