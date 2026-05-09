@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"net/http/httptest"
 	"os"
@@ -215,6 +217,46 @@ func TestFilterBlockRecordsAppliesKeywordBeforeLimit(t *testing.T) {
 	}
 }
 
+func TestServeBlockMembersResolvesNameWithoutProviderKey(t *testing.T) {
+	installBlockMemberRuntime(t, map[string][]collectorpkg.BlockInfo{
+		"block_gn.dat": {
+			{Name: "半导体", BlockType: collectorpkg.BlockTypeConcept, Source: "block_gn.dat", Codes: []string{"600460", "002049"}},
+		},
+	})
+
+	req := httptest.NewRequest("GET", "/api/block/members?name=半导体", nil)
+	w := httptest.NewRecorder()
+	serveBlockMembers(w, req)
+
+	data := decodeSuccessData(t, w)
+	if data["name"] != "半导体" || data["source"] != "block_gn.dat" || data["block_type"] != "concept" {
+		t.Fatalf("unexpected block identity: %#v", data)
+	}
+	if got := stringSliceFromJSON(t, data["codes"]); !equalStringSlice(got, []string{"sh600460", "sz002049"}) {
+		t.Fatalf("codes = %#v, want sh600460/sz002049", got)
+	}
+}
+
+func TestServeIndexMembersResolvesIndexCodeFromBlockData(t *testing.T) {
+	installBlockMemberRuntime(t, map[string][]collectorpkg.BlockInfo{
+		"block_zs.dat": {
+			{Name: "沪深300", BlockType: collectorpkg.BlockTypeIndexBlock, Source: "block_zs.dat", Codes: []string{"600000", "000001"}},
+		},
+	})
+
+	req := httptest.NewRequest("GET", "/api/index/members?code=sh000300", nil)
+	w := httptest.NewRecorder()
+	handleGetIndexMembers(w, req)
+
+	data := decodeSuccessData(t, w)
+	if data["full_code"] != "sh000300" || data["name"] != "沪深300" || data["block_type"] != "index_block" {
+		t.Fatalf("unexpected index identity: %#v", data)
+	}
+	if got := stringSliceFromJSON(t, data["codes"]); !equalStringSlice(got, []string{"sh600000", "sz000001"}) {
+		t.Fatalf("codes = %#v, want sh600000/sz000001", got)
+	}
+}
+
 func TestNormalizeQuoteSnapshotZeroesDerivedMetricsWhenPriceIsZero(t *testing.T) {
 	item := normalizeQuoteSnapshot(providerQuoteSnapshot{
 		Price:        0,
@@ -228,6 +270,89 @@ func TestNormalizeQuoteSnapshotZeroesDerivedMetricsWhenPriceIsZero(t *testing.T)
 	if item.Change != 0 || item.ChangePct != 0 || item.Volume != 0 || item.Amount != 0 {
 		t.Fatalf("normalized snapshot still contains inconsistent metrics: %#v", item)
 	}
+}
+
+type blockMemberProviderStub struct {
+	governanceStatusProviderStub
+	blockFiles map[string][]collectorpkg.BlockInfo
+}
+
+func (s *blockMemberProviderStub) BlockGroups(ctx context.Context, filename string) ([]collectorpkg.BlockInfo, error) {
+	return s.blockFiles[filename], nil
+}
+
+func installBlockMemberRuntime(t *testing.T, blockFiles map[string][]collectorpkg.BlockInfo) {
+	t.Helper()
+	originalRuntime := collectorRuntime
+	tmp := t.TempDir()
+	store, err := collectorpkg.OpenStore(filepath.Join(tmp, "collector.db"))
+	if err != nil {
+		t.Fatalf("open collector store: %v", err)
+	}
+	runtime, err := collectorpkg.NewRuntime(store, &blockMemberProviderStub{blockFiles: blockFiles}, collectorpkg.RuntimeConfig{
+		Block: collectorpkg.BlockConfig{
+			BaseDir:            filepath.Join(tmp, "block"),
+			DisableAutoRefresh: true,
+		},
+	})
+	if err != nil {
+		store.Close()
+		t.Fatalf("new runtime: %v", err)
+	}
+	if err := runtime.BlockService().SyncBlocks(context.Background()); err != nil {
+		runtime.Close()
+		t.Fatalf("sync blocks: %v", err)
+	}
+	collectorRuntime = runtime
+	t.Cleanup(func() {
+		collectorRuntime = originalRuntime
+		runtime.Close()
+	})
+}
+
+func decodeSuccessData(t *testing.T, w *httptest.ResponseRecorder) map[string]interface{} {
+	t.Helper()
+	var resp Response
+	if err := json.NewDecoder(w.Result().Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Code != 0 {
+		t.Fatalf("response code = %d message=%s", resp.Code, resp.Message)
+	}
+	data, ok := resp.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("response data = %#v, want object", resp.Data)
+	}
+	return data
+}
+
+func stringSliceFromJSON(t *testing.T, value interface{}) []string {
+	t.Helper()
+	raw, ok := value.([]interface{})
+	if !ok {
+		t.Fatalf("value = %#v, want []interface{}", value)
+	}
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		text, ok := item.(string)
+		if !ok {
+			t.Fatalf("item = %#v, want string", item)
+		}
+		out = append(out, text)
+	}
+	return out
+}
+
+func equalStringSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestParseIntradayIntervalDefaultsToOneMinute(t *testing.T) {

@@ -58,7 +58,11 @@ func (d *WindowDispatcher) RunNext(ctx context.Context) (bool, error) {
 	if recovered {
 		return true, nil
 	}
-	if d.hasActiveRunningWindow(now) {
+	active, err := d.hasActiveRunningWindow(now)
+	if err != nil {
+		return false, err
+	}
+	if active {
 		return false, nil
 	}
 
@@ -126,7 +130,9 @@ func (d *WindowDispatcher) RunNext(ctx context.Context) (bool, error) {
 			return false, err
 		}
 
+		stopRenewal := d.startLeaseRenewal(ctx, window)
 		result, execErr := d.cfg.Execute(ctx, window)
+		stopRenewal()
 		finishedAt := d.cfg.Now()
 		window.EndedAt = finishedAt
 		window.LeaseOwner = ""
@@ -157,6 +163,34 @@ func (d *WindowDispatcher) RunNext(ctx context.Context) (bool, error) {
 	return false, nil
 }
 
+func (d *WindowDispatcher) startLeaseRenewal(ctx context.Context, window collectorpkg.GovernanceWindowRecord) func() {
+	interval := d.cfg.LeaseDuration / 2
+	if interval <= 0 {
+		interval = time.Millisecond
+	}
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-done:
+				return
+			case <-ticker.C:
+				_, _ = d.cfg.Store.RenewWindowLease(window.WindowKey, window.LeaseOwner, d.cfg.Now().Add(d.cfg.LeaseDuration))
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-stopped
+	}
+}
+
 func (d *WindowDispatcher) recoverExpiredRunningWindow(now time.Time) (bool, error) {
 	windows, err := d.cfg.Store.ListWindowsByStatus(collectorpkg.GovernanceWindowStatusRunning)
 	if err != nil {
@@ -177,17 +211,24 @@ func (d *WindowDispatcher) recoverExpiredRunningWindow(now time.Time) (bool, err
 	return false, nil
 }
 
-func (d *WindowDispatcher) hasActiveRunningWindow(now time.Time) bool {
+func (d *WindowDispatcher) hasActiveRunningWindow(now time.Time) (bool, error) {
 	windows, err := d.cfg.Store.ListWindowsByStatus(collectorpkg.GovernanceWindowStatusRunning)
 	if err != nil {
-		return false
+		return false, err
 	}
 	for _, window := range windows {
 		if !window.LeaseUntil.IsZero() && window.LeaseUntil.After(now) {
-			return true
+			return true, nil
+		}
+		run, err := d.cfg.Store.LatestRunForWindow(window.JobName, window.TargetWindow)
+		if err != nil {
+			return false, err
+		}
+		if run != nil && run.Status == collectorpkg.GovernanceRunStatusRunning {
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 func (d *WindowDispatcher) createMissingDependencyWindow(window collectorpkg.GovernanceWindowRecord, now time.Time) (bool, error) {

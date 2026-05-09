@@ -191,6 +191,112 @@ func TestCollectStartupRecoverySnapshotSkipsTerminalInterruptedRunTasks(t *testi
 	}
 }
 
+func TestRecoverInterruptedGovernanceRunsConvergesCoveredStartupState(t *testing.T) {
+	originalStore := governanceStore
+	defer func() {
+		governanceStore = originalStore
+	}()
+
+	paths := collectorpkg.ResolveGovernancePaths(t.TempDir())
+	store, err := collectorpkg.OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	defer store.Close()
+	governanceStore = store
+
+	now := time.Date(2026, 4, 22, 9, 0, 0, 0, time.Local)
+	targetWindow := "20260420,20260421"
+	closeRunID := "close-sync-active"
+	closeKey := collectorpkg.GovernanceWindowKey(collectorpkg.GovernanceJobDailyCloseSync, targetWindow)
+	auditKey := collectorpkg.GovernanceWindowKey(collectorpkg.GovernanceJobDailyAudit, targetWindow)
+	if err := store.AddRun(&collectorpkg.GovernanceRunRecord{
+		RunID:        closeRunID,
+		JobName:      string(collectorpkg.GovernanceJobDailyCloseSync),
+		Status:       collectorpkg.GovernanceRunStatusRunning,
+		TargetWindow: targetWindow,
+		StartedAt:    now.Add(-2 * time.Hour),
+	}); err != nil {
+		t.Fatalf("seed running close sync run: %v", err)
+	}
+	if err := store.UpsertWindow(&collectorpkg.GovernanceWindowRecord{
+		WindowKey:    closeKey,
+		JobName:      string(collectorpkg.GovernanceJobDailyCloseSync),
+		TargetWindow: targetWindow,
+		DueAt:        now.Add(-3 * time.Hour),
+		Priority:     collectorpkg.GovernanceJobPriority(collectorpkg.GovernanceJobDailyCloseSync),
+		Status:       collectorpkg.GovernanceWindowStatusRunning,
+		LeaseOwner:   "previous-process",
+		LeaseUntil:   now.Add(-time.Hour),
+		RunID:        closeRunID,
+		StartedAt:    now.Add(-2 * time.Hour),
+		ScheduledAt:  now.Add(-3 * time.Hour),
+		EnqueuedAt:   now.Add(-3 * time.Hour),
+	}); err != nil {
+		t.Fatalf("seed running close sync window: %v", err)
+	}
+	if err := store.UpsertWindow(&collectorpkg.GovernanceWindowRecord{
+		WindowKey:     auditKey,
+		JobName:       string(collectorpkg.GovernanceJobDailyAudit),
+		TargetWindow:  targetWindow,
+		DueAt:         now.Add(-2 * time.Hour),
+		Priority:      collectorpkg.GovernanceJobPriority(collectorpkg.GovernanceJobDailyAudit),
+		Status:        collectorpkg.GovernanceWindowStatusQueued,
+		DependencyKey: closeKey,
+		ScheduledAt:   now.Add(-2 * time.Hour),
+		EnqueuedAt:    now.Add(-2 * time.Hour),
+	}); err != nil {
+		t.Fatalf("seed queued audit window: %v", err)
+	}
+	if err := store.UpsertTask(&collectorpkg.GovernanceTaskRecord{
+		TaskKey:      "startup_recovery:interrupted:" + closeRunID,
+		JobName:      string(collectorpkg.GovernanceJobStartupRecovery),
+		Domain:       "interrupted_run",
+		Status:       collectorpkg.GovernanceTaskStatusOpen,
+		Priority:     1,
+		Reason:       closeRunID,
+		TargetWindow: targetWindow,
+	}); err != nil {
+		t.Fatalf("seed interrupted run task: %v", err)
+	}
+	seedCoveredGovernanceSnapshots(t, store, now)
+
+	if err := recoverInterruptedGovernanceRuns(); err != nil {
+		t.Fatalf("recover interrupted governance runs: %v", err)
+	}
+
+	run, err := store.GetRunByRunID(closeRunID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if run == nil || run.Status != collectorpkg.GovernanceRunStatusInterrupted {
+		t.Fatalf("run = %+v, want interrupted", run)
+	}
+	closeWindow, err := store.GetWindowByKey(closeKey)
+	if err != nil {
+		t.Fatalf("get close window: %v", err)
+	}
+	if closeWindow == nil || closeWindow.Status != collectorpkg.GovernanceWindowStatusPassed {
+		t.Fatalf("close window = %+v, want passed", closeWindow)
+	}
+	auditWindow, err := store.GetWindowByKey(auditKey)
+	if err != nil {
+		t.Fatalf("get audit window: %v", err)
+	}
+	if auditWindow == nil || auditWindow.Status != collectorpkg.GovernanceWindowStatusPassed {
+		t.Fatalf("audit window = %+v, want passed", auditWindow)
+	}
+	tasks, err := store.ListTasksByStatus()
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	for _, task := range tasks {
+		if task.TaskKey == "startup_recovery:interrupted:"+closeRunID && task.Status != collectorpkg.GovernanceTaskStatusClosed {
+			t.Fatalf("startup recovery task status = %s, want closed", task.Status)
+		}
+	}
+}
+
 func TestMissedGovernanceWindowCreatesDurableWindowIntent(t *testing.T) {
 	originalStore := governanceStore
 	defer func() {
@@ -234,5 +340,22 @@ func TestMissedGovernanceWindowCreatesDurableWindowIntent(t *testing.T) {
 	wantDependency := collectorpkg.GovernanceWindowKey(collectorpkg.GovernanceJobDailyCloseSync, "20260427,20260428")
 	if window.DependencyKey != wantDependency {
 		t.Fatalf("window dependency = %q, want %q", window.DependencyKey, wantDependency)
+	}
+}
+
+func seedCoveredGovernanceSnapshots(t *testing.T, store *collectorpkg.GovernanceStore, now time.Time) {
+	t.Helper()
+	for _, snapshot := range []collectorpkg.DomainHealthSnapshotRecord{
+		{Domain: "trade_history", Status: "healthy", Freshness: "fresh", Coverage: "covered", LatestWatermark: "20260430", SnapshotAt: now},
+		{Domain: "live_capture", Status: "healthy", Freshness: "fresh", Coverage: "covered", LatestWatermark: "20260430", SnapshotAt: now},
+		{Domain: "order_history", Status: "healthy", Freshness: "fresh", Coverage: "covered", LatestWatermark: "20260430", SnapshotAt: now},
+		{Domain: "finance", Status: "healthy", Freshness: "fresh", Coverage: "covered", LatestWatermark: "20260429", SnapshotAt: now},
+		{Domain: "f10", Status: "healthy", Freshness: "fresh", Coverage: "covered", LatestWatermark: "hash", SnapshotAt: now},
+		{Domain: "kline", Status: "healthy", Freshness: "fresh", Coverage: "covered", LatestWatermark: "1777532400", SnapshotAt: now},
+	} {
+		snapshot := snapshot
+		if err := store.UpsertDomainHealthSnapshot(&snapshot); err != nil {
+			t.Fatalf("seed snapshot %s: %v", snapshot.Domain, err)
+		}
 	}
 }

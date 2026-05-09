@@ -470,6 +470,20 @@ func (s *GovernanceStore) UpdateWindowIfStatus(record *GovernanceWindowRecord, e
 	return affected > 0, err
 }
 
+func (s *GovernanceStore) RenewWindowLease(windowKey, leaseOwner string, leaseUntil time.Time) (bool, error) {
+	if strings.TrimSpace(windowKey) == "" || strings.TrimSpace(leaseOwner) == "" || leaseUntil.IsZero() {
+		return false, nil
+	}
+	affected, err := s.engine.
+		Table(new(GovernanceWindowRecord)).
+		Where("WindowKey = ? AND Status = ? AND LeaseOwner = ?", windowKey, GovernanceWindowStatusRunning, leaseOwner).
+		Update(map[string]interface{}{
+			"LeaseUntil": leaseUntil,
+			"UpdatedAt":  time.Now(),
+		})
+	return affected > 0, err
+}
+
 func (s *GovernanceStore) GetWindowByKey(windowKey string) (*GovernanceWindowRecord, error) {
 	record := new(GovernanceWindowRecord)
 	has, err := s.engine.Where("WindowKey = ?", windowKey).Get(record)

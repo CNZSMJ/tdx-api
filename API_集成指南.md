@@ -49,19 +49,20 @@
 36. **GET /api/workday/range** - 交易日范围列表
 37. **GET /api/income** - 收益区间分析
 
-### ✅ 板块数据与实时排名接口（6个）
+### ✅ 板块数据与实时排名接口（7个）
 38. **GET /api/blocks** - 板块列表（行业/概念/风格，支持关键词搜索）
 39. **GET /api/block/members** - 板块成份股代码列表
-40. **GET /api/stock/blocks** - 个股所属板块查询
-41. **GET /api/block/ranking** - 板块实时涨幅排名（盘中3秒刷新，支持涨幅/成交额/涨停数排序）
-42. **GET /api/block/stocks** - 板块内个股实时排名（支持涨幅/成交额/成交量/振幅排序）
-43. **GET /api/ticker/status** - 实时行情轮询服务状态
+40. **GET /api/index/members** - 指数成份股代码列表
+41. **GET /api/stock/blocks** - 个股所属板块查询
+42. **GET /api/block/ranking** - 板块实时涨幅排名（盘中3秒刷新，支持涨幅/成交额/涨停数排序）
+43. **GET /api/block/stocks** - 板块内个股实时排名（支持涨幅/成交额/成交量/振幅排序）
+44. **GET /api/ticker/status** - 实时行情轮询服务状态
 
 ### ✅ 运维 / 辅助接口（3个）
-44. **GET /api/profile** - 证券轻量快照（基础属性 + 当前行情 + 常用估值字段）
-45. **GET /api/security/status** - 证券可交易状态（停牌/ST/退市风险）
-46. **GET /api/collector/status** - 数据采集器运行状态
-47. **GET/POST /api/collector/reconcile** - 查看/触发数据对账
+45. **GET /api/profile** - 证券轻量快照（基础属性 + 当前行情 + 常用估值字段）
+46. **GET /api/security/status** - 证券可交易状态（停牌/ST/退市风险）
+47. **GET /api/collector/status** - 数据采集器运行状态
+48. **GET/POST /api/collector/reconcile** - 查看/触发数据对账
 
 ---
 
@@ -118,6 +119,7 @@ func main() {
 	// === 板块数据路由 ===
 	http.HandleFunc("/api/blocks", handleGetBlocks)
 	http.HandleFunc("/api/block/members", handleGetBlockMembers)
+	http.HandleFunc("/api/index/members", handleGetIndexMembers)
 	http.HandleFunc("/api/stock/blocks", handleGetStockBlocks)
 
 	// === 实时板块排名路由 ===
@@ -409,6 +411,7 @@ curl "http://localhost:8080/api/health"
 |-----|------|------|
 | /api/blocks | GET | 板块列表（行业/概念/风格，支持搜索） |
 | /api/block/members | GET | 板块成份股代码 |
+| /api/index/members | GET | 指数成份股代码 |
 | /api/stock/blocks | GET | 个股所属板块 |
 | /api/block/ranking | GET | 板块实时涨幅排名（盘中3秒刷新） |
 | /api/block/stocks | GET | 板块内个股实时排名 |

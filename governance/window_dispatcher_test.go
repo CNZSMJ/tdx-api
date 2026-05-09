@@ -2,6 +2,7 @@ package governance
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -79,6 +80,133 @@ func TestWindowDispatcherExecutesHighestPriorityEligibleWindow(t *testing.T) {
 	}
 }
 
+func TestWindowDispatcherRenewsLeaseDuringLongRunningExecution(t *testing.T) {
+	paths := collectorpkg.ResolveGovernancePaths(t.TempDir())
+	store, err := collectorpkg.OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Now()
+	windowKey := collectorpkg.GovernanceWindowKey(collectorpkg.GovernanceJobDailyCloseSync, "20260427,20260428")
+	window := collectorpkg.GovernanceWindowRecord{
+		WindowKey:    windowKey,
+		JobName:      string(collectorpkg.GovernanceJobDailyCloseSync),
+		TargetWindow: "20260427,20260428",
+		DueAt:        now.Add(-time.Minute),
+		Priority:     3,
+		Status:       collectorpkg.GovernanceWindowStatusQueued,
+		EnqueuedAt:   now.Add(-time.Minute),
+	}
+	if err := store.UpsertWindow(&window); err != nil {
+		t.Fatalf("seed window: %v", err)
+	}
+
+	var renewedLease time.Time
+	dispatcher := NewWindowDispatcher(WindowDispatcherConfig{
+		Store:         store,
+		Owner:         "test-dispatcher",
+		LeaseDuration: 30 * time.Millisecond,
+		Execute: func(ctx context.Context, window collectorpkg.GovernanceWindowRecord) (WindowExecutionResult, error) {
+			lease, err := waitForRenewedLease(store, window.WindowKey, window.LeaseUntil, 500*time.Millisecond)
+			if err != nil {
+				return WindowExecutionResult{}, err
+			}
+			renewedLease = lease
+			return WindowExecutionResult{
+				Status:  collectorpkg.GovernanceWindowStatusPassed,
+				Summary: "close sync completed",
+				RunID:   "run-close",
+			}, nil
+		},
+	})
+
+	ran, err := dispatcher.RunNext(context.Background())
+	if err != nil {
+		t.Fatalf("run next: %v", err)
+	}
+	if !ran {
+		t.Fatalf("dispatcher did not run an eligible window")
+	}
+	if renewedLease.IsZero() {
+		t.Fatalf("lease was not renewed during execution")
+	}
+	finalWindow, err := store.GetWindowByKey(windowKey)
+	if err != nil {
+		t.Fatalf("get final window: %v", err)
+	}
+	if finalWindow == nil || finalWindow.Status != collectorpkg.GovernanceWindowStatusPassed {
+		t.Fatalf("final window = %+v, want passed", finalWindow)
+	}
+	if finalWindow.LeaseOwner != "" || !finalWindow.LeaseUntil.IsZero() {
+		t.Fatalf("final window lease was not cleared: %+v", finalWindow)
+	}
+}
+
+func TestWindowDispatcherStopsLeaseRenewalAndClearsLeaseOnExecutionError(t *testing.T) {
+	paths := collectorpkg.ResolveGovernancePaths(t.TempDir())
+	store, err := collectorpkg.OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Now()
+	windowKey := collectorpkg.GovernanceWindowKey(collectorpkg.GovernanceJobDailyCloseSync, "20260427,20260428")
+	window := collectorpkg.GovernanceWindowRecord{
+		WindowKey:    windowKey,
+		JobName:      string(collectorpkg.GovernanceJobDailyCloseSync),
+		TargetWindow: "20260427,20260428",
+		DueAt:        now.Add(-time.Minute),
+		Priority:     3,
+		Status:       collectorpkg.GovernanceWindowStatusQueued,
+		EnqueuedAt:   now.Add(-time.Minute),
+	}
+	if err := store.UpsertWindow(&window); err != nil {
+		t.Fatalf("seed window: %v", err)
+	}
+
+	dispatcher := NewWindowDispatcher(WindowDispatcherConfig{
+		Store:         store,
+		Owner:         "test-dispatcher",
+		LeaseDuration: 30 * time.Millisecond,
+		Execute: func(ctx context.Context, window collectorpkg.GovernanceWindowRecord) (WindowExecutionResult, error) {
+			if _, err := waitForRenewedLease(store, window.WindowKey, window.LeaseUntil, 500*time.Millisecond); err != nil {
+				return WindowExecutionResult{}, err
+			}
+			return WindowExecutionResult{}, errors.New("execution failed")
+		},
+	})
+
+	ran, err := dispatcher.RunNext(context.Background())
+	if !ran {
+		t.Fatalf("dispatcher did not run an eligible window")
+	}
+	if err == nil || err.Error() != "execution failed" {
+		t.Fatalf("run next error = %v, want execution failed", err)
+	}
+	failedWindow, err := store.GetWindowByKey(windowKey)
+	if err != nil {
+		t.Fatalf("get failed window: %v", err)
+	}
+	if failedWindow == nil || failedWindow.Status != collectorpkg.GovernanceWindowStatusQueued {
+		t.Fatalf("failed window = %+v, want queued", failedWindow)
+	}
+	if failedWindow.LeaseOwner != "" || !failedWindow.LeaseUntil.IsZero() {
+		t.Fatalf("failed window lease was not cleared: %+v", failedWindow)
+	}
+
+	time.Sleep(70 * time.Millisecond)
+	afterStop, err := store.GetWindowByKey(windowKey)
+	if err != nil {
+		t.Fatalf("get window after renewal stop: %v", err)
+	}
+	if afterStop.LeaseOwner != "" || !afterStop.LeaseUntil.IsZero() {
+		t.Fatalf("lease renewal continued after execution error: %+v", afterStop)
+	}
+}
+
 func TestWindowDispatcherDefersWindowUntilDependencyIsSuccessful(t *testing.T) {
 	paths := collectorpkg.ResolveGovernancePaths(t.TempDir())
 	store, err := collectorpkg.OpenGovernanceStore(paths.DBPath)
@@ -144,6 +272,26 @@ func TestWindowDispatcherDefersWindowUntilDependencyIsSuccessful(t *testing.T) {
 	}
 	if audit == nil || audit.Status != collectorpkg.GovernanceWindowStatusQueued {
 		t.Fatalf("audit window = %+v, want still queued", audit)
+	}
+}
+
+func waitForRenewedLease(store *collectorpkg.GovernanceStore, windowKey string, initialLease time.Time, timeout time.Duration) (time.Time, error) {
+	deadline := time.After(timeout)
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-deadline:
+			return time.Time{}, errors.New("lease was not renewed before timeout")
+		case <-ticker.C:
+			window, err := store.GetWindowByKey(windowKey)
+			if err != nil {
+				return time.Time{}, err
+			}
+			if window != nil && window.LeaseUntil.After(initialLease) {
+				return window.LeaseUntil, nil
+			}
+		}
 	}
 }
 
@@ -432,6 +580,82 @@ func TestWindowDispatcherDoesNotExpireWindowWithRunningRun(t *testing.T) {
 	}
 	if window == nil || window.Status != collectorpkg.GovernanceWindowStatusRunning {
 		t.Fatalf("close window = %+v, want still running", window)
+	}
+}
+
+func TestWindowDispatcherDoesNotStartQueuedWindowBehindExpiredWindowWithRunningRun(t *testing.T) {
+	paths := collectorpkg.ResolveGovernancePaths(t.TempDir())
+	store, err := collectorpkg.OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 4, 28, 20, 0, 0, 0, time.Local)
+	runningKey := collectorpkg.GovernanceWindowKey(collectorpkg.GovernanceJobDailyCloseSync, "20260420")
+	queuedKey := collectorpkg.GovernanceWindowKey(collectorpkg.GovernanceJobDailyCloseSync, "20260427,20260428")
+	for _, window := range []collectorpkg.GovernanceWindowRecord{
+		{
+			WindowKey:    runningKey,
+			JobName:      string(collectorpkg.GovernanceJobDailyCloseSync),
+			TargetWindow: "20260420",
+			DueAt:        now.Add(-2 * time.Hour),
+			Priority:     3,
+			Status:       collectorpkg.GovernanceWindowStatusRunning,
+			StartedAt:    now.Add(-2 * time.Hour),
+			LeaseOwner:   "old-dispatcher",
+			LeaseUntil:   now.Add(-time.Minute),
+		},
+		{
+			WindowKey:    queuedKey,
+			JobName:      string(collectorpkg.GovernanceJobDailyCloseSync),
+			TargetWindow: "20260427,20260428",
+			DueAt:        now.Add(-time.Hour),
+			Priority:     3,
+			Status:       collectorpkg.GovernanceWindowStatusQueued,
+			EnqueuedAt:   now.Add(-time.Hour),
+		},
+	} {
+		window := window
+		if err := store.UpsertWindow(&window); err != nil {
+			t.Fatalf("seed window %s: %v", window.WindowKey, err)
+		}
+	}
+	if err := store.AddRun(&collectorpkg.GovernanceRunRecord{
+		RunID:        "run-close-active",
+		JobName:      string(collectorpkg.GovernanceJobDailyCloseSync),
+		Status:       collectorpkg.GovernanceRunStatusRunning,
+		TargetWindow: "20260420",
+		StartedAt:    now.Add(-2 * time.Hour),
+	}); err != nil {
+		t.Fatalf("seed running run: %v", err)
+	}
+
+	dispatcher := NewWindowDispatcher(WindowDispatcherConfig{
+		Store: store,
+		Now: func() time.Time {
+			return now
+		},
+		Owner: "test-dispatcher",
+		Execute: func(ctx context.Context, window collectorpkg.GovernanceWindowRecord) (WindowExecutionResult, error) {
+			t.Fatalf("dispatcher should not start %s while expired window still has a running run", window.WindowKey)
+			return WindowExecutionResult{}, nil
+		},
+	})
+
+	ran, err := dispatcher.RunNext(context.Background())
+	if err != nil {
+		t.Fatalf("run next: %v", err)
+	}
+	if ran {
+		t.Fatalf("dispatcher ran a queued window while an expired window still has a running run")
+	}
+	queued, err := store.GetWindowByKey(queuedKey)
+	if err != nil {
+		t.Fatalf("get queued window: %v", err)
+	}
+	if queued == nil || queued.Status != collectorpkg.GovernanceWindowStatusQueued {
+		t.Fatalf("queued window = %+v, want still queued", queued)
 	}
 }
 

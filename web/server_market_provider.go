@@ -558,23 +558,152 @@ func serveBlockMembers(w http.ResponseWriter, r *http.Request) {
 		errorResponse(w, "板块服务未初始化")
 		return
 	}
-	key, err := parseBlockProviderKey(r, blockProviderKeyRequirement{RequireSource: true, RequireBlockType: true, RequireName: true})
+	key, err := parseBlockProviderKey(r, blockProviderKeyRequirement{RequireName: true})
 	if err != nil {
 		errorResponse(w, err.Error())
 		return
 	}
-	codes := bs.GetBlockMembers(key.Source, key.BlockType, key.Name)
+	groups := filterBlockRecords(bs.GetBlocks(""), key, "", 0)
+	codes := collectBlockMemberCodes(bs, groups)
 	if len(codes) == 0 {
-		errorResponse(w, "指定 provider key 未找到板块成分")
+		errorResponse(w, "指定板块未找到或没有成分")
 		return
 	}
-	successResponse(w, map[string]interface{}{
-		"source":     key.Source,
-		"block_type": key.BlockType,
-		"name":       key.Name,
-		"count":      len(codes),
-		"codes":      codes,
-	})
+	successResponse(w, buildBlockMembersResponse(key, groups, codes))
+}
+
+func handleGetIndexMembers(w http.ResponseWriter, r *http.Request) {
+	serveIndexMembers(w, r)
+}
+
+func serveIndexMembers(w http.ResponseWriter, r *http.Request) {
+	bs := getBlockServiceForProvider()
+	if bs == nil {
+		errorResponse(w, "板块服务未初始化")
+		return
+	}
+	fullCode, name, err := resolveIndexMemberTarget(r.URL.Query().Get("code"), r.URL.Query().Get("name"))
+	if err != nil {
+		errorResponse(w, err.Error())
+		return
+	}
+	key := blockProviderKey{
+		Source:    strings.TrimSpace(r.URL.Query().Get("source")),
+		BlockType: string(collectorpkg.BlockTypeIndexBlock),
+		Name:      name,
+	}
+	groups := filterBlockRecords(bs.GetBlocks(""), key, "", 0)
+	codes := collectBlockMemberCodes(bs, groups)
+	if len(codes) == 0 {
+		errorResponse(w, "指定指数未找到或没有成分")
+		return
+	}
+	resp := buildBlockMembersResponse(key, groups, codes)
+	resp["name"] = name
+	resp["block_type"] = string(collectorpkg.BlockTypeIndexBlock)
+	if fullCode != "" {
+		resp["full_code"] = fullCode
+		resp["code"] = bareCode(fullCode)
+	}
+	successResponse(w, resp)
+}
+
+func collectBlockMemberCodes(bs *collectorpkg.BlockService, groups []collectorpkg.BlockGroupRecord) []string {
+	seen := make(map[string]struct{})
+	codes := make([]string, 0)
+	for _, group := range groups {
+		for _, code := range bs.GetBlockMembers(group.Source, group.BlockType, group.Name) {
+			if _, ok := seen[code]; ok {
+				continue
+			}
+			seen[code] = struct{}{}
+			codes = append(codes, code)
+		}
+	}
+	sort.Strings(codes)
+	return codes
+}
+
+func buildBlockMembersResponse(key blockProviderKey, groups []collectorpkg.BlockGroupRecord, codes []string) map[string]interface{} {
+	resp := map[string]interface{}{
+		"name":   key.Name,
+		"count":  len(codes),
+		"codes":  codes,
+		"groups": buildBlockItems(groups),
+	}
+	if len(groups) == 1 {
+		resp["source"] = groups[0].Source
+		resp["block_type"] = groups[0].BlockType
+		return resp
+	}
+	if key.Source != "" {
+		resp["source"] = key.Source
+	}
+	if key.BlockType != "" {
+		resp["block_type"] = key.BlockType
+	}
+	return resp
+}
+
+func resolveIndexMemberTarget(rawCode, rawName string) (string, string, error) {
+	name := strings.TrimSpace(rawName)
+	code := strings.ToLower(strings.TrimSpace(rawCode))
+	if name != "" {
+		return code, name, nil
+	}
+	if code == "" {
+		return "", "", errors.New("code 或 name 为必填参数")
+	}
+	if fullCode, modelName, ok := lookupConfiguredIndexBlockName(code); ok {
+		return fullCode, modelName, nil
+	}
+	if fullCode, modelName, ok := lookupBuiltinIndexBlockName(code); ok {
+		return fullCode, modelName, nil
+	}
+	return "", "", fmt.Errorf("指数代码未找到: %s", rawCode)
+}
+
+func lookupConfiguredIndexBlockName(code string) (string, string, bool) {
+	if tdx.DefaultCodes == nil {
+		return "", "", false
+	}
+	for _, model := range tdx.DefaultCodes.GetIndexModels() {
+		if model == nil {
+			continue
+		}
+		fullCode := strings.ToLower(model.FullCode())
+		if code == fullCode || code == strings.ToLower(model.Code) {
+			return fullCode, model.Name, true
+		}
+	}
+	return "", "", false
+}
+
+func lookupBuiltinIndexBlockName(code string) (string, string, bool) {
+	indexes := map[string]struct {
+		fullCode string
+		name     string
+	}{
+		"sh000001": {"sh000001", "上证指数"},
+		"sh000016": {"sh000016", "上证50"},
+		"sh000300": {"sh000300", "沪深300"},
+		"sh000905": {"sh000905", "中证500"},
+		"sh000852": {"sh000852", "中证1000"},
+		"sh000688": {"sh000688", "科创50"},
+		"sz399001": {"sz399001", "深证成指"},
+		"sz399005": {"sz399005", "中小100"},
+		"sz399006": {"sz399006", "创业板指"},
+		"sz399303": {"sz399303", "国证2000"},
+	}
+	if item, ok := indexes[code]; ok {
+		return item.fullCode, item.name, true
+	}
+	for _, item := range indexes {
+		if code == bareCode(item.fullCode) {
+			return item.fullCode, item.name, true
+		}
+	}
+	return "", "", false
 }
 
 func serveStockBlocks(w http.ResponseWriter, r *http.Request) {

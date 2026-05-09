@@ -469,7 +469,35 @@ func recoverInterruptedGovernanceRuns() error {
 	if recoveredWindows > 0 {
 		log.Printf("governance: recovered %d running windows from ended runs", recoveredWindows)
 	}
+	repaired, err := convergeRecoveredGovernanceState(now)
+	if err != nil {
+		return err
+	}
+	if repaired > 0 {
+		log.Printf("governance: converged %d recovered windows/tasks", repaired)
+	}
 	return nil
+}
+
+func convergeRecoveredGovernanceState(now time.Time) (int, error) {
+	if governanceStore == nil {
+		return 0, nil
+	}
+	operations := []collectorpkg.GovernanceRepairOperation{
+		collectorpkg.TerminalGovernanceWindowRepair{Now: func() time.Time { return now }},
+		collectorpkg.CoveredCloseSyncWindowRepair{Now: func() time.Time { return now }},
+		collectorpkg.CoveredAuditWindowRepair{Now: func() time.Time { return now }},
+		collectorpkg.CoveredBacklogRepair{},
+	}
+	total := 0
+	for _, operation := range operations {
+		changes, err := operation.Apply(governanceStore)
+		if err != nil {
+			return total, err
+		}
+		total += len(changes)
+	}
+	return total, nil
 }
 
 func initCollectorRuntime() {
@@ -1251,7 +1279,7 @@ func runDailyCloseSyncWithDates(trigger string, targetDates []string) (*collecto
 	if isServiceShuttingDown() {
 		return nil, fmt.Errorf("service shutdown in progress, skip daily_close_sync: trigger=%s", trigger)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), collectorGeneralRunTimeout())
 	endRun := governanceActiveRun.begin("daily_close_sync", cancel)
 	defer func() {
 		cancel()
@@ -1274,7 +1302,7 @@ func runDailyCloseSyncWithDatesContext(ctx context.Context, trigger string, targ
 		run, err = dailyCloseSync.Run(ctx, trigger)
 	}
 	if err != nil {
-		return nil, err
+		return run, err
 	}
 	log.Printf("daily_close_sync 完成: trigger=%s status=%s target=%s", trigger, run.Status, run.TargetWindow)
 	return run, nil
@@ -1364,6 +1392,13 @@ func executeGovernanceWindow(ctx context.Context, window collectorpkg.Governance
 		}, nil
 	}
 	if err != nil {
+		if run != nil {
+			return systemgov.WindowExecutionResult{
+				Status:  governanceWindowStatusFromRun(run.Status),
+				Summary: fmt.Sprintf("run_id=%s status=%s target=%s", run.RunID, run.Status, run.TargetWindow),
+				RunID:   run.RunID,
+			}, nil
+		}
 		return systemgov.WindowExecutionResult{}, err
 	}
 	if run == nil {
@@ -2568,6 +2603,7 @@ func main() {
 	http.HandleFunc("/api/adjustment-factors", handleGetAdjustmentFactors)
 	http.HandleFunc("/api/index", handleGetIndex)
 	http.HandleFunc("/api/index/all", handleGetIndexAll)
+	http.HandleFunc("/api/index/members", handleGetIndexMembers)
 	http.HandleFunc("/api/market-stats", handleGetMarketStats)
 	http.HandleFunc("/api/market/screen", handleMarketScreen)
 	http.HandleFunc("/api/market/signal", handleMarketSignal)

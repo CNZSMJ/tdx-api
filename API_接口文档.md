@@ -1346,13 +1346,15 @@ GET /api/financial-reports?code=600000&start_date=20250101&end_date=20251231
 **请求参数**:
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| type | string | 否 | 板块类型：`industry`（行业）/ `concept`（概念）/ `style`（风格）/ `index_block`（指数板块），默认返回全部 |
-| keyword | string | 否 | 搜索关键词（模糊匹配板块名称），与 type 互斥 |
+| source | string | 是 | TDX 板块源文件，例如 `block_gn.dat` / `block_fg.dat` / `block_zs.dat` / `block.dat` |
+| block_type | string | 否 | 板块类型：`industry`（行业）/ `concept`（概念）/ `style`（风格）/ `index_block`（指数板块） |
+| keyword | string | 否 | 搜索关键词（模糊匹配板块名称） |
+| limit | int | 否 | 返回条数限制 |
 
 **请求示例**:
 ```
-GET /api/blocks?type=concept
-GET /api/blocks?keyword=半导体
+GET /api/blocks?source=block_gn.dat&block_type=concept
+GET /api/blocks?source=block_zs.dat&block_type=index_block&keyword=沪深300
 ```
 
 **响应示例**:
@@ -1386,10 +1388,13 @@ GET /api/blocks?keyword=半导体
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | name | string | 是 | 板块名称（如：半导体） |
+| source | string | 否 | TDX 板块源文件；不传时按名称合并匹配到的板块 |
+| block_type | string | 否 | 板块类型；不传时按名称匹配全部类型 |
 
 **请求示例**:
 ```
 GET /api/block/members?name=半导体
+GET /api/block/members?source=block_gn.dat&block_type=concept&name=半导体
 ```
 
 **响应示例**:
@@ -1398,16 +1403,71 @@ GET /api/block/members?name=半导体
   "code": 0,
   "message": "success",
   "data": {
-    "block_name": "半导体",
+    "name": "半导体",
+    "block_type": "concept",
+    "source": "block_gn.dat",
     "count": 85,
-    "codes": ["sz000100", "sz002049", "sh600460"]
+    "codes": ["sz000100", "sz002049", "sh600460"],
+    "groups": [
+      {
+        "name": "半导体",
+        "block_type": "concept",
+        "source": "block_gn.dat",
+        "stock_count": 85
+      }
+    ]
   }
 }
 ```
 
 ---
 
-### 34. 获取个股所属板块
+### 34. 获取指数成份股
+
+**接口**: `GET /api/index/members`
+
+**描述**: 通过核心指数代码或指数板块名称查询指数成份股。底层使用 TDX `index_block` 板块数据，常见指数代码会解析到对应指数板块名称。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| code | string | 否 | 指数代码，例如 `sh000300`；`code` 和 `name` 至少传一个 |
+| name | string | 否 | 指数板块名称，例如 `沪深300`；传入后优先按名称查询 |
+| source | string | 否 | TDX 板块源文件；默认查询全部指数板块源 |
+
+**请求示例**:
+```
+GET /api/index/members?code=sh000300
+GET /api/index/members?name=沪深300
+```
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "code": "000300",
+    "full_code": "sh000300",
+    "name": "沪深300",
+    "block_type": "index_block",
+    "count": 300,
+    "codes": ["sh600000", "sz000001"],
+    "groups": [
+      {
+        "name": "沪深300",
+        "block_type": "index_block",
+        "source": "block_zs.dat",
+        "stock_count": 300
+      }
+    ]
+  }
+}
+```
+
+---
+
+### 35. 获取个股所属板块
 
 **接口**: `GET /api/stock/blocks`
 
@@ -1455,7 +1515,7 @@ GET /api/stock/blocks?code=sh600460
 
 以下接口依赖后台 Ticker 服务，服务启动后自动开始工作。盘中（9:15-15:05）每 3 秒更新一次全市场行情并聚合板块排名，非盘中返回最后一次采集的快照数据。
 
-### 35. 板块涨幅排名
+### 36. 板块涨幅排名
 
 **接口**: `GET /api/block/ranking`
 
@@ -1521,7 +1581,7 @@ GET /api/block/ranking?type=industry&sort_by=amount&order=desc
 
 ---
 
-### 36. 板块内个股排名
+### 37. 板块内个股排名
 
 **接口**: `GET /api/block/stocks`
 
@@ -1588,7 +1648,7 @@ GET /api/block/stocks?name=半导体&sort_by=amount&limit=10
 
 ---
 
-### 37. Ticker 服务状态
+### 38. Ticker 服务状态
 
 **接口**: `GET /api/ticker/status`
 
@@ -1617,7 +1677,7 @@ GET /api/block/stocks?name=半导体&sort_by=amount&limit=10
 
 ---
 
-### 38. 证券轻量快照
+### 39. 证券轻量快照
 
 **接口**: `GET /api/profile`
 
@@ -1695,7 +1755,7 @@ GET /api/block/stocks?name=半导体&sort_by=amount&limit=10
 
 ---
 
-### 39. Collector 运行状态
+### 40. Collector 运行状态
 
 **接口**: `GET /api/collector/status`
 
@@ -1727,7 +1787,7 @@ GET /api/block/stocks?name=半导体&sort_by=amount&limit=10
 
 ---
 
-### 40. 执行 / 查看对账报告
+### 41. 执行 / 查看对账报告
 
 **接口**: `GET/POST /api/collector/reconcile`
 

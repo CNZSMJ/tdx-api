@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -212,6 +213,62 @@ func TestDailyCloseSyncMarksRunInterruptedWhenCanceled(t *testing.T) {
 	}
 	if runs[0].TargetWindow != "20260416,20260417" {
 		t.Fatalf("run target window = %q, want 20260416,20260417", runs[0].TargetWindow)
+	}
+}
+
+func TestDailyCloseSyncPublishesActiveExecutionDetails(t *testing.T) {
+	paths := collectorpkg.ResolveGovernancePaths(t.TempDir())
+	store, err := collectorpkg.OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	defer store.Close()
+
+	runner, err := NewDailyCloseSyncRunner(DailyCloseSyncConfig{
+		Store: store,
+		Paths: paths,
+		Now: func() time.Time {
+			return time.Date(2026, 4, 20, 18, 0, 0, 0, time.Local)
+		},
+		CalendarGate: func(day time.Time) (bool, error) {
+			t.Fatalf("explicit target dates should not use calendar gate")
+			return false, nil
+		},
+		ResolveTargetDates: func(ctx context.Context, now time.Time) ([]string, error) {
+			t.Fatalf("explicit target dates should not resolve dates")
+			return nil, nil
+		},
+		Execute: func(ctx context.Context, dates []string) ([]collectorpkg.CloseSyncFailure, error) {
+			runs, err := store.ListRecentRuns(1)
+			if err != nil {
+				return nil, err
+			}
+			if len(runs) != 1 {
+				t.Fatalf("recent runs = %d, want 1", len(runs))
+			}
+			if runs[0].Status != collectorpkg.GovernanceRunStatusRunning {
+				t.Fatalf("active run status = %s, want running", runs[0].Status)
+			}
+			if runs[0].TargetWindow != "20260416,20260417" {
+				t.Fatalf("active run target = %q, want 20260416,20260417", runs[0].TargetWindow)
+			}
+			if !strings.Contains(runs[0].Details, "target_window=20260416,20260417") ||
+				!strings.Contains(runs[0].Details, "phase=execute") {
+				t.Fatalf("active run details = %q, want target window and phase", runs[0].Details)
+			}
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("new runner: %v", err)
+	}
+
+	run, err := runner.RunWithDates(context.Background(), "window-dispatcher:daily_close_sync:20260416,20260417", []string{"20260416", "20260417"})
+	if err != nil {
+		t.Fatalf("run daily close sync: %v", err)
+	}
+	if run.Status != collectorpkg.GovernanceRunStatusPassed {
+		t.Fatalf("run status = %s, want passed", run.Status)
 	}
 }
 

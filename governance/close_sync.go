@@ -120,7 +120,7 @@ func (r *DailyCloseSyncRunner) run(ctx context.Context, trigger string, targetDa
 		tradingDay, err := r.cfg.CalendarGate(startedAt)
 		if err != nil {
 			resultErr = err
-			return nil, err
+			return run, err
 		}
 		if !tradingDay {
 			run.Status = collectorpkg.GovernanceRunStatusSkipped
@@ -134,25 +134,26 @@ func (r *DailyCloseSyncRunner) run(ctx context.Context, trigger string, targetDa
 		targetDates, err = r.cfg.ResolveTargetDates(ctx, startedAt)
 		if err != nil {
 			resultErr = err
-			return nil, err
+			return run, err
 		}
 	}
 	run.TargetWindow = strings.Join(targetDates, ",")
+	run.Details = fmt.Sprintf("target_window=%s phase=execute domain=all", run.TargetWindow)
 	if err := r.cfg.Store.UpdateRun(run); err != nil {
 		resultErr = err
-		return nil, err
+		return run, err
 	}
 
 	failures, err = r.cfg.Execute(ctx, targetDates)
 	if err != nil {
 		resultErr = err
-		return nil, err
+		return run, err
 	}
 	for _, failure := range failures {
 		payloadJSON, err := json.Marshal(failure)
 		if err != nil {
 			resultErr = err
-			return nil, err
+			return run, err
 		}
 		if err := r.cfg.Store.UpsertTask(&collectorpkg.GovernanceTaskRecord{
 			TaskKey:      fmt.Sprintf("%s:%s:%s:%s", collectorpkg.GovernanceJobDailyCloseSync, failure.Domain, failure.Date, failure.Instrument),
@@ -165,7 +166,7 @@ func (r *DailyCloseSyncRunner) run(ctx context.Context, trigger string, targetDa
 			PayloadJSON:  string(payloadJSON),
 		}); err != nil {
 			resultErr = err
-			return nil, err
+			return run, err
 		}
 	}
 
