@@ -257,6 +257,79 @@ func TestServeIndexMembersResolvesIndexCodeFromBlockData(t *testing.T) {
 	}
 }
 
+func TestServeIndustriesListsPrimaryTaxonomy(t *testing.T) {
+	installSecurityIndustryRuntime(t)
+
+	req := httptest.NewRequest("GET", "/api/industries?level=primary", nil)
+	w := httptest.NewRecorder()
+	serveIndustries(w, req)
+
+	data := decodeSuccessData(t, w)
+	if data["taxonomy"] != "tdx_security_industry" {
+		t.Fatalf("taxonomy = %v, want tdx_security_industry", data["taxonomy"])
+	}
+	if data["source"] != "tdxhy.cfg+incon.dat" {
+		t.Fatalf("source = %v, want tdxhy.cfg+incon.dat", data["source"])
+	}
+	if data["count"] != float64(2) {
+		t.Fatalf("count = %v, want 2", data["count"])
+	}
+
+	items := mapItemsByField(t, data["items"], "industry_code")
+	bank := items["T1001"]
+	if bank["industry_name"] != "银行" || bank["stock_count"] != float64(3) {
+		t.Fatalf("bank item = %#v, want 银行 count=3", bank)
+	}
+	liquor := items["T030501"]
+	if liquor["industry_name"] != "白酒" || liquor["stock_count"] != float64(1) {
+		t.Fatalf("liquor item = %#v, want 白酒 count=1", liquor)
+	}
+}
+
+func TestServeIndustryMembersFiltersByRefinedIndustry(t *testing.T) {
+	installSecurityIndustryRuntime(t)
+
+	req := httptest.NewRequest("GET", "/api/industry/members?subindustry_code=X500102", nil)
+	w := httptest.NewRecorder()
+	serveIndustryMembers(w, req)
+
+	data := decodeSuccessData(t, w)
+	if data["taxonomy"] != "tdx_security_industry" {
+		t.Fatalf("taxonomy = %v, want tdx_security_industry", data["taxonomy"])
+	}
+	if data["industry_code"] != "T1001" || data["industry_name"] != "银行" {
+		t.Fatalf("industry identity = (%v, %v), want (T1001, 银行)", data["industry_code"], data["industry_name"])
+	}
+	if data["subindustry_code"] != "X500102" || data["subindustry_name"] != "股份制银行" {
+		t.Fatalf("subindustry identity = (%v, %v), want (X500102, 股份制银行)", data["subindustry_code"], data["subindustry_name"])
+	}
+	if data["count"] != float64(2) {
+		t.Fatalf("count = %v, want 2", data["count"])
+	}
+	if got := stringSliceFromJSON(t, data["codes"]); !equalStringSlice(got, []string{"sh600000", "sz000001"}) {
+		t.Fatalf("codes = %#v, want sh600000/sz000001", got)
+	}
+}
+
+func TestServeIndustryMembersDoesNotInferSubindustryFromLimitedPrimaryQuery(t *testing.T) {
+	installSecurityIndustryRuntime(t)
+
+	req := httptest.NewRequest("GET", "/api/industry/members?industry_name=银行&limit=1", nil)
+	w := httptest.NewRecorder()
+	serveIndustryMembers(w, req)
+
+	data := decodeSuccessData(t, w)
+	if data["industry_code"] != "T1001" || data["industry_name"] != "银行" {
+		t.Fatalf("industry identity = (%v, %v), want (T1001, 银行)", data["industry_code"], data["industry_name"])
+	}
+	if data["subindustry_code"] != nil || data["subindustry_name"] != nil {
+		t.Fatalf("subindustry should not be inferred from limited primary query: %#v", data)
+	}
+	if data["count"] != float64(1) {
+		t.Fatalf("count = %v, want limited count 1", data["count"])
+	}
+}
+
 func TestNormalizeQuoteSnapshotZeroesDerivedMetricsWhenPriceIsZero(t *testing.T) {
 	item := normalizeQuoteSnapshot(providerQuoteSnapshot{
 		Price:        0,
@@ -270,6 +343,62 @@ func TestNormalizeQuoteSnapshotZeroesDerivedMetricsWhenPriceIsZero(t *testing.T)
 	if item.Change != 0 || item.ChangePct != 0 || item.Volume != 0 || item.Amount != 0 {
 		t.Fatalf("normalized snapshot still contains inconsistent metrics: %#v", item)
 	}
+}
+
+func installSecurityIndustryRuntime(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	dictPath := filepath.Join(dir, "incon.dat")
+	content := strings.Join([]string{
+		"#TDXNHY",
+		"T1001|银行",
+		"T030501|白酒",
+		"######",
+		"#TDXRSHY",
+		"X500102|股份制银行",
+		"X500103|城商行",
+		"X210205|白酒",
+	}, "\n")
+	if err := os.WriteFile(dictPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write incon.dat: %v", err)
+	}
+
+	original := securityIndustryLabelsResolver
+	resolver := newSecurityIndustryResolver()
+	resolver.pathResolver = func() string { return dictPath }
+	resolver.downloadAssignments = func() ([]byte, error) {
+		return []byte(strings.Join([]string{
+			"0|000001|T1001|||X500102",
+			"1|600000|T1001|||X500102",
+			"0|002142|T1001|||X500103",
+			"1|600519|T030501|||X210205",
+		}, "\n")), nil
+	}
+	securityIndustryLabelsResolver = resolver
+	t.Cleanup(func() {
+		securityIndustryLabelsResolver = original
+	})
+}
+
+func mapItemsByField(t *testing.T, value interface{}, field string) map[string]map[string]interface{} {
+	t.Helper()
+	raw, ok := value.([]interface{})
+	if !ok {
+		t.Fatalf("items = %#v, want []interface{}", value)
+	}
+	out := make(map[string]map[string]interface{}, len(raw))
+	for _, item := range raw {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			t.Fatalf("item = %#v, want object", item)
+		}
+		key, ok := m[field].(string)
+		if !ok || key == "" {
+			t.Fatalf("item[%s] = %#v, want non-empty string", field, m[field])
+		}
+		out[key] = m
+	}
+	return out
 }
 
 type blockMemberProviderStub struct {

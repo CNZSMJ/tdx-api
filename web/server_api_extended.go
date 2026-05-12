@@ -1531,6 +1531,16 @@ func handleGetBlockMembers(w http.ResponseWriter, r *http.Request) {
 	serveBlockMembers(w, r)
 }
 
+// 获取行业列表
+func handleGetIndustries(w http.ResponseWriter, r *http.Request) {
+	serveIndustries(w, r)
+}
+
+// 获取行业成份股
+func handleGetIndustryMembers(w http.ResponseWriter, r *http.Request) {
+	serveIndustryMembers(w, r)
+}
+
 // 获取个股所属板块
 func handleGetStockBlocks(w http.ResponseWriter, r *http.Request) {
 	serveStockBlocks(w, r)

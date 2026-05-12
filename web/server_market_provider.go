@@ -116,6 +116,35 @@ type blockProviderKeyRequirement struct {
 	RequireName      bool
 }
 
+const (
+	securityIndustryTaxonomy     = "tdx_security_industry"
+	securityIndustrySource       = "tdxhy.cfg+incon.dat"
+	securityIndustryLevelPrimary = "primary"
+	securityIndustryLevelRefined = "refined"
+)
+
+type providerIndustryItem struct {
+	IndustryCode    string `json:"industry_code"`
+	IndustryName    string `json:"industry_name,omitempty"`
+	SubindustryCode string `json:"subindustry_code,omitempty"`
+	SubindustryName string `json:"subindustry_name,omitempty"`
+	StockCount      int    `json:"stock_count"`
+}
+
+type providerIndustryMemberItem struct {
+	Code     string `json:"code"`
+	FullCode string `json:"full_code"`
+	Name     string `json:"name,omitempty"`
+	Exchange string `json:"exchange"`
+}
+
+type securityIndustryMemberQuery struct {
+	IndustryCode    string
+	IndustryName    string
+	SubindustryCode string
+	SubindustryName string
+}
+
 var (
 	issuerPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`(?m)(?:公司全称|公司名称|中文名称|法定中文名称|发行人名称)\s*[:：]\s*([^\n\r]+)`),
@@ -643,6 +672,298 @@ func buildBlockMembersResponse(key blockProviderKey, groups []collectorpkg.Block
 		resp["block_type"] = key.BlockType
 	}
 	return resp
+}
+
+func serveIndustries(w http.ResponseWriter, r *http.Request) {
+	snapshot, err := loadSecurityIndustrySnapshot()
+	if err != nil {
+		errorResponse(w, err.Error())
+		return
+	}
+	level, err := parseSecurityIndustryLevel(strings.TrimSpace(r.URL.Query().Get("level")))
+	if err != nil {
+		errorResponse(w, err.Error())
+		return
+	}
+	keyword := strings.TrimSpace(r.URL.Query().Get("keyword"))
+	limit := parsePositiveInt(strings.TrimSpace(r.URL.Query().Get("limit")))
+	items := buildSecurityIndustryItems(snapshot, level, keyword, limit)
+
+	successResponse(w, map[string]interface{}{
+		"taxonomy": securityIndustryTaxonomy,
+		"source":   securityIndustrySource,
+		"level":    level,
+		"count":    len(items),
+		"items":    items,
+	})
+}
+
+func serveIndustryMembers(w http.ResponseWriter, r *http.Request) {
+	query, err := parseSecurityIndustryMemberQuery(r)
+	if err != nil {
+		errorResponse(w, err.Error())
+		return
+	}
+	snapshot, err := loadSecurityIndustrySnapshot()
+	if err != nil {
+		errorResponse(w, err.Error())
+		return
+	}
+
+	assignments := filterSecurityIndustryAssignments(snapshot, query)
+	if len(assignments) == 0 {
+		errorResponse(w, "指定行业未找到或没有成分")
+		return
+	}
+	allAssignments := assignments
+	limit := parsePositiveInt(strings.TrimSpace(r.URL.Query().Get("limit")))
+	if limit > 0 && len(assignments) > limit {
+		assignments = assignments[:limit]
+	}
+	codes, items := buildSecurityIndustryMemberItems(assignments)
+	resp := map[string]interface{}{
+		"taxonomy": securityIndustryTaxonomy,
+		"source":   securityIndustrySource,
+		"count":    len(items),
+		"codes":    codes,
+		"items":    items,
+	}
+	if code, name, ok := uniqueSecurityIndustryPrimary(snapshot, allAssignments); ok {
+		resp["industry_code"] = code
+		resp["industry_name"] = name
+	}
+	if code, name, ok := uniqueSecurityIndustryRefined(snapshot, allAssignments); ok {
+		resp["subindustry_code"] = code
+		resp["subindustry_name"] = name
+	}
+	successResponse(w, resp)
+}
+
+func loadSecurityIndustrySnapshot() (securityIndustrySnapshot, error) {
+	if securityIndustryLabelsResolver == nil {
+		return securityIndustrySnapshot{}, errors.New("行业服务未初始化")
+	}
+	snapshot, err := securityIndustryLabelsResolver.Snapshot()
+	if err != nil {
+		return securityIndustrySnapshot{}, fmt.Errorf("行业数据未加载: %w", err)
+	}
+	return snapshot, nil
+}
+
+func parseSecurityIndustryLevel(raw string) (string, error) {
+	if raw == "" {
+		return securityIndustryLevelPrimary, nil
+	}
+	switch raw {
+	case securityIndustryLevelPrimary, securityIndustryLevelRefined:
+		return raw, nil
+	default:
+		return "", errors.New("level 参数无效")
+	}
+}
+
+func buildSecurityIndustryItems(snapshot securityIndustrySnapshot, level, keyword string, limit int) []providerIndustryItem {
+	normalizedKeyword := normalizeBlockKeyword(keyword)
+	byKey := make(map[string]*providerIndustryItem)
+	for _, assignment := range snapshot.Assignments {
+		industryCode := strings.TrimSpace(assignment.PrimaryIndustryCode)
+		if industryCode == "" {
+			continue
+		}
+		industryName := strings.TrimSpace(snapshot.PrimaryNames[industryCode])
+		switch level {
+		case securityIndustryLevelPrimary:
+			item := byKey[industryCode]
+			if item == nil {
+				item = &providerIndustryItem{
+					IndustryCode: industryCode,
+					IndustryName: industryName,
+				}
+				byKey[industryCode] = item
+			}
+			item.StockCount++
+		case securityIndustryLevelRefined:
+			subindustryCode := strings.TrimSpace(assignment.RefinedIndustryCode)
+			if subindustryCode == "" {
+				continue
+			}
+			key := industryCode + "|" + subindustryCode
+			item := byKey[key]
+			if item == nil {
+				item = &providerIndustryItem{
+					IndustryCode:    industryCode,
+					IndustryName:    industryName,
+					SubindustryCode: subindustryCode,
+					SubindustryName: strings.TrimSpace(snapshot.RefinedNames[subindustryCode]),
+				}
+				byKey[key] = item
+			}
+			item.StockCount++
+		}
+	}
+
+	items := make([]providerIndustryItem, 0, len(byKey))
+	for _, item := range byKey {
+		if normalizedKeyword != "" && !securityIndustryItemMatchesKeyword(*item, normalizedKeyword) {
+			continue
+		}
+		items = append(items, *item)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].IndustryName != items[j].IndustryName {
+			return items[i].IndustryName < items[j].IndustryName
+		}
+		if items[i].IndustryCode != items[j].IndustryCode {
+			return items[i].IndustryCode < items[j].IndustryCode
+		}
+		if items[i].SubindustryName != items[j].SubindustryName {
+			return items[i].SubindustryName < items[j].SubindustryName
+		}
+		return items[i].SubindustryCode < items[j].SubindustryCode
+	})
+	if limit > 0 && len(items) > limit {
+		items = items[:limit]
+	}
+	return items
+}
+
+func securityIndustryItemMatchesKeyword(item providerIndustryItem, keyword string) bool {
+	values := []string{item.IndustryCode, item.IndustryName, item.SubindustryCode, item.SubindustryName}
+	for _, value := range values {
+		if strings.Contains(normalizeBlockKeyword(value), keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+func parseSecurityIndustryMemberQuery(r *http.Request) (securityIndustryMemberQuery, error) {
+	query := securityIndustryMemberQuery{
+		IndustryCode:    strings.TrimSpace(r.URL.Query().Get("industry_code")),
+		IndustryName:    strings.TrimSpace(r.URL.Query().Get("industry_name")),
+		SubindustryCode: strings.TrimSpace(r.URL.Query().Get("subindustry_code")),
+		SubindustryName: strings.TrimSpace(r.URL.Query().Get("subindustry_name")),
+	}
+	if query.IndustryCode == "" && query.IndustryName == "" && query.SubindustryCode == "" && query.SubindustryName == "" {
+		return securityIndustryMemberQuery{}, errors.New("industry_code、industry_name、subindustry_code 或 subindustry_name 为必填参数")
+	}
+	return query, nil
+}
+
+func filterSecurityIndustryAssignments(snapshot securityIndustrySnapshot, query securityIndustryMemberQuery) []securityIndustryAssignment {
+	assignments := make([]securityIndustryAssignment, 0)
+	for _, assignment := range snapshot.Assignments {
+		industryCode := strings.TrimSpace(assignment.PrimaryIndustryCode)
+		subindustryCode := strings.TrimSpace(assignment.RefinedIndustryCode)
+		if query.IndustryCode != "" && industryCode != query.IndustryCode {
+			continue
+		}
+		if query.SubindustryCode != "" && subindustryCode != query.SubindustryCode {
+			continue
+		}
+		if query.IndustryName != "" && strings.TrimSpace(snapshot.PrimaryNames[industryCode]) != query.IndustryName {
+			continue
+		}
+		if query.SubindustryName != "" && strings.TrimSpace(snapshot.RefinedNames[subindustryCode]) != query.SubindustryName {
+			continue
+		}
+		assignments = append(assignments, assignment)
+	}
+	sort.Slice(assignments, func(i, j int) bool {
+		return assignments[i].FullCode < assignments[j].FullCode
+	})
+	return assignments
+}
+
+func buildSecurityIndustryMemberItems(assignments []securityIndustryAssignment) ([]string, []providerIndustryMemberItem) {
+	models := cachedCodeModelsByFullCode()
+	codes := make([]string, 0, len(assignments))
+	items := make([]providerIndustryMemberItem, 0, len(assignments))
+	for _, assignment := range assignments {
+		fullCode := normalizeSecurityFullCode(assignment.FullCode)
+		if fullCode == "" {
+			continue
+		}
+		item := providerIndustryMemberItem{
+			Code:     bareCode(fullCode),
+			FullCode: fullCode,
+			Exchange: exchangeFromFullCode(fullCode),
+		}
+		if model := models[fullCode]; model != nil {
+			item.Name = model.Name
+			item.Exchange = providerExchange(model)
+		}
+		codes = append(codes, fullCode)
+		items = append(items, item)
+	}
+	return codes, items
+}
+
+func cachedCodeModelsByFullCode() map[string]*tdx.CodeModel {
+	if tdx.DefaultCodes == nil {
+		return nil
+	}
+	models, err := tdx.DefaultCodes.GetCodes(true)
+	if err != nil {
+		return nil
+	}
+	byFullCode := make(map[string]*tdx.CodeModel, len(models))
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		byFullCode[strings.ToLower(model.FullCode())] = model
+	}
+	return byFullCode
+}
+
+func exchangeFromFullCode(fullCode string) string {
+	if len(fullCode) < 2 {
+		return ""
+	}
+	return strings.ToUpper(fullCode[:2])
+}
+
+func uniqueSecurityIndustryPrimary(snapshot securityIndustrySnapshot, assignments []securityIndustryAssignment) (string, string, bool) {
+	var code string
+	for _, assignment := range assignments {
+		current := strings.TrimSpace(assignment.PrimaryIndustryCode)
+		if current == "" {
+			continue
+		}
+		if code == "" {
+			code = current
+			continue
+		}
+		if code != current {
+			return "", "", false
+		}
+	}
+	if code == "" {
+		return "", "", false
+	}
+	return code, strings.TrimSpace(snapshot.PrimaryNames[code]), true
+}
+
+func uniqueSecurityIndustryRefined(snapshot securityIndustrySnapshot, assignments []securityIndustryAssignment) (string, string, bool) {
+	var code string
+	for _, assignment := range assignments {
+		current := strings.TrimSpace(assignment.RefinedIndustryCode)
+		if current == "" {
+			continue
+		}
+		if code == "" {
+			code = current
+			continue
+		}
+		if code != current {
+			return "", "", false
+		}
+	}
+	if code == "" {
+		return "", "", false
+	}
+	return code, strings.TrimSpace(snapshot.RefinedNames[code]), true
 }
 
 func resolveIndexMemberTarget(rawCode, rawName string) (string, string, error) {

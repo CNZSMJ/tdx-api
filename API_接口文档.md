@@ -291,7 +291,7 @@ GET /api/search?keyword=510&asset_type=etf&limit=10
   "message": "success",
   "data": {
     "count": 3,
-    "list": [
+    "items": [
       {
         "code": "000001",
         "full_code": "sz000001",
@@ -1335,13 +1335,13 @@ GET /api/financial-reports?code=600000&start_date=20250101&end_date=20251231
 
 ---
 
-## 🏷️ 板块数据接口
+## 🏷️ 板块与明确行业接口
 
 ### 32. 获取板块列表
 
 **接口**: `GET /api/blocks`
 
-**描述**: 获取行业板块、概念板块等分类列表，支持按类型筛选或关键词搜索。
+**描述**: 获取 TDX 板块文件中的板块列表，支持按类型筛选或关键词搜索。该接口保留板块语义；明确行业 taxonomy 请使用 `/api/industries`。
 
 **请求参数**:
 | 参数 | 类型 | 必填 | 说明 |
@@ -1366,9 +1366,9 @@ GET /api/blocks?source=block_zs.dat&block_type=index_block&keyword=沪深300
     "count": 3,
     "list": [
       {
-        "name": "半导体",
-        "block_type": "concept",
         "source": "block_gn.dat",
+        "block_type": "concept",
+        "name": "半导体",
         "stock_count": 85
       }
     ]
@@ -1422,7 +1422,100 @@ GET /api/block/members?source=block_gn.dat&block_type=concept&name=半导体
 
 ---
 
-### 34. 获取指数成份股
+### 34. 获取明确行业列表
+
+**接口**: `GET /api/industries`
+
+**描述**: 获取基于 TDX `tdxhy.cfg` 与 `incon.dat` 的明确行业 taxonomy，不依赖 `block_fg.dat` 板块分类。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| level | string | 否 | `primary`（默认，一级行业）/ `refined`（细分行业） |
+| keyword | string | 否 | 搜索关键词（匹配行业代码或名称） |
+| limit | int | 否 | 返回条数限制 |
+
+**请求示例**:
+```
+GET /api/industries
+GET /api/industries?level=refined&keyword=银行
+```
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "taxonomy": "tdx_security_industry",
+    "source": "tdxhy.cfg+incon.dat",
+    "level": "primary",
+    "count": 2,
+    "items": [
+      {
+        "industry_code": "T1001",
+        "industry_name": "银行",
+        "stock_count": 42
+      }
+    ]
+  }
+}
+```
+
+---
+
+### 35. 获取行业成份股
+
+**接口**: `GET /api/industry/members`
+
+**描述**: 按一级行业或细分行业查询成份股。支持用行业代码或行业名称查询，返回完整市场前缀代码。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| industry_code | string | 否 | 一级行业代码，例如 `T1001` |
+| industry_name | string | 否 | 一级行业名称，例如 `银行` |
+| subindustry_code | string | 否 | 细分行业代码，例如 `X500102` |
+| subindustry_name | string | 否 | 细分行业名称，例如 `股份制银行` |
+| limit | int | 否 | 返回成份数量限制 |
+
+> `industry_code` / `industry_name` / `subindustry_code` / `subindustry_name` 至少传一个；多个参数同时传入时按交集过滤。
+
+**请求示例**:
+```
+GET /api/industry/members?industry_name=银行
+GET /api/industry/members?subindustry_code=X500102
+```
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "taxonomy": "tdx_security_industry",
+    "source": "tdxhy.cfg+incon.dat",
+    "industry_code": "T1001",
+    "industry_name": "银行",
+    "subindustry_code": "X500102",
+    "subindustry_name": "股份制银行",
+    "count": 2,
+    "codes": ["sh600000", "sz000001"],
+    "items": [
+      {
+        "code": "600000",
+        "full_code": "sh600000",
+        "name": "浦发银行",
+        "exchange": "SH"
+      }
+    ]
+  }
+}
+```
+
+---
+
+### 36. 获取指数成份股
 
 **接口**: `GET /api/index/members`
 
@@ -1467,7 +1560,7 @@ GET /api/index/members?name=沪深300
 
 ---
 
-### 35. 获取个股所属板块
+### 37. 获取个股所属板块
 
 **接口**: `GET /api/stock/blocks`
 
@@ -1515,7 +1608,7 @@ GET /api/stock/blocks?code=sh600460
 
 以下接口依赖后台 Ticker 服务，服务启动后自动开始工作。盘中（9:15-15:05）每 3 秒更新一次全市场行情并聚合板块排名，非盘中返回最后一次采集的快照数据。
 
-### 36. 板块涨幅排名
+### 38. 板块涨幅排名
 
 **接口**: `GET /api/block/ranking`
 
@@ -1581,7 +1674,7 @@ GET /api/block/ranking?type=industry&sort_by=amount&order=desc
 
 ---
 
-### 37. 板块内个股排名
+### 39. 板块内个股排名
 
 **接口**: `GET /api/block/stocks`
 
@@ -1648,7 +1741,7 @@ GET /api/block/stocks?name=半导体&sort_by=amount&limit=10
 
 ---
 
-### 38. Ticker 服务状态
+### 40. Ticker 服务状态
 
 **接口**: `GET /api/ticker/status`
 
@@ -1677,7 +1770,7 @@ GET /api/block/stocks?name=半导体&sort_by=amount&limit=10
 
 ---
 
-### 39. 证券轻量快照
+### 41. 证券轻量快照
 
 **接口**: `GET /api/profile`
 
@@ -1755,7 +1848,7 @@ GET /api/block/stocks?name=半导体&sort_by=amount&limit=10
 
 ---
 
-### 40. Collector 运行状态
+### 42. Collector 运行状态
 
 **接口**: `GET /api/collector/status`
 
@@ -1787,7 +1880,7 @@ GET /api/block/stocks?name=半导体&sort_by=amount&limit=10
 
 ---
 
-### 41. 执行 / 查看对账报告
+### 43. 执行 / 查看对账报告
 
 **接口**: `GET/POST /api/collector/reconcile`
 
@@ -2310,6 +2403,7 @@ Professional Finance API 最小稳定错误代码集合：
 
 ### v1.1.0 (2026-04)
 - 板块数据接口：板块列表、成份股、个股所属板块
+- 明确行业接口：行业 taxonomy、行业成份股
 - 实时板块排名：盘中 3 秒刷新，按涨幅/成交额/涨停数排序
 - 板块内个股排名：支持涨幅/成交额/成交量/振幅排序
 - Ticker 服务状态查询

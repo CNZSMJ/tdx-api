@@ -2634,6 +2634,8 @@ func main() {
 	http.HandleFunc("/api/income", handleGetIncome)
 	http.HandleFunc("/api/blocks", handleGetBlocks)
 	http.HandleFunc("/api/block/members", handleGetBlockMembers)
+	http.HandleFunc("/api/industries", handleGetIndustries)
+	http.HandleFunc("/api/industry/members", handleGetIndustryMembers)
 	http.HandleFunc("/api/stock/blocks", handleGetStockBlocks)
 	http.HandleFunc("/api/block/ranking", handleBlockRanking)
 	http.HandleFunc("/api/block/stocks", handleBlockStocks)

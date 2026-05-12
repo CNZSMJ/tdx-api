@@ -27,6 +27,12 @@ type securityIndustryAssignment struct {
 	RefinedIndustryCode string
 }
 
+type securityIndustrySnapshot struct {
+	PrimaryNames map[string]string
+	RefinedNames map[string]string
+	Assignments  map[string]securityIndustryAssignment
+}
+
 type securityIndustryResolver struct {
 	mu sync.Mutex
 
@@ -66,31 +72,47 @@ func (r *securityIndustryResolver) Resolve(fullCode string) (string, string) {
 		return "", ""
 	}
 
-	path := strings.TrimSpace(r.pathResolver())
-	if path == "" {
-		return "", ""
-	}
-
-	primaryNames, refinedNames, err := r.loadDictionary(path)
+	snapshot, err := r.Snapshot()
 	if err != nil {
 		return "", ""
 	}
-	assignments, err := r.loadAssignments()
-	if err != nil {
-		return "", ""
-	}
-	assignment, ok := assignments[fullCode]
+	assignment, ok := snapshot.Assignments[fullCode]
 	if !ok {
 		return "", ""
 	}
 
-	industryName := strings.TrimSpace(primaryNames[assignment.PrimaryIndustryCode])
-	subindustryName := strings.TrimSpace(refinedNames[assignment.RefinedIndustryCode])
+	industryName := strings.TrimSpace(snapshot.PrimaryNames[assignment.PrimaryIndustryCode])
+	subindustryName := strings.TrimSpace(snapshot.RefinedNames[assignment.RefinedIndustryCode])
 	if industryName == "" {
 		industryName = subindustryName
 		subindustryName = ""
 	}
 	return industryName, subindustryName
+}
+
+func (r *securityIndustryResolver) Snapshot() (securityIndustrySnapshot, error) {
+	if r == nil {
+		return securityIndustrySnapshot{}, errors.New("行业解析器未初始化")
+	}
+
+	path := strings.TrimSpace(r.pathResolver())
+	if path == "" {
+		return securityIndustrySnapshot{}, errors.New("行业字典未配置")
+	}
+
+	primaryNames, refinedNames, err := r.loadDictionary(path)
+	if err != nil {
+		return securityIndustrySnapshot{}, err
+	}
+	assignments, err := r.loadAssignments()
+	if err != nil {
+		return securityIndustrySnapshot{}, err
+	}
+	return securityIndustrySnapshot{
+		PrimaryNames: primaryNames,
+		RefinedNames: refinedNames,
+		Assignments:  assignments,
+	}, nil
 }
 
 func (r *securityIndustryResolver) loadDictionary(path string) (map[string]string, map[string]string, error) {

@@ -49,20 +49,22 @@
 36. **GET /api/workday/range** - 交易日范围列表
 37. **GET /api/income** - 收益区间分析
 
-### ✅ 板块数据与实时排名接口（7个）
-38. **GET /api/blocks** - 板块列表（行业/概念/风格，支持关键词搜索）
+### ✅ 板块数据、明确行业与实时排名接口（9个）
+38. **GET /api/blocks** - TDX 板块列表（概念/风格/指数板块等，支持关键词搜索）
 39. **GET /api/block/members** - 板块成份股代码列表
-40. **GET /api/index/members** - 指数成份股代码列表
-41. **GET /api/stock/blocks** - 个股所属板块查询
-42. **GET /api/block/ranking** - 板块实时涨幅排名（盘中3秒刷新，支持涨幅/成交额/涨停数排序）
-43. **GET /api/block/stocks** - 板块内个股实时排名（支持涨幅/成交额/成交量/振幅排序）
-44. **GET /api/ticker/status** - 实时行情轮询服务状态
+40. **GET /api/industries** - 明确行业 taxonomy（`tdxhy.cfg` + `incon.dat`）
+41. **GET /api/industry/members** - 明确行业成份股代码列表
+42. **GET /api/index/members** - 指数成份股代码列表
+43. **GET /api/stock/blocks** - 个股所属板块查询
+44. **GET /api/block/ranking** - 板块实时涨幅排名（盘中3秒刷新，支持涨幅/成交额/涨停数排序）
+45. **GET /api/block/stocks** - 板块内个股实时排名（支持涨幅/成交额/成交量/振幅排序）
+46. **GET /api/ticker/status** - 实时行情轮询服务状态
 
 ### ✅ 运维 / 辅助接口（3个）
-45. **GET /api/profile** - 证券轻量快照（基础属性 + 当前行情 + 常用估值字段）
-46. **GET /api/security/status** - 证券可交易状态（停牌/ST/退市风险）
-47. **GET /api/collector/status** - 数据采集器运行状态
-48. **GET/POST /api/collector/reconcile** - 查看/触发数据对账
+47. **GET /api/profile** - 证券轻量快照（基础属性 + 当前行情 + 常用估值字段）
+48. **GET /api/security/status** - 证券可交易状态（停牌/ST/退市风险）
+49. **GET /api/collector/status** - 数据采集器运行状态
+50. **GET/POST /api/collector/reconcile** - 查看/触发数据对账
 
 ---
 
@@ -119,6 +121,8 @@ func main() {
 	// === 板块数据路由 ===
 	http.HandleFunc("/api/blocks", handleGetBlocks)
 	http.HandleFunc("/api/block/members", handleGetBlockMembers)
+	http.HandleFunc("/api/industries", handleGetIndustries)
+	http.HandleFunc("/api/industry/members", handleGetIndustryMembers)
 	http.HandleFunc("/api/index/members", handleGetIndexMembers)
 	http.HandleFunc("/api/stock/blocks", handleGetStockBlocks)
 
@@ -405,12 +409,14 @@ curl "http://localhost:8080/api/health"
 | /api/server-status | GET | 服务状态 |
 | /api/health | GET | 健康检查 |
 
-### 板块数据与实时排名接口
+### 板块数据、明确行业与实时排名接口
 
 | 接口 | 方法 | 说明 |
 |-----|------|------|
-| /api/blocks | GET | 板块列表（行业/概念/风格，支持搜索） |
+| /api/blocks | GET | TDX 板块列表（概念/风格/指数板块等，支持搜索） |
 | /api/block/members | GET | 板块成份股代码 |
+| /api/industries | GET | 明确行业 taxonomy |
+| /api/industry/members | GET | 明确行业成份股代码 |
 | /api/index/members | GET | 指数成份股代码 |
 | /api/stock/blocks | GET | 个股所属板块 |
 | /api/block/ranking | GET | 板块实时涨幅排名（盘中3秒刷新） |
@@ -613,7 +619,7 @@ func setCache(key string, val interface{}) {
 ## ✅ 总结
 
 ### 已完成
-✅ 32个完整API接口（含板块数据与实时排名）  
+✅ 50个完整API接口（含板块数据、明确行业与实时排名）
 ✅ 详细的接口文档  
 ✅ 使用示例（Python/JavaScript/cURL）  
 ✅ 集成指南  
