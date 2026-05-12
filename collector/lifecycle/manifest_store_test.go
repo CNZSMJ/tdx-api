@@ -1,6 +1,7 @@
 package lifecycle
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -97,5 +98,89 @@ func TestManifestStoreEnforcesSegmentStateMachine(t *testing.T) {
 	}
 	if got.DatasetID != segment.DatasetID || got.PartitionKey != segment.PartitionKey || got.StorageScheme != segment.StorageScheme || got.FinalizationStrategy != segment.FinalizationStrategy {
 		t.Fatalf("segment metadata was not preserved: got=%+v want=%+v", got, segment)
+	}
+}
+
+func TestManifestStoreMigratesLegacyBatchIDColumn(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "cold_manifest.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE cold_segment (
+		segment_id TEXT PRIMARY KEY,
+		batch_id TEXT NOT NULL,
+		domain TEXT NOT NULL,
+		table_name TEXT NOT NULL,
+		instrument TEXT,
+		start_date TEXT NOT NULL,
+		end_date TEXT NOT NULL,
+		cold_uri TEXT NOT NULL,
+		status TEXT NOT NULL,
+		row_count INTEGER NOT NULL DEFAULT 0,
+		file_checksum TEXT,
+		logical_checksum TEXT,
+		schema_version INTEGER NOT NULL,
+		status_reason TEXT,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL,
+		archive_batch_id TEXT NOT NULL DEFAULT ''
+	)`); err != nil {
+		t.Fatalf("create legacy cold_segment: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO cold_segment(segment_id, batch_id, domain, table_name, instrument, start_date, end_date, cold_uri, status, schema_version, created_at, updated_at, archive_batch_id)
+		VALUES('legacy-seg', 'legacy-batch', 'trade', 'TradeHistory', 'sh600000', '20240101', '20240131', 'tdx-cold://a-stock-market-tdx/cold/domain=trade/table=TradeHistory/instrument=sh600000/year=2024/part-legacy.parquet', 'active', 1, '2024-02-01T00:00:00Z', '2024-02-01T00:00:00Z', 'legacy-batch')`); err != nil {
+		t.Fatalf("seed legacy segment: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seed db: %v", err)
+	}
+
+	store, err := OpenManifestStore(dbPath)
+	if err != nil {
+		t.Fatalf("open migrated manifest: %v", err)
+	}
+	defer store.Close()
+
+	columns, err := store.tableColumns("cold_segment")
+	if err != nil {
+		t.Fatalf("list migrated columns: %v", err)
+	}
+	if columns["batch_id"] {
+		t.Fatalf("legacy batch_id column should be removed after migration")
+	}
+	if !columns["archive_batch_id"] {
+		t.Fatalf("archive_batch_id column should exist after migration")
+	}
+
+	var archiveBatchID string
+	if err := store.db.QueryRow(`SELECT archive_batch_id FROM cold_segment WHERE segment_id='legacy-seg'`).Scan(&archiveBatchID); err != nil {
+		t.Fatalf("read migrated segment: %v", err)
+	}
+	if archiveBatchID != "legacy-batch" {
+		t.Fatalf("archive_batch_id = %q, want legacy-batch", archiveBatchID)
+	}
+
+	segment := ColdSegment{
+		SegmentID:       "new-seg",
+		ArchiveBatchID:  "new-batch",
+		Domain:          "trade",
+		TableName:       "TradeHistory",
+		Instrument:      "sh600001",
+		StartDate:       "20240201",
+		EndDate:         "20240229",
+		TradingDayCount: 20,
+		ColdURI:         "tdx-cold://a-stock-market-tdx/cold/domain=trade/table=TradeHistory/instrument=sh600001/year=2024/part-new.parquet",
+		Status:          SegmentPlanned,
+		SchemaVersion:   1,
+	}
+	if err := store.CreateSegment(segment); err != nil {
+		t.Fatalf("create segment after legacy migration: %v", err)
+	}
+	if err := store.db.QueryRow(`SELECT archive_batch_id FROM cold_segment WHERE segment_id='new-seg'`).Scan(&archiveBatchID); err != nil {
+		t.Fatalf("read new segment: %v", err)
+	}
+	if archiveBatchID != "new-batch" {
+		t.Fatalf("new archive_batch_id = %q, want new-batch", archiveBatchID)
 	}
 }

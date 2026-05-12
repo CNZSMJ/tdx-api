@@ -186,9 +186,16 @@ func (s *ManifestStore) ensureColdSegmentColumns() error {
 			return err
 		}
 	}
-	if columns["batch_id"] && !columns["archive_batch_id"] {
-		_, err := s.db.Exec(`UPDATE cold_segment SET archive_batch_id = batch_id WHERE archive_batch_id = ''`)
-		return err
+	if columns["batch_id"] {
+		if _, err := s.db.Exec(`UPDATE cold_segment SET archive_batch_id = batch_id WHERE archive_batch_id = ''`); err != nil {
+			return err
+		}
+		if _, err := s.db.Exec(`DROP INDEX IF EXISTS idx_cold_segment_batch`); err != nil {
+			return err
+		}
+		if _, err := s.db.Exec(`ALTER TABLE cold_segment DROP COLUMN batch_id`); err != nil {
+			return err
+		}
 	}
 	return nil
 }
