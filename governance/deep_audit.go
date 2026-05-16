@@ -86,6 +86,7 @@ func (r *DeepAuditBackfillRunner) Run(ctx context.Context, trigger string, req D
 	}); err != nil {
 		return nil, err
 	}
+	defer r.cfg.Store.DeleteLockMetadata("system_governance")
 
 	var resultErr error
 	var partial bool

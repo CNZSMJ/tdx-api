@@ -227,14 +227,16 @@ func executeDailyAuditRepairTask(ctx context.Context, task collectorpkg.Governan
 
 	if governanceStore != nil {
 		now := time.Now()
-		_ = governanceStore.RecordLockMetadata(&collectorpkg.GovernanceLockMetadataRecord{
+		if err := governanceStore.RecordLockMetadata(&collectorpkg.GovernanceLockMetadataRecord{
 			LockName:        "system_governance",
 			HolderPID:       int64(os.Getpid()),
 			HolderJobName:   "repair_worker",
 			HolderRunID:     fmt.Sprintf("repair-worker:%s", task.TaskKey),
 			AcquiredAt:      now,
 			LastHeartbeatAt: now,
-		})
+		}); err == nil {
+			defer governanceStore.DeleteLockMetadata("system_governance")
+		}
 	}
 	if collectorRuntime == nil {
 		return collectorpkg.GovernanceTaskStatusBlocked, "collector runtime unavailable", nil

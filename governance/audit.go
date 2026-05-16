@@ -99,6 +99,7 @@ func (r *DailyAuditRunner) run(ctx context.Context, trigger string, targetDates 
 	}); err != nil {
 		return nil, err
 	}
+	defer r.cfg.Store.DeleteLockMetadata("system_governance")
 
 	var resultErr error
 	var partial bool

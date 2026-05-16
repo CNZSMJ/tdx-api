@@ -236,6 +236,13 @@ func (r TerminalGovernanceWindowRepair) Apply(store *GovernanceStore) ([]Governa
 			} else {
 				window.EndedAt = now
 			}
+		case "close_covered_window":
+			window.Status = GovernanceWindowStatusPassed
+			window.LastError = ""
+			window.ResultSummary = plan.change.Reason
+			if window.EndedAt.IsZero() {
+				window.EndedAt = now
+			}
 		case "requeue_window":
 			window.Status = GovernanceWindowStatusQueued
 			window.NextRunAt = time.Time{}
@@ -264,9 +271,14 @@ func (r TerminalGovernanceWindowRepair) plan(store *GovernanceStore) ([]terminal
 	if err != nil {
 		return nil, err
 	}
+	snapshots, err := store.ListLatestDomainHealthSnapshots()
+	if err != nil {
+		return nil, err
+	}
+	coverage := closeSyncSnapshotCoverage(snapshots)
 	plans := make([]terminalGovernanceWindowRepairPlan, 0, len(windows))
 	for _, window := range windows {
-		plan, err := r.planWindow(store, window)
+		plan, err := r.planWindow(store, window, coverage)
 		if err != nil {
 			return nil, err
 		}
@@ -275,7 +287,7 @@ func (r TerminalGovernanceWindowRepair) plan(store *GovernanceStore) ([]terminal
 	return plans, nil
 }
 
-func (r TerminalGovernanceWindowRepair) planWindow(store *GovernanceStore, window GovernanceWindowRecord) (terminalGovernanceWindowRepairPlan, error) {
+func (r TerminalGovernanceWindowRepair) planWindow(store *GovernanceStore, window GovernanceWindowRecord, coverage closeSyncCoverage) (terminalGovernanceWindowRepairPlan, error) {
 	latestRun, err := store.LatestRunForWindow(window.JobName, window.TargetWindow)
 	if err != nil {
 		return terminalGovernanceWindowRepairPlan{}, err
@@ -296,6 +308,12 @@ func (r TerminalGovernanceWindowRepair) planWindow(store *GovernanceStore, windo
 			change.Reason = fmt.Sprintf("latest durable run_id=%s is still running", latestRun.RunID)
 			return terminalGovernanceWindowRepairPlan{change: change, window: window, run: latestRun}, nil
 		}
+	}
+	if terminalWindowCoveredBySnapshots(window, coverage) {
+		target, _ := maxWindowTargetDate(window.TargetWindow)
+		change.Action = "close_covered_window"
+		change.Reason = fmt.Sprintf("data health snapshots cover target %s", target)
+		return terminalGovernanceWindowRepairPlan{change: change, window: window, run: latestRun}, nil
 	}
 
 	ready, reason, err := terminalWindowDependencyReady(store, window)
@@ -327,6 +345,16 @@ func (r TerminalGovernanceWindowRepair) now() time.Time {
 		return r.Now()
 	}
 	return time.Now()
+}
+
+func terminalWindowCoveredBySnapshots(window GovernanceWindowRecord, coverage closeSyncCoverage) bool {
+	switch GovernanceJob(window.JobName) {
+	case GovernanceJobDailyCloseSync, GovernanceJobDailyAudit:
+	default:
+		return false
+	}
+	target, ok := maxWindowTargetDate(window.TargetWindow)
+	return ok && coverage.covers(target)
 }
 
 func missingDependencyWindowForTerminalWindow(window GovernanceWindowRecord, now time.Time) (*GovernanceWindowRecord, bool) {
@@ -760,7 +788,7 @@ func (c domainCoverage) covers(domain, target string) bool {
 		return false
 	}
 	switch domain {
-	case "trade_history", "live_capture", "order_history", "finance":
+	case "trade_history", "live_capture", "order_history":
 		return dateWatermarkCovers(strings.TrimSpace(snapshot.LatestWatermark), target)
 	default:
 		return true
@@ -771,7 +799,7 @@ func (c closeSyncCoverage) covers(target string) bool {
 	if !c.healthy {
 		return false
 	}
-	for _, domain := range []string{"trade_history", "live_capture", "order_history", "finance"} {
+	for _, domain := range []string{"trade_history", "live_capture", "order_history"} {
 		watermark := c.watermarks[domain]
 		if !dateWatermarkCovers(watermark, target) {
 			return false

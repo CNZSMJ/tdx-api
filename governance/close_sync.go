@@ -92,6 +92,7 @@ func (r *DailyCloseSyncRunner) run(ctx context.Context, trigger string, targetDa
 		}); err != nil {
 			return nil, err
 		}
+		defer r.cfg.Store.DeleteLockMetadata("system_governance")
 	}
 
 	var resultErr error

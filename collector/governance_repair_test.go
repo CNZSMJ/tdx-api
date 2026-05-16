@@ -606,6 +606,78 @@ func TestTerminalGovernanceWindowRepairCreatesMissingDependencyWindow(t *testing
 	}
 }
 
+func TestTerminalGovernanceWindowRepairClosesCoveredTerminalCloseSyncWindow(t *testing.T) {
+	paths := ResolveGovernancePaths(t.TempDir())
+	store, err := OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	now := fixedRepairNow()
+	targetWindow := "20260514,20260515"
+	windowKey := GovernanceWindowKey(GovernanceJobDailyCloseSync, targetWindow)
+	if err := store.UpsertWindow(&GovernanceWindowRecord{
+		WindowKey:    windowKey,
+		JobName:      string(GovernanceJobDailyCloseSync),
+		TargetWindow: targetWindow,
+		DueAt:        now.Add(-time.Hour),
+		Priority:     GovernanceJobPriority(GovernanceJobDailyCloseSync),
+		Status:       GovernanceWindowStatusTerminalFailed,
+		LastError:    "context deadline exceeded",
+	}); err != nil {
+		t.Fatalf("seed close sync window: %v", err)
+	}
+	for _, snapshot := range []DomainHealthSnapshotRecord{
+		{Domain: "trade_history", Status: "healthy", Freshness: "fresh", Coverage: "covered", LatestWatermark: "20260515", SnapshotAt: now},
+		{Domain: "live_capture", Status: "healthy", Freshness: "fresh", Coverage: "covered", LatestWatermark: "20260515", SnapshotAt: now},
+		{Domain: "order_history", Status: "healthy", Freshness: "fresh", Coverage: "covered", LatestWatermark: "20260515", SnapshotAt: now},
+		{Domain: "finance", Status: "healthy", Freshness: "fresh", Coverage: "covered", LatestWatermark: "20260512", SnapshotAt: now},
+		{Domain: "f10", Status: "healthy", Freshness: "fresh", Coverage: "covered", LatestWatermark: "hash", SnapshotAt: now},
+		{Domain: "kline", Status: "healthy", Freshness: "fresh", Coverage: "covered", LatestWatermark: "1778749200", SnapshotAt: now},
+	} {
+		snapshot := snapshot
+		if err := store.UpsertDomainHealthSnapshot(&snapshot); err != nil {
+			t.Fatalf("seed snapshot %s: %v", snapshot.Domain, err)
+		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close governance store: %v", err)
+	}
+
+	result, err := RunGovernanceRepairBatch(GovernanceRepairBatchOptions{
+		DBPath:    paths.DBPath,
+		BackupDir: filepath.Join(paths.BaseDataDir, "backups"),
+		Mode:      GovernanceRepairModeApply,
+		Now:       fixedRepairNow,
+	}, []GovernanceRepairOperation{
+		TerminalGovernanceWindowRepair{Now: fixedRepairNow},
+	})
+	if err != nil {
+		t.Fatalf("apply terminal window repair: %v", err)
+	}
+	if len(result.Operations) != 1 || result.Operations[0].Planned != 1 || result.Operations[0].Applied != 1 {
+		t.Fatalf("unexpected apply result: %+v", result.Operations)
+	}
+	if result.Operations[0].Changes[0].Action != "close_covered_window" {
+		t.Fatalf("unexpected repair change: %+v", result.Operations[0].Changes[0])
+	}
+
+	store, err = OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("reopen governance store: %v", err)
+	}
+	defer store.Close()
+	window, err := store.GetWindowByKey(windowKey)
+	if err != nil {
+		t.Fatalf("get window: %v", err)
+	}
+	if window == nil || window.Status != GovernanceWindowStatusPassed {
+		t.Fatalf("window = %+v, want passed", window)
+	}
+	if window.LastError != "" || !strings.Contains(window.ResultSummary, "data health snapshots cover target") {
+		t.Fatalf("window did not record coverage repair: %+v", window)
+	}
+}
+
 func TestCoveredCloseSyncWindowRepairClosesCoveredQueuedWindows(t *testing.T) {
 	paths := ResolveGovernancePaths(t.TempDir())
 	store, err := OpenGovernanceStore(paths.DBPath)
@@ -671,6 +743,72 @@ func TestCoveredCloseSyncWindowRepairClosesCoveredQueuedWindows(t *testing.T) {
 	}
 	if window.LastError != "" || !strings.Contains(window.ResultSummary, "data health snapshots cover target") {
 		t.Fatalf("window did not record coverage repair: %+v", window)
+	}
+}
+
+func TestCoveredCloseSyncWindowRepairDoesNotDateGateFinanceSnapshot(t *testing.T) {
+	paths := ResolveGovernancePaths(t.TempDir())
+	store, err := OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	now := fixedRepairNow()
+	targetWindow := "20260514,20260515"
+	windowKey := GovernanceWindowKey(GovernanceJobDailyCloseSync, targetWindow)
+	if err := store.UpsertWindow(&GovernanceWindowRecord{
+		WindowKey:    windowKey,
+		JobName:      string(GovernanceJobDailyCloseSync),
+		TargetWindow: targetWindow,
+		DueAt:        now.Add(-time.Hour),
+		Priority:     GovernanceJobPriority(GovernanceJobDailyCloseSync),
+		Status:       GovernanceWindowStatusTerminalFailed,
+		LastError:    "context deadline exceeded",
+	}); err != nil {
+		t.Fatalf("seed close sync window: %v", err)
+	}
+	for _, snapshot := range []DomainHealthSnapshotRecord{
+		{Domain: "trade_history", Status: "healthy", Freshness: "fresh", Coverage: "covered", LatestWatermark: "20260515", SnapshotAt: now},
+		{Domain: "live_capture", Status: "healthy", Freshness: "fresh", Coverage: "covered", LatestWatermark: "20260515", SnapshotAt: now},
+		{Domain: "order_history", Status: "healthy", Freshness: "fresh", Coverage: "covered", LatestWatermark: "20260515", SnapshotAt: now},
+		{Domain: "finance", Status: "healthy", Freshness: "fresh", Coverage: "covered", LatestWatermark: "20260512", SnapshotAt: now},
+		{Domain: "f10", Status: "healthy", Freshness: "fresh", Coverage: "covered", LatestWatermark: "hash", SnapshotAt: now},
+		{Domain: "kline", Status: "healthy", Freshness: "fresh", Coverage: "covered", LatestWatermark: "1778749200", SnapshotAt: now},
+	} {
+		snapshot := snapshot
+		if err := store.UpsertDomainHealthSnapshot(&snapshot); err != nil {
+			t.Fatalf("seed snapshot %s: %v", snapshot.Domain, err)
+		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close governance store: %v", err)
+	}
+
+	result, err := RunGovernanceRepairBatch(GovernanceRepairBatchOptions{
+		DBPath:    paths.DBPath,
+		BackupDir: filepath.Join(paths.BaseDataDir, "backups"),
+		Mode:      GovernanceRepairModeApply,
+		Now:       fixedRepairNow,
+	}, []GovernanceRepairOperation{
+		CoveredCloseSyncWindowRepair{Now: fixedRepairNow},
+	})
+	if err != nil {
+		t.Fatalf("apply covered close sync repair: %v", err)
+	}
+	if len(result.Operations) != 1 || result.Operations[0].Planned != 1 || result.Operations[0].Applied != 1 {
+		t.Fatalf("unexpected apply result: %+v", result.Operations)
+	}
+
+	store, err = OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("reopen governance store: %v", err)
+	}
+	defer store.Close()
+	window, err := store.GetWindowByKey(windowKey)
+	if err != nil {
+		t.Fatalf("get window: %v", err)
+	}
+	if window == nil || window.Status != GovernanceWindowStatusPassed {
+		t.Fatalf("window = %+v, want passed", window)
 	}
 }
 

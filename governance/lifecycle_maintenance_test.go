@@ -48,6 +48,13 @@ func TestDataLifecycleMaintenanceRunnerRecordsGovernanceRun(t *testing.T) {
 	if !strings.Contains(run.Details, "processed_segments=2") || !strings.Contains(run.Details, "hot_cutoff=20260401") {
 		t.Fatalf("missing lifecycle details: %s", run.Details)
 	}
+	lock, err := store.LatestLockMetadata()
+	if err != nil {
+		t.Fatalf("read lock metadata: %v", err)
+	}
+	if lock != nil {
+		t.Fatalf("lock metadata remained after completed maintenance run: %+v", lock)
+	}
 }
 
 func TestDataLifecycleMaintenanceRunnerMarksPartialResult(t *testing.T) {

@@ -484,6 +484,7 @@ func convergeRecoveredGovernanceState(now time.Time) (int, error) {
 		return 0, nil
 	}
 	operations := []collectorpkg.GovernanceRepairOperation{
+		collectorpkg.StaleGovernanceLockMetadataRepair{LockPath: governancePaths.LockPath},
 		collectorpkg.TerminalGovernanceWindowRepair{Now: func() time.Time { return now }},
 		collectorpkg.CoveredCloseSyncWindowRepair{Now: func() time.Time { return now }},
 		collectorpkg.CoveredAuditWindowRepair{Now: func() time.Time { return now }},

@@ -75,6 +75,7 @@ func (r *DataLifecycleMaintenanceRunner) Run(ctx context.Context, trigger string
 	}); err != nil {
 		return nil, err
 	}
+	defer r.cfg.Store.DeleteLockMetadata("system_governance")
 
 	var resultErr error
 	defer func() {

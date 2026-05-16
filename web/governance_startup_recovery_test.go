@@ -193,8 +193,10 @@ func TestCollectStartupRecoverySnapshotSkipsTerminalInterruptedRunTasks(t *testi
 
 func TestRecoverInterruptedGovernanceRunsConvergesCoveredStartupState(t *testing.T) {
 	originalStore := governanceStore
+	originalPaths := governancePaths
 	defer func() {
 		governanceStore = originalStore
+		governancePaths = originalPaths
 	}()
 
 	paths := collectorpkg.ResolveGovernancePaths(t.TempDir())
@@ -204,6 +206,7 @@ func TestRecoverInterruptedGovernanceRunsConvergesCoveredStartupState(t *testing
 	}
 	defer store.Close()
 	governanceStore = store
+	governancePaths = paths
 
 	now := time.Date(2026, 4, 22, 9, 0, 0, 0, time.Local)
 	targetWindow := "20260420,20260421"
@@ -259,6 +262,16 @@ func TestRecoverInterruptedGovernanceRunsConvergesCoveredStartupState(t *testing
 	}); err != nil {
 		t.Fatalf("seed interrupted run task: %v", err)
 	}
+	if err := store.RecordLockMetadata(&collectorpkg.GovernanceLockMetadataRecord{
+		LockName:        "system_governance",
+		HolderPID:       99999,
+		HolderJobName:   string(collectorpkg.GovernanceJobDataLifecycleMaintenance),
+		HolderRunID:     "stale-lifecycle-run",
+		AcquiredAt:      now.Add(-12 * time.Hour),
+		LastHeartbeatAt: now.Add(-12 * time.Hour),
+	}); err != nil {
+		t.Fatalf("seed stale lock metadata: %v", err)
+	}
 	seedCoveredGovernanceSnapshots(t, store, now)
 
 	if err := recoverInterruptedGovernanceRuns(); err != nil {
@@ -294,6 +307,13 @@ func TestRecoverInterruptedGovernanceRunsConvergesCoveredStartupState(t *testing
 		if task.TaskKey == "startup_recovery:interrupted:"+closeRunID && task.Status != collectorpkg.GovernanceTaskStatusClosed {
 			t.Fatalf("startup recovery task status = %s, want closed", task.Status)
 		}
+	}
+	lock, err := store.LatestLockMetadata()
+	if err != nil {
+		t.Fatalf("read lock metadata: %v", err)
+	}
+	if lock != nil {
+		t.Fatalf("lock metadata = %+v, want nil", lock)
 	}
 }
 

@@ -88,6 +88,7 @@ func (r *DailyOpenRefreshRunner) Run(ctx context.Context, trigger string) (*coll
 	}); err != nil {
 		return nil, err
 	}
+	defer r.cfg.Store.DeleteLockMetadata("system_governance")
 
 	var resultErr error
 	var domainFailures []string
