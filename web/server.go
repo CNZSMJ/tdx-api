@@ -39,6 +39,7 @@ var (
 	dailyCloseSync             *systemgov.DailyCloseSyncRunner
 	dailyAudit                 *systemgov.DailyAuditRunner
 	startupRecovery            *systemgov.StartupRecoveryRunner
+	marketBillboardSync        *systemgov.MarketBillboardSyncRunner
 	governanceWindowDispatcher *systemgov.WindowDispatcher
 	proFinanceService          *profinance.Service
 	proFinanceDataDir          string
@@ -543,6 +544,8 @@ func initCollectorRuntime() {
 	initDailyCloseSyncRunner()
 	initDailyAuditRunner()
 	initStartupRecoveryRunner()
+	initMarketBillboardStore()
+	initMarketBillboardSyncRunner()
 	initGovernanceWindowDispatcher()
 	initGovernanceRepairWorker()
 	initDeepAuditBackfillRunner()
@@ -588,6 +591,19 @@ func initCollectorRuntime() {
 		}); err != nil {
 			log.Printf("注册 daily_audit 失败: %v", err)
 			return
+		}
+	}
+
+	if marketBillboardSync != nil {
+		if schedule := collectorMarketBillboardSyncSchedule(); schedule != "" {
+			if _, err := manager.Cron.AddFunc(schedule, func() {
+				go func() {
+					runScheduledGovernanceWindow(collectorpkg.GovernanceJobMarketBillboardSync, "daily-21:30")
+				}()
+			}); err != nil {
+				log.Printf("注册 market_billboard_sync 失败: %v", err)
+				return
+			}
 		}
 	}
 
@@ -843,6 +859,7 @@ func collectStartupRecoverySnapshot(
 		collectorpkg.GovernanceJobDailyOpenRefresh,
 		collectorpkg.GovernanceJobDailyCloseSync,
 		collectorpkg.GovernanceJobDailyAudit,
+		collectorpkg.GovernanceJobMarketBillboardSync,
 	} {
 		targetWindow, due, err := governanceExpectedTargetWindow(ctx, job, now, tradingDayGate, recentTradingDates)
 		if err != nil {
@@ -870,7 +887,8 @@ func startupReplaySupportedJob(job collectorpkg.GovernanceJob) bool {
 	switch job {
 	case collectorpkg.GovernanceJobDailyOpenRefresh,
 		collectorpkg.GovernanceJobDailyCloseSync,
-		collectorpkg.GovernanceJobDailyAudit:
+		collectorpkg.GovernanceJobDailyAudit,
+		collectorpkg.GovernanceJobMarketBillboardSync:
 		return true
 	default:
 		return false
@@ -894,6 +912,8 @@ func governanceExpectedTargetWindow(
 		return governanceRecentTradingWindow(ctx, now, 18, tradingDayGate, recentTradingDates)
 	case collectorpkg.GovernanceJobDailyAudit:
 		return governanceRecentTradingWindow(ctx, now, 19, tradingDayGate, recentTradingDates)
+	case collectorpkg.GovernanceJobMarketBillboardSync:
+		return governanceRecentTradingWindow(ctx, now, 21, tradingDayGate, recentTradingDates)
 	default:
 		return "", false, nil
 	}
@@ -1386,6 +1406,8 @@ func executeGovernanceWindow(ctx context.Context, window collectorpkg.Governance
 		run, err = runDailyCloseSyncWithDates(trigger, governanceWindowTargetDates(window.TargetWindow))
 	case collectorpkg.GovernanceJobDailyAudit:
 		run, err = runDailyAuditWithDates(trigger, governanceWindowTargetDates(window.TargetWindow))
+	case collectorpkg.GovernanceJobMarketBillboardSync:
+		run, err = runMarketBillboardSyncWithDates(trigger, governanceWindowTargetDates(window.TargetWindow))
 	default:
 		return systemgov.WindowExecutionResult{
 			Status:  collectorpkg.GovernanceWindowStatusTerminalFailed,
@@ -1629,11 +1651,15 @@ func handleCollectorStatus(w http.ResponseWriter, r *http.Request) {
 			"daily_open_refresh":  collectorDailyOpenRefreshSpec,
 			"daily_close_sync":    collectorDailySyncSpec,
 			"daily_audit":         collectorDailyReconcileSpec,
+			"market_billboard":    collectorMarketBillboardSyncSchedule(),
 			"deep_audit_backfill": collectorDeepAuditBackfillSchedule(),
 			"data_lifecycle":      collectorLifecycleMaintenanceSchedule(),
 		},
 	}
 	if governanceStore != nil {
+		if err := projectMarketBillboardGovernanceDomain(); err != nil {
+			log.Printf("market_billboard governance 投影失败: %v", err)
+		}
 		governance, err := collectorRuntime.UnifiedGovernanceStatus(governanceStore, governancePaths)
 		if err != nil {
 			log.Printf("读取 governance 状态失败: %v", err)
@@ -2609,6 +2635,13 @@ func main() {
 	http.HandleFunc("/api/market/screen", handleMarketScreen)
 	http.HandleFunc("/api/market/signal", handleMarketSignal)
 	http.HandleFunc("/api/market/signal/check", handleMarketSignalCheck)
+	http.HandleFunc("/api/market/billboard", handleMarketBillboard)
+	http.HandleFunc("/api/market/billboard/instrument", handleMarketBillboardInstrument)
+	http.HandleFunc("/api/market/billboard/detail", handleMarketBillboardDetail)
+	http.HandleFunc("/api/market/billboard/seats", handleMarketBillboardSeats)
+	http.HandleFunc("/api/market/billboard/seat", handleMarketBillboardSeat)
+	http.HandleFunc("/api/market/billboard/institutions", handleMarketBillboardInstitutions)
+	http.HandleFunc("/api/market/billboard/stats", handleMarketBillboardStats)
 	http.HandleFunc("/api/market-count", handleGetMarketCount)
 	http.HandleFunc("/api/stock-codes", handleGetStockCodes)
 	http.HandleFunc("/api/etf-codes", handleGetETFCodes)
@@ -2685,6 +2718,7 @@ func main() {
 		cancel()
 
 		shutdownCollectorRuntime()
+		shutdownMarketBillboardStore()
 		shutdownGovernanceStore()
 	}
 }

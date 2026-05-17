@@ -34,6 +34,14 @@ func TestCollectStartupRecoverySnapshotRecognizesCompletedCloseAndAuditWindows(t
 			StartedAt:    now.Add(-13 * time.Hour),
 			EndedAt:      now.Add(-12 * time.Hour),
 		},
+		{
+			RunID:        "market-billboard-friday",
+			JobName:      string(collectorpkg.GovernanceJobMarketBillboardSync),
+			Status:       collectorpkg.GovernanceRunStatusPassed,
+			TargetWindow: "20260416,20260417",
+			StartedAt:    now.Add(-12 * time.Hour),
+			EndedAt:      now.Add(-11 * time.Hour),
+		},
 	} {
 		run := run
 		if err := store.AddRun(&run); err != nil {
@@ -125,6 +133,9 @@ func TestCollectStartupRecoverySnapshotQueuesPreviousTradingWindowsBeforeEvening
 	}
 	if missedByJob[collectorpkg.GovernanceJobDailyAudit] != "20260416,20260417" {
 		t.Fatalf("daily audit target window = %q, want 20260416,20260417", missedByJob[collectorpkg.GovernanceJobDailyAudit])
+	}
+	if missedByJob[collectorpkg.GovernanceJobMarketBillboardSync] != "20260416,20260417" {
+		t.Fatalf("market billboard target window = %q, want 20260416,20260417", missedByJob[collectorpkg.GovernanceJobMarketBillboardSync])
 	}
 }
 

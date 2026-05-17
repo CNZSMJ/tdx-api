@@ -723,6 +723,7 @@ func TestGovernanceJobCatalogAndLegacyMapping(t *testing.T) {
 		GovernanceJobDailyCloseSync,
 		GovernanceJobDailyAudit,
 		GovernanceJobDeepAuditBackfill,
+		GovernanceJobMarketBillboardSync,
 		GovernanceJobDataLifecycleRestore,
 		GovernanceJobDataLifecycleMaintenance,
 	}
@@ -889,8 +890,8 @@ func TestRuntimeUnifiedGovernanceStatusProjectsLegacyRunsAndDomains(t *testing.T
 	if status.Paths.DBPath != paths.DBPath {
 		t.Fatalf("db path = %s, want %s", status.Paths.DBPath, paths.DBPath)
 	}
-	if len(status.Jobs) != 7 {
-		t.Fatalf("job count = %d, want 7", len(status.Jobs))
+	if len(status.Jobs) != 8 {
+		t.Fatalf("job count = %d, want 8", len(status.Jobs))
 	}
 
 	jobMap := make(map[GovernanceJob]GovernanceJobStatus, len(status.Jobs))

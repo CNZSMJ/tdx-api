@@ -240,8 +240,17 @@ func TestHandleCollectorStatusIncludesGovernanceView(t *testing.T) {
 	if payload.Data.Governance.Health.Lock != "degraded" {
 		t.Fatalf("governance lock health = %q, want degraded", payload.Data.Governance.Health.Lock)
 	}
-	if len(payload.Data.Governance.Jobs) != 7 {
-		t.Fatalf("governance jobs = %d, want 7", len(payload.Data.Governance.Jobs))
+	if len(payload.Data.Governance.Jobs) != 8 {
+		t.Fatalf("governance jobs = %d, want 8", len(payload.Data.Governance.Jobs))
+	}
+	foundBillboardJob := false
+	for _, job := range payload.Data.Governance.Jobs {
+		if job.Name == string(collectorpkg.GovernanceJobMarketBillboardSync) {
+			foundBillboardJob = true
+		}
+	}
+	if !foundBillboardJob {
+		t.Fatalf("market billboard governance job missing: %+v", payload.Data.Governance.Jobs)
 	}
 	if len(payload.Data.Governance.Domains) == 0 {
 		t.Fatalf("expected governance domains in status payload")

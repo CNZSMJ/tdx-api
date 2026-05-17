@@ -14,6 +14,7 @@ const (
 	GovernanceJobDailyCloseSync           GovernanceJob = "daily_close_sync"
 	GovernanceJobDailyAudit               GovernanceJob = "daily_audit"
 	GovernanceJobDeepAuditBackfill        GovernanceJob = "deep_audit_backfill"
+	GovernanceJobMarketBillboardSync      GovernanceJob = "market_billboard_sync"
 	GovernanceJobDataLifecycleMaintenance GovernanceJob = "data_lifecycle_maintenance"
 	GovernanceJobDataLifecycleRestore     GovernanceJob = "data_lifecycle_restore"
 )
@@ -123,14 +124,21 @@ func DefaultGovernanceJobCatalog() []GovernanceJobSpec {
 			DefaultState: GovernanceRunStatusPlanned,
 		},
 		{
-			Name:         GovernanceJobDataLifecycleRestore,
+			Name:         GovernanceJobMarketBillboardSync,
 			Priority:     6,
+			Schedule:     "0 30 21 * * *",
+			Description:  "21:30 market billboard RPT sync",
+			DefaultState: GovernanceRunStatusPlanned,
+		},
+		{
+			Name:         GovernanceJobDataLifecycleRestore,
+			Priority:     7,
 			Description:  "explicit cold segment restore and rehydrate operations",
 			DefaultState: GovernanceRunStatusPlanned,
 		},
 		{
 			Name:         GovernanceJobDataLifecycleMaintenance,
-			Priority:     7,
+			Priority:     8,
 			Description:  "bounded hot/cold lifecycle maintenance after higher-priority governance jobs",
 			DefaultState: GovernanceRunStatusPlanned,
 		},
