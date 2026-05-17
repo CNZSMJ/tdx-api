@@ -164,10 +164,55 @@ func TestSourceRowIDDoesNotDependOnUpstreamRowOrder(t *testing.T) {
 		"OPERATEDEPT_NAME":     "中国银河证券股份有限公司北京中关村大街证券营业部",
 		"OPERATEDEPT_CODE_OLD": "80113261",
 		"EXPLANATION":          "连续三个交易日内，跌幅偏离值累计达到20%的证券",
+		"BUY":                  20443206,
+		"SELL":                 311441,
+		"NET":                  20131765,
 	}
 	first := sourceRowID(ReportBuyDetails, row, 0)
 	second := sourceRowID(ReportBuyDetails, row, 99)
 	if first != second {
 		t.Fatalf("source row id changed with row order: %s vs %s", first, second)
+	}
+}
+
+func TestSourceRowIDKeepsAnonymousInstitutionSeatRowsDistinct(t *testing.T) {
+	firstRow := map[string]any{
+		"SECUCODE":         "000767.SZ",
+		"TRADE_DATE":       "2026-05-14 00:00:00",
+		"TRADE_ID":         "100324157",
+		"CHANGE_TYPE":      "137001001",
+		"OPERATEDEPT_CODE": "0",
+		"OPERATEDEPT_NAME": "机构专用",
+		"EXPLANATION":      "日振幅值达到15%的前5只证券",
+		"BUY":              29656003,
+		"SELL":             19812118,
+		"NET":              9843885,
+	}
+	secondRow := map[string]any{
+		"SECUCODE":         "000767.SZ",
+		"TRADE_DATE":       "2026-05-14 00:00:00",
+		"TRADE_ID":         "100324157",
+		"CHANGE_TYPE":      "137001001",
+		"OPERATEDEPT_CODE": "0",
+		"OPERATEDEPT_NAME": "机构专用",
+		"EXPLANATION":      "日振幅值达到15%的前5只证券",
+		"BUY":              55279063.5,
+		"SELL":             88472355.81,
+		"NET":              -33193292.31,
+	}
+	first := sourceRowID(ReportBuyDetails, firstRow, 0)
+	second := sourceRowID(ReportBuyDetails, secondRow, 1)
+	if first == second {
+		t.Fatalf("anonymous institution seat rows collapsed into one source id: %s", first)
+	}
+}
+
+func TestDailyDetailsQueryUsesAllColumnsForOptionalProviderFields(t *testing.T) {
+	query := NewSyncer(SyncerConfig{
+		Store:  &Store{},
+		Client: stubRPTClient{},
+	}).queryForReport(ReportDailyDetails, "20260514", "20260515")
+	if len(query.Columns) != 1 || query.Columns[0] != "ALL" {
+		t.Fatalf("daily details columns = %#v, want ALL", query.Columns)
 	}
 }

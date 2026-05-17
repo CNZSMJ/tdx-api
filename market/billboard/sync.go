@@ -129,15 +129,7 @@ func (s *Syncer) queryForReport(reportName, startDate, endDate string) rpt.Query
 	}
 	switch reportName {
 	case ReportDailyDetails:
-		query.Columns = []string{
-			"SECURITY_CODE", "SECUCODE", "SECURITY_NAME_ABBR", "TRADE_DATE", "EXPLAIN",
-			"CLOSE_PRICE", "CHANGE_RATE", "BILLBOARD_NET_AMT", "BILLBOARD_BUY_AMT",
-			"BILLBOARD_SELL_AMT", "BILLBOARD_DEAL_AMT", "ACCUM_AMOUNT", "DEAL_NET_RATIO",
-			"DEAL_AMOUNT_RATIO", "TURNOVERRATE", "FREE_MARKET_CAP", "EXPLANATION",
-			"CHANGE_TYPE", "TRADE_ID", "D1_CLOSE_ADJCHRATE", "D2_CLOSE_ADJCHRATE",
-			"D3_CLOSE_ADJCHRATE", "D5_CLOSE_ADJCHRATE", "D10_CLOSE_ADJCHRATE",
-			"SECURITY_TYPE_CODE",
-		}
+		query.Columns = []string{"ALL"}
 		query.SortColumns = []string{"SECURITY_CODE", "TRADE_DATE"}
 		query.SortTypes = []string{"1", "-1"}
 	default:
@@ -405,6 +397,9 @@ func sourceRowID(reportName string, row map[string]any, index int) string {
 	if seatName := StringField(row, "OPERATEDEPT_NAME"); seatName != "" {
 		parts = append(parts, HashText(seatName))
 	}
+	if anonymousInstitutionSeat(row) {
+		parts = append(parts, StringField(row, "BUY"), StringField(row, "SELL"), StringField(row, "NET"))
+	}
 	clean := make([]string, 0, len(parts))
 	for _, part := range parts {
 		if strings.TrimSpace(part) != "" {
@@ -415,6 +410,12 @@ func sourceRowID(reportName string, row map[string]any, index int) string {
 		clean = append(clean, fmt.Sprintf("row:%d", index))
 	}
 	return reportName + ":" + strings.Join(clean, "|")
+}
+
+func anonymousInstitutionSeat(row map[string]any) bool {
+	seatCode := strings.TrimSpace(StringField(row, "OPERATEDEPT_CODE"))
+	seatName := StringField(row, "OPERATEDEPT_NAME")
+	return seatCode == "0" && strings.Contains(seatName, "机构专用")
 }
 
 func rowTradeDate(reportName string, row map[string]any) string {
