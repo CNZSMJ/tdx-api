@@ -93,3 +93,66 @@ func TestHandleMarketBillboardReturnsFreshnessAndHidesSourceByDefault(t *testing
 		t.Fatalf("source fields should be hidden by default: %#v", payload.Data.Items[0])
 	}
 }
+
+func TestHandleMarketBillboardStatsUsesTradeAllWatermark(t *testing.T) {
+	originalStore := marketBillboardStore
+	defer func() { marketBillboardStore = originalStore }()
+
+	store, err := billboard.OpenStore(filepath.Join(t.TempDir(), "market_billboard.db"))
+	if err != nil {
+		t.Fatalf("open billboard store: %v", err)
+	}
+	defer store.Close()
+	marketBillboardStore = store
+
+	if err := store.UpsertInstrumentStat(billboard.InstrumentStatRecord{
+		FullCode:          "bj920580",
+		Code:              "920580",
+		Exchange:          "bj",
+		Name:              "科创新材",
+		StatisticsCycle:   "04",
+		PeriodLabel:       "近一年",
+		LatestTradeDate:   "20260515",
+		BillboardTimes:    7,
+		SourceReportName:  billboard.ReportTradeAll,
+		SourceRowID:       "trade-all-row",
+		SourcePayloadHash: "trade-all-hash",
+		FetchedAt:         time.Now(),
+	}); err != nil {
+		t.Fatalf("upsert instrument stat: %v", err)
+	}
+	if err := store.UpsertSyncStatus(billboard.SyncStatusRecord{
+		TradeDate:   "20260515",
+		ReportName:  billboard.ReportTradeAll,
+		Status:      billboard.SyncStatusPassed,
+		RowCount:    1,
+		StartedAt:   time.Now(),
+		CompletedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("upsert tradeall status: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/market/billboard/stats?full_code=bj920580&limit=1", nil)
+	rec := httptest.NewRecorder()
+	handleMarketBillboardStats(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Code int `json:"code"`
+		Data struct {
+			Items     []map[string]any    `json:"items"`
+			Freshness billboard.Freshness `json:"freshness"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if payload.Code != 0 || len(payload.Data.Items) != 1 {
+		t.Fatalf("unexpected payload: %#v", payload)
+	}
+	if payload.Data.Freshness.Coverage != billboard.CoverageComplete || payload.Data.Freshness.Watermark != "20260515" {
+		t.Fatalf("unexpected freshness: %#v", payload.Data.Freshness)
+	}
+}

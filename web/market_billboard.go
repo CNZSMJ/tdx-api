@@ -334,7 +334,8 @@ func handleMarketBillboardStats(w http.ResponseWriter, r *http.Request) {
 		errorResponse(w, err.Error())
 		return
 	}
-	freshness, _ := store.Coverage("", "", []string{billboard.ReportTradeAll})
+	watermark, _ := store.LatestWatermark()
+	freshness, _ := store.Coverage(watermark, watermark, []string{billboard.ReportTradeAll})
 	successResponse(w, map[string]any{
 		"items":       instrumentStatItems(list.Items, includeSource(r)),
 		"count":       len(list.Items),
