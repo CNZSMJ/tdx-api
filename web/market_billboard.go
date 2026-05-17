@@ -272,7 +272,7 @@ func handleMarketBillboardSeatList(w http.ResponseWriter, r *http.Request, requi
 		return
 	}
 	tradeDate := billboard.ParseEastmoneyDate(query.Get("trade_date"))
-	freshness, _ := store.Coverage(tradeDate, tradeDate, []string{billboard.ReportBuyDetails, billboard.ReportSellDetails})
+	freshness, _ := marketBillboardCoverage(store, tradeDate, tradeDate, []string{billboard.ReportBuyDetails, billboard.ReportSellDetails})
 	successResponse(w, map[string]any{
 		"items":       seatTradeItems(list.Items, includeSource(r)),
 		"count":       len(list.Items),
@@ -304,7 +304,7 @@ func handleMarketBillboardInstitutions(w http.ResponseWriter, r *http.Request) {
 		errorResponse(w, err.Error())
 		return
 	}
-	freshness, _ := store.Coverage(startDate, endDate, []string{billboard.ReportOrganizationTradeDetails})
+	freshness, _ := marketBillboardCoverage(store, startDate, endDate, []string{billboard.ReportOrganizationTradeDetails})
 	successResponse(w, map[string]any{
 		"items":       institutionItems(list.Items, includeSource(r)),
 		"count":       len(list.Items),
@@ -334,8 +334,7 @@ func handleMarketBillboardStats(w http.ResponseWriter, r *http.Request) {
 		errorResponse(w, err.Error())
 		return
 	}
-	watermark, _ := store.LatestWatermark()
-	freshness, _ := store.Coverage(watermark, watermark, []string{billboard.ReportTradeAll})
+	freshness, _ := marketBillboardCoverage(store, "", "", []string{billboard.ReportTradeAll})
 	successResponse(w, map[string]any{
 		"items":       instrumentStatItems(list.Items, includeSource(r)),
 		"count":       len(list.Items),
@@ -361,11 +360,23 @@ func listBillboardEntries(query billboard.EntryQuery) (billboard.EntryList, bill
 	if err != nil {
 		return billboard.EntryList{}, billboard.Freshness{}, err
 	}
-	freshness, err := marketBillboardStore.Coverage(query.StartDate, query.EndDate, billboard.CoreReports())
+	freshness, err := marketBillboardCoverage(marketBillboardStore, query.StartDate, query.EndDate, billboard.CoreReports())
 	if err != nil {
 		return billboard.EntryList{}, billboard.Freshness{}, err
 	}
 	return list, freshness, nil
+}
+
+func marketBillboardCoverage(store *billboard.Store, startDate, endDate string, reports []string) (billboard.Freshness, error) {
+	if startDate == "" && endDate == "" {
+		watermark, err := store.LatestWatermarkForReports(reports)
+		if err != nil {
+			return billboard.Freshness{}, err
+		}
+		startDate = watermark
+		endDate = watermark
+	}
+	return store.Coverage(startDate, endDate, reports)
 }
 
 func sortSeatTradesByRank(items []billboard.SeatTradeView) {

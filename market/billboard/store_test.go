@@ -189,3 +189,58 @@ func TestStoreSeatTradeCursorDoesNotRepeatRows(t *testing.T) {
 		t.Fatalf("cursor repeated row id %d", first.Items[0].ID)
 	}
 }
+
+func TestStoreSeatTradeKeywordFiltersBeforePagination(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "market_billboard.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	matchingSeatID, err := store.UpsertSeat(SeatRecord{
+		SeatName: "机构专用",
+		SeatType: SeatTypeInstitution,
+	})
+	if err != nil {
+		t.Fatalf("upsert matching seat: %v", err)
+	}
+	otherSeatID, err := store.UpsertSeat(SeatRecord{
+		SeatName: "申万宏源证券有限公司上海天钥桥路营业部",
+		SeatType: SeatTypeBrokerage,
+	})
+	if err != nil {
+		t.Fatalf("upsert other seat: %v", err)
+	}
+	if err := store.UpsertSeatTrade(SeatTradeRecord{
+		SeatID:            matchingSeatID,
+		TradeDate:         "20260515",
+		FullCode:          "bj920580",
+		Side:              "buy",
+		Rank:              1,
+		SourceReportName:  ReportBuyDetails,
+		SourceRowID:       "matching-row",
+		SourcePayloadHash: "matching-hash",
+	}); err != nil {
+		t.Fatalf("upsert matching trade: %v", err)
+	}
+	if err := store.UpsertSeatTrade(SeatTradeRecord{
+		SeatID:            otherSeatID,
+		TradeDate:         "20260515",
+		FullCode:          "bj920580",
+		Side:              "buy",
+		Rank:              2,
+		SourceReportName:  ReportBuyDetails,
+		SourceRowID:       "other-row",
+		SourcePayloadHash: "other-hash",
+	}); err != nil {
+		t.Fatalf("upsert other trade: %v", err)
+	}
+
+	list, err := store.ListSeatTrades(SeatTradeQuery{Keyword: "机构专用", Limit: 1})
+	if err != nil {
+		t.Fatalf("list seat trades: %v", err)
+	}
+	if len(list.Items) != 1 || list.Items[0].SeatName != "机构专用" {
+		t.Fatalf("keyword list = %#v, want matching seat before pagination", list.Items)
+	}
+}

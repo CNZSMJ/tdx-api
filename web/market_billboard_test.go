@@ -94,6 +94,150 @@ func TestHandleMarketBillboardReturnsFreshnessAndHidesSourceByDefault(t *testing
 	}
 }
 
+func TestHandleMarketBillboardUsesWatermarkWhenDateOmitted(t *testing.T) {
+	originalStore := marketBillboardStore
+	defer func() { marketBillboardStore = originalStore }()
+
+	store, err := billboard.OpenStore(filepath.Join(t.TempDir(), "market_billboard.db"))
+	if err != nil {
+		t.Fatalf("open billboard store: %v", err)
+	}
+	defer store.Close()
+	marketBillboardStore = store
+
+	if _, err := store.UpsertEntry(billboard.EntryRecord{
+		TradeDate:         "20260515",
+		FullCode:          "bj920580",
+		Code:              "920580",
+		Exchange:          "bj",
+		Name:              "科创新材",
+		AssetType:         "stock",
+		SourceReportName:  billboard.ReportDailyDetails,
+		SourceTradeID:     "100325759",
+		SourceChangeType:  "137001004001",
+		SourceRowID:       "source-row",
+		SourcePayloadHash: "source-hash",
+		FetchedAt:         time.Now(),
+	}, []billboard.ReasonRecord{{ReasonText: "日换手率达到20%的前5只证券", ReasonHash: billboard.HashText("日换手率达到20%的前5只证券")}}); err != nil {
+		t.Fatalf("upsert entry: %v", err)
+	}
+	for _, report := range billboard.CoreReports() {
+		if err := store.UpsertSyncStatus(billboard.SyncStatusRecord{
+			TradeDate:   "20260515",
+			ReportName:  report,
+			Status:      billboard.SyncStatusPassed,
+			RowCount:    1,
+			StartedAt:   time.Now(),
+			CompletedAt: time.Now(),
+		}); err != nil {
+			t.Fatalf("upsert status: %v", err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/market/billboard?limit=1", nil)
+	rec := httptest.NewRecorder()
+	handleMarketBillboard(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Code int `json:"code"`
+		Data struct {
+			Freshness billboard.Freshness `json:"freshness"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if payload.Data.Freshness.Coverage != billboard.CoverageComplete || payload.Data.Freshness.Watermark != "20260515" {
+		t.Fatalf("unexpected freshness: %#v", payload.Data.Freshness)
+	}
+}
+
+func TestHandleMarketBillboardSeatSearchFiltersBeforePagination(t *testing.T) {
+	originalStore := marketBillboardStore
+	defer func() { marketBillboardStore = originalStore }()
+
+	store, err := billboard.OpenStore(filepath.Join(t.TempDir(), "market_billboard.db"))
+	if err != nil {
+		t.Fatalf("open billboard store: %v", err)
+	}
+	defer store.Close()
+	marketBillboardStore = store
+
+	matchingSeatID, err := store.UpsertSeat(billboard.SeatRecord{
+		SeatName: "机构专用",
+		SeatType: billboard.SeatTypeInstitution,
+	})
+	if err != nil {
+		t.Fatalf("upsert matching seat: %v", err)
+	}
+	otherSeatID, err := store.UpsertSeat(billboard.SeatRecord{
+		SeatName: "申万宏源证券有限公司上海天钥桥路营业部",
+		SeatType: billboard.SeatTypeBrokerage,
+	})
+	if err != nil {
+		t.Fatalf("upsert other seat: %v", err)
+	}
+	for _, row := range []struct {
+		seatID int64
+		name   string
+	}{
+		{matchingSeatID, "matching"},
+		{otherSeatID, "other"},
+	} {
+		if err := store.UpsertSeatTrade(billboard.SeatTradeRecord{
+			SeatID:            row.seatID,
+			TradeDate:         "20260515",
+			FullCode:          "bj920580",
+			Side:              "buy",
+			Rank:              1,
+			SourceReportName:  billboard.ReportBuyDetails,
+			SourceRowID:       row.name + "-row",
+			SourcePayloadHash: row.name + "-hash",
+		}); err != nil {
+			t.Fatalf("upsert %s seat trade: %v", row.name, err)
+		}
+	}
+	for _, report := range []string{billboard.ReportBuyDetails, billboard.ReportSellDetails} {
+		if err := store.UpsertSyncStatus(billboard.SyncStatusRecord{
+			TradeDate:   "20260515",
+			ReportName:  report,
+			Status:      billboard.SyncStatusPassed,
+			RowCount:    1,
+			StartedAt:   time.Now(),
+			CompletedAt: time.Now(),
+		}); err != nil {
+			t.Fatalf("upsert status: %v", err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/market/billboard/seat?keyword=机构专用&limit=1", nil)
+	rec := httptest.NewRecorder()
+	handleMarketBillboardSeat(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Code int `json:"code"`
+		Data struct {
+			Items     []map[string]any    `json:"items"`
+			Freshness billboard.Freshness `json:"freshness"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if len(payload.Data.Items) != 1 || payload.Data.Items[0]["seat_name"] != "机构专用" {
+		t.Fatalf("unexpected items: %#v", payload.Data.Items)
+	}
+	if payload.Data.Freshness.Coverage != billboard.CoverageComplete || payload.Data.Freshness.Watermark != "20260515" {
+		t.Fatalf("unexpected freshness: %#v", payload.Data.Freshness)
+	}
+}
+
 func TestHandleMarketBillboardStatsUsesTradeAllWatermark(t *testing.T) {
 	originalStore := marketBillboardStore
 	defer func() { marketBillboardStore = originalStore }()

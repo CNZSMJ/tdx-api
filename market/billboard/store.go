@@ -333,6 +333,22 @@ func (s *Store) ListSeatTrades(query SeatTradeQuery) (SeatTradeList, error) {
 	limit := normalizeLimit(query.Limit)
 	rows := make([]SeatTradeRecord, 0, limit+1)
 	session := s.engine.Desc("TradeDate").Desc("ID").Limit(limit + 1)
+	seatByID := make(map[int64]SeatRecord)
+	if query.Keyword != "" {
+		matchingSeats := make([]SeatRecord, 0, 16)
+		if err := s.engine.Where("SeatName LIKE ?", "%"+query.Keyword+"%").Find(&matchingSeats); err != nil {
+			return SeatTradeList{}, err
+		}
+		if len(matchingSeats) == 0 {
+			return SeatTradeList{}, nil
+		}
+		seatIDs := make([]int64, 0, len(matchingSeats))
+		for _, seat := range matchingSeats {
+			seatIDs = append(seatIDs, seat.ID)
+			seatByID[seat.ID] = seat
+		}
+		session = session.In("SeatID", seatIDs)
+	}
 	if query.TradeDate != "" {
 		session = session.And("TradeDate = ?", query.TradeDate)
 	}
@@ -353,13 +369,20 @@ func (s *Store) ListSeatTrades(query SeatTradeQuery) (SeatTradeList, error) {
 		next = encodeCursorID(rows[limit-1].ID)
 		rows = rows[:limit]
 	}
+	if len(seatByID) == 0 {
+		seatIDs := make([]int64, 0, len(rows))
+		for _, row := range rows {
+			seatIDs = append(seatIDs, row.SeatID)
+		}
+		seats, err := s.seatsByID(seatIDs)
+		if err != nil {
+			return SeatTradeList{}, err
+		}
+		seatByID = seats
+	}
 	items := make([]SeatTradeView, 0, len(rows))
 	for _, row := range rows {
-		seat := new(SeatRecord)
-		_, _ = s.engine.ID(row.SeatID).Get(seat)
-		if query.Keyword != "" && !strings.Contains(seat.SeatName, query.Keyword) {
-			continue
-		}
+		seat := seatByID[row.SeatID]
 		items = append(items, SeatTradeView{
 			SeatTradeRecord: row,
 			SeatName:        seat.SeatName,
@@ -368,6 +391,21 @@ func (s *Store) ListSeatTrades(query SeatTradeQuery) (SeatTradeList, error) {
 		})
 	}
 	return SeatTradeList{Items: items, NextCursor: next}, nil
+}
+
+func (s *Store) seatsByID(ids []int64) (map[int64]SeatRecord, error) {
+	if len(ids) == 0 {
+		return map[int64]SeatRecord{}, nil
+	}
+	seats := make([]SeatRecord, 0, len(ids))
+	if err := s.engine.In("ID", ids).Find(&seats); err != nil {
+		return nil, err
+	}
+	byID := make(map[int64]SeatRecord, len(seats))
+	for _, seat := range seats {
+		byID[seat.ID] = seat
+	}
+	return byID, nil
 }
 
 func (s *Store) ListInstitutions(query InstitutionQuery) (InstitutionList, error) {
@@ -507,8 +545,16 @@ func (s *Store) Coverage(startDate, endDate string, reports []string) (Freshness
 }
 
 func (s *Store) LatestWatermark() (string, error) {
+	return s.LatestWatermarkForReports(nil)
+}
+
+func (s *Store) LatestWatermarkForReports(reports []string) (string, error) {
 	statuses := make([]SyncStatusRecord, 0, 1)
-	err := s.engine.In("Status", []string{SyncStatusPassed, SyncStatusEmptySuccess}).Desc("TradeDate").Limit(1).Find(&statuses)
+	session := s.engine.In("Status", []string{SyncStatusPassed, SyncStatusEmptySuccess}).Desc("TradeDate").Limit(1)
+	if len(reports) > 0 {
+		session = session.In("ReportName", reports)
+	}
+	err := session.Find(&statuses)
 	if err != nil || len(statuses) == 0 {
 		return "", err
 	}

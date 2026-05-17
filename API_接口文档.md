@@ -1361,7 +1361,7 @@ GET /api/financial-reports?code=600000&start_date=20250101&end_date=20251231
 | `*_ratio` | 小数比例，例如 `0.052` 表示 `5.2%` |
 | `*_volume_share` | 股数，不是手 |
 
-**分页约定**: `limit` 默认 100，最大 500；翻页使用 `cursor`。默认不返回原始来源字段，传 `include_source=true` 时返回 `source_report_name`、`source_row_id`、`source_payload_hash` 等有限来源元数据。
+**分页约定**: `limit` 默认 100，最大 500；翻页使用 `cursor`。默认不返回原始来源字段，传 `include_source=true` 时返回 `source_report_name`、`source_row_id`、`source_payload_hash` 等有限来源元数据。未传 `trade_date` / `start_date` / `end_date` 时，列表仍可返回历史数据，`freshness` 按对应报表的当前水位日期计算。
 
 ### 获取龙虎榜上榜记录
 
