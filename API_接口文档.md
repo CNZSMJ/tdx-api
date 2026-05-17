@@ -1335,6 +1335,269 @@ GET /api/financial-reports?code=600000&start_date=20250101&end_date=20251231
 
 ---
 
+## 🧾 交易公开信息 / 龙虎榜接口
+
+以下接口读取本地 `market_billboard.db`，数据源为 Eastmoney RPT。接口不在 GET 请求中实时代理上游；数据新鲜度通过 `freshness` 返回。当前采集范围只包含沪深北 A 股股票，不采集 ETF、指数、债券、可转债等非 A 股股票。
+
+**通用响应字段**:
+
+| 字段 | 说明 |
+|------|------|
+| `freshness.domain` | 固定为 `market_billboard` |
+| `freshness.watermark` | 当前可用数据水位日期 |
+| `freshness.coverage` | `complete` / `partial` / `missing` / `failed` / `empty_success` |
+| `freshness.status` | `fresh` / `stale` |
+| `source.provider` | 固定为 `eastmoney` |
+| `source.module` | 固定为 `rpt` |
+| `source.reports` | 本次响应依赖的 Eastmoney RPT 报表 |
+| `next_cursor` | 下一页游标；无下一页时为 `null` |
+
+**单位约定**:
+
+| 后缀 | 说明 |
+|------|------|
+| `*_milli` | 金额或价格，人民币 * 1000 |
+| `*_pct` | 百分点数值，例如 `5.2` 表示 `5.2%` |
+| `*_ratio` | 小数比例，例如 `0.052` 表示 `5.2%` |
+| `*_volume_share` | 股数，不是手 |
+
+**分页约定**: `limit` 默认 100，最大 500；翻页使用 `cursor`。默认不返回原始来源字段，传 `include_source=true` 时返回 `source_report_name`、`source_row_id`、`source_payload_hash` 等有限来源元数据。
+
+### 获取龙虎榜上榜记录
+
+**接口**: `GET /api/market/billboard`
+
+**描述**: 按交易日或日期范围查询龙虎榜上榜标的及上榜原因、买卖金额、成交占比、后续表现字段。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| trade_date | string | 否 | 单日查询，`YYYYMMDD` 或 `YYYY-MM-DD` |
+| start_date | string | 否 | 起始日期；未传 `trade_date` 时生效 |
+| end_date | string | 否 | 结束日期；未传 `trade_date` 时生效 |
+| limit | int | 否 | 返回条数，默认 100，最大 500 |
+| cursor | string | 否 | 下一页游标 |
+| include_source | bool | 否 | 是否返回来源元数据 |
+
+**请求示例**:
+```text
+GET /api/market/billboard?trade_date=20260515&limit=20
+GET /api/market/billboard?start_date=20250101&end_date=20260515&limit=100
+GET /api/market/billboard?trade_date=20260515&include_source=true
+```
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "count": 1,
+    "next_cursor": null,
+    "freshness": {
+      "domain": "market_billboard",
+      "watermark": "20260515",
+      "query_start_date": "20260515",
+      "query_end_date": "20260515",
+      "coverage": "complete",
+      "status": "fresh",
+      "reports": [
+        "RPT_DAILYBILLBOARD_DETAILSNEW",
+        "RPT_BILLBOARD_DAILYDETAILSBUY",
+        "RPT_BILLBOARD_DAILYDETAILSSELL",
+        "RPT_ORGANIZATION_TRADE_DETAILS"
+      ]
+    },
+    "source": {
+      "provider": "eastmoney",
+      "module": "rpt",
+      "reports": [
+        "RPT_DAILYBILLBOARD_DETAILSNEW",
+        "RPT_BILLBOARD_DAILYDETAILSBUY",
+        "RPT_BILLBOARD_DAILYDETAILSSELL",
+        "RPT_ORGANIZATION_TRADE_DETAILS"
+      ]
+    },
+    "items": [
+      {
+        "trade_date": "20260515",
+        "full_code": "bj920580",
+        "code": "920580",
+        "exchange": "bj",
+        "name": "科创新材",
+        "asset_type": "stock",
+        "close_price_milli": 0,
+        "change_rate_pct": 0,
+        "billboard_buy_amount_milli": 51199608530,
+        "billboard_sell_amount_milli": 75623034360,
+        "billboard_net_amount_milli": -24423425830,
+        "deal_net_ratio_pct": 0,
+        "turnover_rate_pct": 0,
+        "provider_d1_close_adj_pct": 0
+      }
+    ]
+  }
+}
+```
+
+### 获取单个标的龙虎榜历史
+
+**接口**: `GET /api/market/billboard/instrument`
+
+**描述**: 按 `full_code` 查询单个标的的龙虎榜历史。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| full_code | string | 是 | 标的全码，例如 `sh600000` / `sz000001` / `bj920580` |
+| limit | int | 否 | 返回条数，默认 100，最大 500 |
+| cursor | string | 否 | 下一页游标 |
+| include_source | bool | 否 | 是否返回来源元数据 |
+
+**请求示例**:
+```text
+GET /api/market/billboard/instrument?full_code=bj920580&limit=20
+```
+
+### 获取龙虎榜详情
+
+**接口**: `GET /api/market/billboard/detail`
+
+**描述**: 查询某交易日某标的的上榜记录、买卖席位明细和机构专用统计。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| full_code | string | 是 | 标的全码 |
+| trade_date | string | 是 | 交易日，`YYYYMMDD` 或 `YYYY-MM-DD` |
+| include_source | bool | 否 | 是否返回来源元数据 |
+
+**请求示例**:
+```text
+GET /api/market/billboard/detail?trade_date=20260515&full_code=bj920580
+```
+
+**响应数据字段**:
+| 字段 | 说明 |
+|------|------|
+| `items` | 上榜记录数组 |
+| `seat_trades` | 买卖席位明细，含 `side`、`rank`、`seat_name`、`buy_amount_milli`、`sell_amount_milli`、`net_amount_milli` |
+| `institutions` | 机构专用统计数组 |
+| `freshness` | 核心龙虎榜报表覆盖状态 |
+| `source` | 本接口依赖的 RPT 来源 |
+
+### 获取买卖席位明细
+
+**接口**: `GET /api/market/billboard/seats`
+
+**描述**: 查询龙虎榜买入/卖出席位。`rank` 为本地按上游返回顺序归一化得到的席位排名。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| trade_date | string | 否 | 交易日 |
+| full_code | string | 否 | 标的全码 |
+| side | string | 否 | `buy` / `sell` |
+| keyword | string | 否 | 营业部名称关键词 |
+| limit | int | 否 | 返回条数，默认 100，最大 500 |
+| cursor | string | 否 | 下一页游标 |
+| include_source | bool | 否 | 是否返回来源元数据 |
+
+**请求示例**:
+```text
+GET /api/market/billboard/seats?trade_date=20260515&full_code=bj920580&limit=10
+GET /api/market/billboard/seats?keyword=机构专用&side=buy
+```
+
+### 搜索席位
+
+**接口**: `GET /api/market/billboard/seat`
+
+**描述**: 与 `/api/market/billboard/seats` 返回结构相同，但 `keyword` 必填，用于搜索营业部或机构专用席位。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| keyword | string | 是 | 营业部名称关键词 |
+| trade_date | string | 否 | 交易日 |
+| full_code | string | 否 | 标的全码 |
+| side | string | 否 | `buy` / `sell` |
+| limit | int | 否 | 返回条数，默认 100，最大 500 |
+| cursor | string | 否 | 下一页游标 |
+| include_source | bool | 否 | 是否返回来源元数据 |
+
+### 获取机构专用交易
+
+**接口**: `GET /api/market/billboard/institutions`
+
+**描述**: 查询机构专用买卖统计。机构报表单独建模，不伪装成普通席位排行。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| trade_date | string | 否 | 单日查询 |
+| start_date | string | 否 | 起始日期 |
+| end_date | string | 否 | 结束日期 |
+| full_code | string | 否 | 标的全码 |
+| limit | int | 否 | 返回条数，默认 100，最大 500 |
+| cursor | string | 否 | 下一页游标 |
+| include_source | bool | 否 | 是否返回来源元数据 |
+
+**主要字段**:
+| 字段 | 说明 |
+|------|------|
+| `buy_times` / `sell_times` | 机构买入/卖出次数 |
+| `buy_count` / `sell_count` | 买入/卖出机构数量 |
+| `buy_amount_milli` / `sell_amount_milli` | 机构买入/卖出金额 |
+| `net_buy_amount_milli` | 机构净买入金额 |
+| `free_market_cap_milli` | 自由流通市值，按 Eastmoney `FREECAP` 的亿元口径转换为人民币 * 1000 |
+
+### 获取龙虎榜统计快照
+
+**接口**: `GET /api/market/billboard/stats`
+
+**描述**: 查询 `RPT_BILLBOARD_TRADEALL` 统计快照。该数据是标的统计快照，不是每日上榜 entry。
+
+**请求参数**:
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| full_code | string | 否 | 标的全码 |
+| cycle | string | 否 | 上游统计周期，例如 `04` |
+| limit | int | 否 | 返回条数，默认 100，最大 500 |
+| cursor | string | 否 | 下一页游标 |
+| include_source | bool | 否 | 是否返回来源元数据 |
+
+**请求示例**:
+```text
+GET /api/market/billboard/stats?full_code=bj920580
+GET /api/market/billboard/stats?cycle=04&limit=50
+```
+
+**主要字段**:
+| 字段 | 说明 |
+|------|------|
+| `statistics_cycle` | 上游统计周期 |
+| `period_label` | 周期文字标签 |
+| `latest_trade_date` | 统计快照水位日期 |
+| `billboard_times` | 上榜次数 |
+| `billboard_deal_amount_milli` | 龙虎榜成交金额 |
+| `billboard_net_buy_amount_milli` | 龙虎榜净买入金额 |
+| `org_times` | 机构参与次数 |
+| `org_net_buy_amount_milli` | 机构净买入金额 |
+| `instrument_pct_1m` / `instrument_pct_3m` / `instrument_pct_6m` / `instrument_pct_1y` | 上游给出的阶段涨跌幅百分比 |
+
+### 龙虎榜同步与治理
+
+- 命令行同步工具：`cmd/market-billboard-sync`
+- 命令行诊断工具：`cmd/market-billboard-diagnose`
+- 默认历史起点：`20250101`
+- 默认治理任务：`market_billboard_sync`
+- 默认运行时间：每日 `21:30`，治理 schedule 为 `0 30 21 * * *`
+- 默认同步窗口：最近 5 个交易日
+- `/api/collector/status` 的 `governance.jobs` 会包含 `market_billboard_sync`，`governance.domains` 会包含 `market_billboard`
+
+---
+
 ## 🏷️ 板块与明确行业接口
 
 ### 32. 获取板块列表
@@ -2408,7 +2671,12 @@ Professional Finance API 最小稳定错误代码集合：
 - 板块内个股排名：支持涨幅/成交额/成交量/振幅排序
 - Ticker 服务状态查询
 
-### v1.2.0 (计划中)
+### v1.2.0 (2026-05)
+- 交易公开信息 / 龙虎榜接口：上榜记录、标的历史、详情、买卖席位、席位搜索、机构专用交易、统计快照
+- 新增 `market_billboard_sync` 治理任务，每日 21:30 同步最近 5 个交易日
+- 新增 `market_billboard` 数据新鲜度与覆盖率投影
+
+### v1.3.0 (计划中)
 - 🔄 WebSocket 实时推送
 - 🔄 板块资金流向
 
