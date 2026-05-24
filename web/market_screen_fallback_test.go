@@ -13,19 +13,23 @@ import (
 
 	_ "github.com/glebarez/go-sqlite"
 	collectorpkg "github.com/injoyai/tdx/collector"
+	"github.com/injoyai/tdx/protocol"
 )
 
 func TestHandleMarketScreenFallsBackToDailyKlineCloseSnapshot(t *testing.T) {
 	originalDir := databaseDir
 	originalRuntime := collectorRuntime
+	originalClient := client
 	defer func() {
 		databaseDir = originalDir
 		collectorRuntime = originalRuntime
+		client = originalClient
 	}()
 
 	tmp := t.TempDir()
 	databaseDir = tmp
 	collectorRuntime = nil
+	client = nil
 
 	mustCreateMarketScreenCodesDB(t, filepath.Join(tmp, "codes.db"))
 	mustCreateMarketScreenKlineDB(t, filepath.Join(tmp, "kline", "sh600000.db"), "sh600000", []marketScreenKlineFixture{
@@ -166,6 +170,81 @@ func TestMarketScreenUsesTodayTickerBeforeDailyKline(t *testing.T) {
 	}
 	if resp["count"] != 1 {
 		t.Fatalf("count = %v, want 1; resp=%#v", resp["count"], resp)
+	}
+}
+
+func TestMarketScreenLimitThresholdTreatsBJStocksAs30Percent(t *testing.T) {
+	if got := marketScreenLimitThreshold("bj920725", "族兴新材"); got != 30 {
+		t.Fatalf("marketScreenLimitThreshold(bj920725) = %v, want 30", got)
+	}
+	if got := marketScreenLimitUp(13.58, "bj920725", "族兴新材"); got {
+		t.Fatalf("marketScreenLimitUp(13.58, bj920725) = %v, want false", got)
+	}
+}
+
+func TestMarketScreenQuoteSnapshotUsesQuotePrevClose(t *testing.T) {
+	originalDir := databaseDir
+	defer func() {
+		databaseDir = originalDir
+	}()
+
+	tmp := t.TempDir()
+	databaseDir = tmp
+	mustCreateMarketScreenCodesDB(t, filepath.Join(tmp, "codes.db"))
+
+	fetcher := func(codes ...string) (protocol.QuotesResp, error) {
+		return protocol.QuotesResp{
+			&protocol.Quote{
+				Code: "600000",
+				K: protocol.K{
+					Last:  protocol.Price(11000),
+					Open:  protocol.Price(0),
+					High:  protocol.Price(0),
+					Low:   protocol.Price(0),
+					Close: protocol.Price(0),
+				},
+				TotalHand: 0,
+			},
+			&protocol.Quote{
+				Code: "000001",
+				K: protocol.K{
+					Last:  protocol.Price(9720),
+					Open:  protocol.Price(9800),
+					High:  protocol.Price(10030),
+					Low:   protocol.Price(9710),
+					Close: protocol.Price(9900),
+				},
+				TotalHand: 20158,
+				Amount:    19885918,
+			},
+		}, nil
+	}
+
+	ticks, _, ok := loadMarketScreenQuoteSnapshot(marketScreenRequest{
+		sortBy:    "change_pct",
+		order:     "asc",
+		assetType: string(collectorpkg.AssetTypeStock),
+		limit:     10,
+	}, fetcher)
+	if !ok || len(ticks) != 1 {
+		t.Fatalf("quote snapshot count = %d ok=%v, want 1 true", len(ticks), ok)
+	}
+	if ticks[0].PctChange != 1.85 {
+		t.Fatalf("pct_change = %v, want 1.85", ticks[0].PctChange)
+	}
+	if ticks[0].IsLimitDown {
+		t.Fatalf("quote snapshot marked limit down: %#v", ticks[0])
+	}
+
+	_, _, ok = loadMarketScreenQuoteSnapshot(marketScreenRequest{
+		filter:    "limit_down",
+		sortBy:    "change_pct",
+		order:     "asc",
+		assetType: string(collectorpkg.AssetTypeStock),
+		limit:     10,
+	}, fetcher)
+	if ok {
+		t.Fatalf("limit_down filter should not include quote snapshot with positive change")
 	}
 }
 

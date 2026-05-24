@@ -217,3 +217,12 @@ func TestCollectorFinalAcceptanceEndToEndCatchUp(t *testing.T) {
 		}
 	}
 }
+
+func TestLimitThresholdTreatsBJStocksAs30Percent(t *testing.T) {
+	if got := limitThreshold("bj920725", "族兴新材"); got != 30.0 {
+		t.Fatalf("limitThreshold(bj920725) = %v, want 30", got)
+	}
+	if got := isLimitUp(13.58, "bj920725", "族兴新材"); got {
+		t.Fatalf("isLimitUp(13.58, bj920725) = %v, want false", got)
+	}
+}

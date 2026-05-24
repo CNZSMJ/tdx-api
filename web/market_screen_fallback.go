@@ -13,6 +13,7 @@ import (
 	"time"
 
 	collectorpkg "github.com/injoyai/tdx/collector"
+	"github.com/injoyai/tdx/protocol"
 )
 
 type marketScreenRequest struct {
@@ -36,6 +37,8 @@ type marketScreenCloseSnapshot struct {
 	tick collectorpkg.StockTick
 	date int64
 }
+
+type marketScreenQuoteFetcher func(...string) (protocol.QuotesResp, error)
 
 type marketStatsRequest struct {
 	assetType      string
@@ -158,6 +161,28 @@ func buildMarketScreenTickerResponse(req marketScreenRequest, ts *collectorpkg.T
 	return resp, true
 }
 
+func buildMarketScreenQuoteSnapshotResponse(req marketScreenRequest) (map[string]interface{}, bool) {
+	if req.hasTradingDate || client == nil {
+		return nil, false
+	}
+	ticks, filterNote, ok := loadMarketScreenQuoteSnapshot(req, func(codes ...string) (protocol.QuotesResp, error) {
+		return client.GetQuote(codes...)
+	})
+	if !ok {
+		return nil, false
+	}
+	resp := buildMarketScreenResponse(ticks, req.filter, filterNote, nil)
+	tradingDate := inferMarketScreenQuoteTradingDate(marketScreenNow())
+	resp["status"] = "quote_snapshot"
+	resp["status_hint"] = "Ticker 无盘中快照，已使用 TDX quote 的昨收口径"
+	resp["data_source"] = "quote"
+	resp["trading_date"] = tradingDate
+	if parsed, err := time.ParseInLocation("20060102", tradingDate, time.Local); err == nil {
+		resp["updated_at"] = time.Date(parsed.Year(), parsed.Month(), parsed.Day(), 15, 0, 0, 0, time.Local).Format(time.RFC3339)
+	}
+	return resp, true
+}
+
 func marketScreenShouldUseTicker(req marketScreenRequest, ts *collectorpkg.TickerService) bool {
 	if ts == nil {
 		return false
@@ -241,6 +266,151 @@ func loadMarketScreenCloseSnapshot(req marketScreenRequest) ([]collectorpkg.Stoc
 		filtered = filtered[:req.limit]
 	}
 	return filtered, tradingDate, filterNote, true
+}
+
+func loadMarketScreenQuoteSnapshot(req marketScreenRequest, quoteFetcher marketScreenQuoteFetcher) ([]collectorpkg.StockTick, string, bool) {
+	if req.limit <= 0 {
+		req.limit = 50
+	}
+	if req.limit > 200 {
+		req.limit = 200
+	}
+	filterNote := ""
+	if req.filter == "limit_up" || req.filter == "limit_down" {
+		req.assetType = string(collectorpkg.AssetTypeStock)
+		filterNote = "涨跌停筛选仅适用于股票"
+	}
+
+	codes, err := loadMarketScreenCodeRows(req.assetType)
+	if err != nil || len(codes) == 0 {
+		return nil, "", false
+	}
+	quotes := fetchMarketScreenQuotes(codes, quoteFetcher)
+	if len(quotes) == 0 {
+		return nil, "", false
+	}
+
+	filtered := make([]collectorpkg.StockTick, 0, len(quotes))
+	for _, code := range codes {
+		quote := quotes[strings.ToLower(code.fullCode)]
+		tick, ok := marketScreenQuoteToTick(code, quote)
+		if !ok {
+			continue
+		}
+		switch req.filter {
+		case "limit_up":
+			if !tick.IsLimitUp {
+				continue
+			}
+		case "limit_down":
+			if !tick.IsLimitDown {
+				continue
+			}
+		}
+		filtered = append(filtered, tick)
+	}
+	if len(filtered) == 0 {
+		return nil, "", false
+	}
+	sortMarketScreenTicks(filtered, req.sortBy, req.order)
+	if len(filtered) > req.limit {
+		filtered = filtered[:req.limit]
+	}
+	return filtered, filterNote, true
+}
+
+func fetchMarketScreenQuotes(codes []marketScreenCodeRow, quoteFetcher marketScreenQuoteFetcher) map[string]*protocol.Quote {
+	const batchSize = 80
+	quotes := make(map[string]*protocol.Quote, len(codes))
+	for i := 0; i < len(codes); i += batchSize {
+		end := i + batchSize
+		if end > len(codes) {
+			end = len(codes)
+		}
+		queryCodes := make([]string, 0, end-i)
+		for _, code := range codes[i:end] {
+			queryCodes = append(queryCodes, code.fullCode)
+		}
+		resp, err := quoteFetcher(queryCodes...)
+		if err != nil {
+			continue
+		}
+		for _, quote := range resp {
+			if quote == nil {
+				continue
+			}
+			quotes[strings.ToLower(protocol.AddPrefix(quote.Code))] = quote
+		}
+	}
+	return quotes
+}
+
+func marketScreenQuoteToTick(code marketScreenCodeRow, quote *protocol.Quote) (collectorpkg.StockTick, bool) {
+	if quote == nil {
+		return collectorpkg.StockTick{}, false
+	}
+	preClose := quote.K.Last.Float64()
+	price := quote.K.Close.Float64()
+	if price <= 0 {
+		return collectorpkg.StockTick{}, false
+	}
+	priceChange := 0.0
+	pctChange := 0.0
+	amplitude := 0.0
+	if preClose > 0 {
+		priceChange = price - preClose
+		pctChange = priceChange / preClose * 100
+		amplitude = (quote.K.High.Float64() - quote.K.Low.Float64()) / preClose * 100
+	}
+	tick := collectorpkg.StockTick{
+		Code:        code.fullCode,
+		Name:        code.name,
+		Exchange:    code.exchange,
+		AssetType:   code.assetType,
+		Last:        price,
+		PreClose:    preClose,
+		Open:        quote.K.Open.Float64(),
+		High:        quote.K.High.Float64(),
+		Low:         quote.K.Low.Float64(),
+		PctChange:   roundMarketScreen(pctChange, 2),
+		PriceChange: roundMarketScreen(priceChange, 3),
+		Volume:      int64(quote.TotalHand),
+		Amount:      quote.Amount,
+		Amplitude:   roundMarketScreen(amplitude, 2),
+	}
+	tick.IsLimitUp = marketScreenLimitUp(tick.PctChange, tick.Code, tick.Name)
+	tick.IsLimitDown = marketScreenLimitDown(tick.PctChange, tick.Code, tick.Name)
+	return tick, true
+}
+
+func inferMarketScreenQuoteTradingDate(now time.Time) string {
+	day := normalizeCalendarDay(now)
+	minutes := now.In(time.Local).Hour()*60 + now.In(time.Local).Minute()
+	if isMarketScreenTradingDay(day) && minutes >= 9*60+15 {
+		return day.Format("20060102")
+	}
+	for i := 0; i < 10; i++ {
+		day = day.AddDate(0, 0, -1)
+		if isMarketScreenTradingDay(day) {
+			return day.Format("20060102")
+		}
+	}
+	return normalizeCalendarDay(now).Format("20060102")
+}
+
+func isMarketScreenTradingDay(day time.Time) bool {
+	if ok, err := resolveTradingDay(day); err == nil {
+		return ok
+	}
+	if projected, ok := projectedTradingDay(day); ok {
+		return projected
+	}
+	switch day.In(time.Local).Weekday() {
+	case time.Saturday, time.Sunday:
+		return false
+	default:
+		return true
+	}
 }
 
 func loadMarketScreenLatestCloseTicks(assetType string) ([]collectorpkg.StockTick, string, bool) {
@@ -1281,7 +1451,8 @@ func marketScreenLimitThreshold(code, name string) float64 {
 	case strings.HasPrefix(bare, "68"), strings.HasPrefix(bare, "30"):
 		return 20
 	case strings.HasPrefix(bare, "83"), strings.HasPrefix(bare, "87"),
-		strings.HasPrefix(bare, "82"), strings.HasPrefix(bare, "43"):
+		strings.HasPrefix(bare, "82"), strings.HasPrefix(bare, "43"),
+		strings.HasPrefix(bare, "92"):
 		return 30
 	default:
 		if strings.Contains(strings.ToUpper(name), "ST") {

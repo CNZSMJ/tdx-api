@@ -709,7 +709,8 @@ func limitThreshold(code, name string) float64 {
 	case strings.HasPrefix(bare, "68"), strings.HasPrefix(bare, "30"):
 		return 20.0
 	case strings.HasPrefix(bare, "83"), strings.HasPrefix(bare, "87"),
-		strings.HasPrefix(bare, "82"), strings.HasPrefix(bare, "43"):
+		strings.HasPrefix(bare, "82"), strings.HasPrefix(bare, "43"),
+		strings.HasPrefix(bare, "92"):
 		return 30.0
 	default:
 		if isSTStock(name) {

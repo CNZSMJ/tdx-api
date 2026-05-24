@@ -106,6 +106,25 @@ func TestInferQuoteStatusMarksInferredSource(t *testing.T) {
 	}
 }
 
+func TestInferQuoteStatusDoesNotMarkZeroQuoteLimitDown(t *testing.T) {
+	now := time.Date(2026, 5, 23, 3, 0, 0, 0, time.Local)
+	quote := &protocol.Quote{
+		K: protocol.K{
+			Last:  protocol.Price(28030),
+			Open:  protocol.Price(0),
+			High:  protocol.Price(0),
+			Low:   protocol.Price(0),
+			Close: protocol.Price(0),
+		},
+		TotalHand: 0,
+	}
+
+	status := inferQuoteStatus("bj920058", "华洋赛车", quote, now)
+	if status.IsLimitDown {
+		t.Fatalf("zero quote should not be inferred as limit down: %#v", status)
+	}
+}
+
 func TestBuildSignalCheckPayloadFullMode(t *testing.T) {
 	payload := buildSignalCheckPayload(
 		[]string{"sh600000"},
@@ -758,6 +777,15 @@ func TestBuildMarketStatsDataUsesRequestedAssetTypeForExchanges(t *testing.T) {
 	flatTotal := sh["flat"].(int) + sz["flat"].(int) + bj["flat"].(int)
 	if stock["up"] != upTotal || stock["down"] != downTotal || stock["flat"] != flatTotal {
 		t.Fatalf("summary.stock does not align with per-exchange totals: stock=%v sh=%v sz=%v bj=%v", stock, sh, sz, bj)
+	}
+}
+
+func TestQuoteLimitThresholdTreatsBJStocksAs30Percent(t *testing.T) {
+	if got := quoteLimitThreshold("bj920725", "族兴新材"); got != 30.0 {
+		t.Fatalf("quoteLimitThreshold(bj920725) = %v, want 30", got)
+	}
+	if got := quoteIsLimitUp(13.58, "bj920725", "族兴新材"); got {
+		t.Fatalf("quoteIsLimitUp(13.58, bj920725) = %v, want false", got)
 	}
 }
 

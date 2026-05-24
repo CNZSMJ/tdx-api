@@ -1623,8 +1623,12 @@ func inferQuoteStatus(fullCode, name string, quote *protocol.Quote, now time.Tim
 		changePct = (price - prevClose) / prevClose * 100
 	}
 
-	isLimitUp := quoteIsLimitUp(changePct, fullCode, name)
-	isLimitDown := quoteIsLimitDown(changePct, fullCode, name)
+	isLimitUp := false
+	isLimitDown := false
+	if price > 0 && prevClose > 0 {
+		isLimitUp = quoteIsLimitUp(changePct, fullCode, name)
+		isLimitDown = quoteIsLimitDown(changePct, fullCode, name)
+	}
 	isHalted := providerInTradingSession(now) &&
 		quote.TotalHand == 0 &&
 		quote.K.Open.Float64() == 0 &&
@@ -1672,7 +1676,8 @@ func quoteLimitThreshold(fullCode, name string) float64 {
 	case strings.HasPrefix(bare, "68"), strings.HasPrefix(bare, "30"):
 		return 20.0
 	case strings.HasPrefix(bare, "83"), strings.HasPrefix(bare, "87"),
-		strings.HasPrefix(bare, "82"), strings.HasPrefix(bare, "43"):
+		strings.HasPrefix(bare, "82"), strings.HasPrefix(bare, "43"),
+		strings.HasPrefix(bare, "92"):
 		return 30.0
 	default:
 		if strings.Contains(strings.ToUpper(name), "ST") {

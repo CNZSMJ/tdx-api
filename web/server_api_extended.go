@@ -1768,6 +1768,10 @@ func handleMarketScreen(w http.ResponseWriter, r *http.Request) {
 		successResponse(w, resp)
 		return
 	}
+	if resp, ok := buildMarketScreenQuoteSnapshotResponse(req); ok {
+		successResponse(w, resp)
+		return
+	}
 	if ts == nil {
 		if resp, ok := buildMarketScreenCloseSnapshotResponse(req); ok {
 			successResponse(w, resp)
