@@ -28,6 +28,10 @@ func buildAndStoreMarketScreenCloseTicks(assetType, tradingDate string) ([]colle
 	if !ok {
 		return nil, "", false
 	}
+	if !marketScreenCloseTicksUsable(ticks) {
+		log.Printf("market_snapshot build discarded: trading_date=%s rows=%d reason=zero_volume_amount", date, len(ticks))
+		return nil, "", false
+	}
 	if err := saveMarketScreenMaterializedCloseTicks(date, ticks); err != nil {
 		log.Printf("market_snapshot save failed: trading_date=%s rows=%d err=%v", date, len(ticks), err)
 	} else {
@@ -176,15 +180,24 @@ func loadMarketScreenMaterializedCloseTicks(assetType, tradingDate string) ([]co
 		}
 		tick.IsLimitUp = isLimitUp == 1
 		tick.IsLimitDown = isLimitDown == 1
+		if !marketScreenCloseTickLimitFlagsValid(tick) {
+			return nil, "", false
+		}
 		ticks = append(ticks, tick)
 	}
 	if err := rows.Err(); err != nil || len(ticks) == 0 {
+		return nil, "", false
+	}
+	if !marketScreenCloseTicksUsable(ticks) {
 		return nil, "", false
 	}
 	return ticks, date, true
 }
 
 func saveMarketScreenMaterializedCloseTicks(tradingDate string, ticks []collectorpkg.StockTick) error {
+	if !marketScreenCloseTicksUsable(ticks) {
+		return nil
+	}
 	db, err := openMarketScreenSnapshotDB(false)
 	if err != nil {
 		return err
@@ -216,6 +229,23 @@ func saveMarketScreenMaterializedCloseTicks(tradingDate string, ticks []collecto
 		}
 	}
 	return tx.Commit()
+}
+
+func marketScreenCloseTicksUsable(ticks []collectorpkg.StockTick) bool {
+	if len(ticks) == 0 {
+		return false
+	}
+	for _, tick := range ticks {
+		if tick.Amount > 0 || tick.Volume > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func marketScreenCloseTickLimitFlagsValid(tick collectorpkg.StockTick) bool {
+	return tick.IsLimitUp == marketScreenPriceTouchesLimitUp(tick.Last, tick.PreClose, tick.Code, tick.Name) &&
+		tick.IsLimitDown == marketScreenPriceTouchesLimitDown(tick.Last, tick.PreClose, tick.Code, tick.Name)
 }
 
 func loadMarketLimitUpTiersMaterialized(req marketLimitUpTiersRequest, tradingDate string) ([]marketLimitUpTierStock, bool) {

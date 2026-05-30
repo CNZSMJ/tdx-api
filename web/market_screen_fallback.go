@@ -907,8 +907,8 @@ func buildMarketScreenCloseSnapshot(code marketScreenCodeRow, latest, previous s
 		Amount:      latest.amount.Float64(),
 		Amplitude:   roundMarketScreen(amplitude, 2),
 	}
-	tick.IsLimitUp = marketScreenLimitUp(tick.PctChange, tick.Code, tick.Name)
-	tick.IsLimitDown = marketScreenLimitDown(tick.PctChange, tick.Code, tick.Name)
+	tick.IsLimitUp = marketScreenPriceTouchesLimitUp(price, preClose, tick.Code, tick.Name)
+	tick.IsLimitDown = marketScreenPriceTouchesLimitDown(price, preClose, tick.Code, tick.Name)
 	return marketScreenCloseSnapshot{tick: tick, date: latest.date}
 }
 

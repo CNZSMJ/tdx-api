@@ -158,6 +158,80 @@ func TestMarketScreenCloseTicksUsesMaterializedSnapshot(t *testing.T) {
 	}
 }
 
+func TestMarketScreenCloseTicksRebuildsZeroAmountMaterializedSnapshot(t *testing.T) {
+	originalDir := databaseDir
+	defer func() {
+		databaseDir = originalDir
+	}()
+
+	tmp := t.TempDir()
+	databaseDir = tmp
+
+	mustCreateMarketScreenCodesDB(t, filepath.Join(tmp, "codes.db"))
+	mustCreateMarketScreenKlineDB(t, filepath.Join(tmp, "kline", "sh600000.db"), "sh600000", []marketScreenKlineFixture{
+		{At: time.Date(2026, 4, 28, 15, 0, 0, 0, time.Local), Open: 9300, High: 9400, Low: 9200, Close: 9300, Volume: 100, Amount: 930000},
+		{At: time.Date(2026, 4, 29, 15, 0, 0, 0, time.Local), Open: 9300, High: 9500, Low: 9300, Close: 9500, Volume: 200, Amount: 1900000},
+	})
+	mustCreateMarketScreenKlineDB(t, filepath.Join(tmp, "kline", "sz000001.db"), "sz000001", []marketScreenKlineFixture{
+		{At: time.Date(2026, 4, 28, 15, 0, 0, 0, time.Local), Open: 10000, High: 10100, Low: 9900, Close: 10000, Volume: 100, Amount: 1000000},
+		{At: time.Date(2026, 4, 29, 15, 0, 0, 0, time.Local), Open: 10000, High: 11000, Low: 10000, Close: 11000, Volume: 300, Amount: 3300000},
+	})
+	mustCreateZeroAmountMarketSnapshot(t, "20260429")
+
+	ticks, tradingDate, ok := loadMarketScreenCloseTicks(string(collectorpkg.AssetTypeStock), "20260429")
+	if !ok || len(ticks) != 2 || tradingDate != "20260429" {
+		t.Fatalf("rebuilt load = len %d date %q ok %v", len(ticks), tradingDate, ok)
+	}
+	var totalAmount float64
+	for _, tick := range ticks {
+		totalAmount += tick.Amount
+	}
+	if totalAmount == 0 {
+		t.Fatalf("rebuilt ticks still have zero amount: %#v", ticks)
+	}
+
+	db, err := openMarketScreenSnapshotDB(true)
+	if err != nil {
+		t.Fatalf("open snapshot db: %v", err)
+	}
+	defer db.Close()
+	var rows int
+	var storedAmount float64
+	if err := db.QueryRow(`SELECT COUNT(*), SUM(amount) FROM daily_market_snapshot WHERE trading_date = '20260429' AND asset_type = 'stock'`).Scan(&rows, &storedAmount); err != nil {
+		t.Fatalf("query rebuilt snapshot: %v", err)
+	}
+	if rows != 2 || storedAmount == 0 {
+		t.Fatalf("stored rebuilt snapshot rows=%d amount=%v", rows, storedAmount)
+	}
+}
+
+func TestMarketScreenCloseTicksRebuildsRoundedLimitFlagSnapshot(t *testing.T) {
+	originalDir := databaseDir
+	defer func() {
+		databaseDir = originalDir
+	}()
+
+	tmp := t.TempDir()
+	databaseDir = tmp
+
+	codesPath := filepath.Join(tmp, "codes.db")
+	mustCreateMarketScreenCodesDB(t, codesPath)
+	mustInsertMarketScreenCode(t, codesPath, "粤电力A", "000539", "sz")
+	mustCreateMarketScreenKlineDB(t, filepath.Join(tmp, "kline", "sz000539.db"), "sz000539", []marketScreenKlineFixture{
+		{At: time.Date(2026, 5, 27, 15, 0, 0, 0, time.Local), Open: 7340, High: 7340, Low: 7340, Close: 7340, Volume: 1000, Amount: 7340000},
+		{At: time.Date(2026, 5, 28, 15, 0, 0, 0, time.Local), Open: 7900, High: 8070, Low: 7730, Close: 8070, Volume: 1495433, Amount: 1198943232000},
+	})
+	mustCreateRoundedLimitFlagMarketSnapshot(t, "20260528")
+
+	ticks, tradingDate, ok := loadMarketScreenCloseTicks(string(collectorpkg.AssetTypeStock), "20260528")
+	if !ok || len(ticks) != 1 || tradingDate != "20260528" {
+		t.Fatalf("rebuilt load = len %d date %q ok %v", len(ticks), tradingDate, ok)
+	}
+	if ticks[0].Code != "sz000539" || ticks[0].IsLimitUp {
+		t.Fatalf("rounded stale limit flag was not rebuilt: %#v", ticks[0])
+	}
+}
+
 func TestMarketScreenUsesTodayTickerBeforeDailyKline(t *testing.T) {
 	originalNow := marketScreenNow
 	defer func() {
@@ -353,6 +427,52 @@ func TestMarketScreenLimitThresholdTreatsBJStocksAs30Percent(t *testing.T) {
 	}
 	if got := marketScreenLimitUp(13.58, "bj920725", "族兴新材"); got {
 		t.Fatalf("marketScreenLimitUp(13.58, bj920725) = %v, want false", got)
+	}
+}
+
+func TestMarketScreenCloseSnapshotUsesRawPriceForLimitDetection(t *testing.T) {
+	code := marketScreenCodeRow{
+		fullCode:  "sz000539",
+		name:      "粤电力A",
+		exchange:  "sz",
+		assetType: string(collectorpkg.AssetTypeStock),
+	}
+	latest := struct {
+		date   int64
+		open   collectorpkg.PriceMilli
+		high   collectorpkg.PriceMilli
+		low    collectorpkg.PriceMilli
+		close  collectorpkg.PriceMilli
+		volume int64
+		amount collectorpkg.PriceMilli
+	}{
+		date:   time.Date(2026, 5, 28, 15, 0, 0, 0, time.Local).Unix(),
+		open:   7900,
+		high:   8070,
+		low:    7730,
+		close:  8070,
+		volume: 1495433,
+		amount: 1198943232000,
+	}
+	previous := struct {
+		date   int64
+		open   collectorpkg.PriceMilli
+		high   collectorpkg.PriceMilli
+		low    collectorpkg.PriceMilli
+		close  collectorpkg.PriceMilli
+		volume int64
+		amount collectorpkg.PriceMilli
+	}{
+		date:  time.Date(2026, 5, 27, 15, 0, 0, 0, time.Local).Unix(),
+		close: 7340,
+	}
+
+	snapshot := buildMarketScreenCloseSnapshot(code, latest, previous, true)
+	if snapshot.tick.PctChange != 9.95 {
+		t.Fatalf("pct_change = %v, want rounded display value 9.95", snapshot.tick.PctChange)
+	}
+	if snapshot.tick.IsLimitUp {
+		t.Fatalf("rounded display pct must not make raw 9.9455%% move a limit-up: %#v", snapshot.tick)
 	}
 }
 
@@ -1140,6 +1260,36 @@ func mustCreateMarketScreenKlineDB(t *testing.T, path, code string, rows []marke
 		if _, err := db.Exec(`INSERT INTO DayKline(Code, Date, Open, High, Low, Close, Volume, Amount) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`, code, row.At.Unix(), row.Open, row.High, row.Low, row.Close, row.Volume, row.Amount); err != nil {
 			t.Fatalf("insert kline %s: %v", code, err)
 		}
+	}
+}
+
+func mustCreateZeroAmountMarketSnapshot(t *testing.T, tradingDate string) {
+	t.Helper()
+	db, err := openMarketScreenSnapshotDB(false)
+	if err != nil {
+		t.Fatalf("open snapshot db: %v", err)
+	}
+	defer db.Close()
+	if err := ensureMarketScreenSnapshotSchema(db); err != nil {
+		t.Fatalf("ensure snapshot schema: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO daily_market_snapshot(trading_date, full_code, name, exchange, asset_type, open_price, high_price, low_price, last_price, pre_close, change_pct, price_change, volume, amount, amplitude, is_limit_up, is_limit_down, updated_at) VALUES(?, 'sh600000', '浦发银行', 'sh', 'stock', 9.3, 9.3, 9.3, 9.3, 9.3, 0, 0, 0, 0, 0, 0, 0, ?)`, tradingDate, time.Now().Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert zero snapshot: %v", err)
+	}
+}
+
+func mustCreateRoundedLimitFlagMarketSnapshot(t *testing.T, tradingDate string) {
+	t.Helper()
+	db, err := openMarketScreenSnapshotDB(false)
+	if err != nil {
+		t.Fatalf("open snapshot db: %v", err)
+	}
+	defer db.Close()
+	if err := ensureMarketScreenSnapshotSchema(db); err != nil {
+		t.Fatalf("ensure snapshot schema: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO daily_market_snapshot(trading_date, full_code, name, exchange, asset_type, open_price, high_price, low_price, last_price, pre_close, change_pct, price_change, volume, amount, amplitude, is_limit_up, is_limit_down, updated_at) VALUES(?, 'sz000539', '粤电力A', 'sz', 'stock', 7.9, 8.07, 7.73, 8.07, 7.34, 9.95, 0.73, 1495433, 1198943232, 4.63, 1, 0, ?)`, tradingDate, time.Now().Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert rounded limit snapshot: %v", err)
 	}
 }
 
