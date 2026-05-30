@@ -2021,10 +2021,10 @@ func aggregateHistoryBarRows(rows []historyBarRow, frequency string) ([]historyB
 func filterHistoryBarRows(rows []historyBarRow, startDate, endDate time.Time, count int) ([]historyBarRow, error) {
 	filtered := make([]historyBarRow, 0, len(rows))
 	for _, row := range rows {
-		if !startDate.IsZero() && row.Time.Before(startDate) {
+		if dateBefore(row.Time, startDate) {
 			continue
 		}
-		if !endDate.IsZero() && row.Time.After(endDate) {
+		if dateAfter(row.Time, endDate) {
 			continue
 		}
 		filtered = append(filtered, row)
@@ -2038,6 +2038,21 @@ func filterHistoryBarRows(rows []historyBarRow, startDate, endDate time.Time, co
 		return nil, errors.New("指定条件下无历史 bars 数据")
 	}
 	return filtered, nil
+}
+
+func dateBefore(value, bound time.Time) bool {
+	return !bound.IsZero() && dateKey(value) < dateKey(bound)
+}
+
+func dateAfter(value, bound time.Time) bool {
+	return !bound.IsZero() && dateKey(value) > dateKey(bound)
+}
+
+func dateKey(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.In(time.Local).Format("20060102")
 }
 
 func filterIntradayBarRows(rows []historyBarRow, tradingDate time.Time) ([]historyBarRow, error) {

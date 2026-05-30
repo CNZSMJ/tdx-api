@@ -66,6 +66,55 @@ func TestFilterIntradayBarRowsDoesNotFallback(t *testing.T) {
 	}
 }
 
+func TestFilterHistoryBarRowsIncludesEndDateWholeDay(t *testing.T) {
+	rows := []historyBarRow{
+		{Time: time.Date(2026, 5, 25, 15, 0, 0, 0, time.Local), Close: 10.0},
+		{Time: time.Date(2026, 5, 26, 15, 0, 0, 0, time.Local), Close: 11.0},
+		{Time: time.Date(2026, 5, 27, 15, 0, 0, 0, time.Local), Close: 12.0},
+	}
+	startDate := time.Date(2026, 5, 20, 0, 0, 0, 0, time.Local)
+	endDate := time.Date(2026, 5, 26, 0, 0, 0, 0, time.Local)
+
+	filtered, err := filterHistoryBarRows(rows, startDate, endDate, 0)
+	if err != nil {
+		t.Fatalf("filterHistoryBarRows returned error: %v", err)
+	}
+	if len(filtered) != 2 {
+		t.Fatalf("filtered len = %d, want 2: %#v", len(filtered), filtered)
+	}
+	if filtered[1].Time.Format("2006-01-02") != "2026-05-26" {
+		t.Fatalf("last date = %s, want 2026-05-26", filtered[1].Time.Format("2006-01-02"))
+	}
+}
+
+func TestFilterIndexKlinesByDateRangeBeforeLimit(t *testing.T) {
+	list := []*protocol.Kline{
+		{Time: time.Date(2026, 5, 23, 15, 0, 0, 0, time.Local), Close: protocol.Price(1000)},
+		{Time: time.Date(2026, 5, 24, 15, 0, 0, 0, time.Local), Close: protocol.Price(1100)},
+		{Time: time.Date(2026, 5, 25, 15, 0, 0, 0, time.Local), Close: protocol.Price(1200)},
+		{Time: time.Date(2026, 5, 26, 15, 0, 0, 0, time.Local), Close: protocol.Price(1300)},
+		{Time: time.Date(2026, 5, 27, 15, 0, 0, 0, time.Local), Close: protocol.Price(1400)},
+	}
+	startDate := time.Date(2026, 5, 24, 0, 0, 0, 0, time.Local)
+	endDate := time.Date(2026, 5, 26, 0, 0, 0, 0, time.Local)
+
+	filtered := filterIndexKlinesByDateRange(list, startDate, endDate)
+	if len(filtered) != 3 {
+		t.Fatalf("filtered len = %d, want 3", len(filtered))
+	}
+	if filtered[0].Time.Format("2006-01-02") != "2026-05-24" || filtered[2].Time.Format("2006-01-02") != "2026-05-26" {
+		t.Fatalf("filtered dates = %s..%s, want 2026-05-24..2026-05-26", filtered[0].Time.Format("2006-01-02"), filtered[2].Time.Format("2006-01-02"))
+	}
+
+	limited := limitIndexKlines(filtered, 2)
+	if len(limited) != 2 {
+		t.Fatalf("limited len = %d, want 2", len(limited))
+	}
+	if limited[0].Time.Format("2006-01-02") != "2026-05-25" || limited[1].Time.Format("2006-01-02") != "2026-05-26" {
+		t.Fatalf("limited dates = %s..%s, want 2026-05-25..2026-05-26", limited[0].Time.Format("2006-01-02"), limited[1].Time.Format("2006-01-02"))
+	}
+}
+
 func TestFetchIntradayBarRowsPrefersLocalKlineDB(t *testing.T) {
 	originalDir := databaseDir
 	originalClient := client

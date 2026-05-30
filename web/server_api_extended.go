@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -597,6 +598,12 @@ func handleGetIndexAll(w http.ResponseWriter, r *http.Request) {
 		klineType = "day"
 	}
 
+	startDate, endDate, err := parseIndexDateRangeParams(r)
+	if err != nil {
+		errorResponse(w, err.Error())
+		return
+	}
+
 	limit := parsePositiveInt(r.URL.Query().Get("limit"))
 	list, err := fetchIndexAll(code, klineType)
 	if err != nil {
@@ -604,9 +611,8 @@ func handleGetIndexAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if limit > 0 && len(list) > limit {
-		list = list[len(list)-limit:]
-	}
+	list = filterIndexKlinesByDateRange(list, startDate, endDate)
+	list = limitIndexKlines(list, limit)
 
 	successResponse(w, map[string]interface{}{
 		"count": len(list),
@@ -1805,6 +1811,56 @@ func fetchIndexAll(code, klineType string) ([]*protocol.Kline, error) {
 		}
 		return resp.List, nil
 	}
+}
+
+func parseIndexDateRangeParams(r *http.Request) (time.Time, time.Time, error) {
+	startRaw := strings.TrimSpace(r.URL.Query().Get("start_date"))
+	endRaw := strings.TrimSpace(r.URL.Query().Get("end_date"))
+	if startRaw == "" && endRaw == "" {
+		return time.Time{}, time.Time{}, nil
+	}
+	if startRaw == "" || endRaw == "" {
+		return time.Time{}, time.Time{}, errors.New("start_date 与 end_date 必须同时传入")
+	}
+	startDate, err := parseWorkdayDate(startRaw)
+	if err != nil {
+		return time.Time{}, time.Time{}, errors.New("start_date 参数格式错误，应为 YYYYMMDD 或 YYYY-MM-DD")
+	}
+	endDate, err := parseWorkdayDate(endRaw)
+	if err != nil {
+		return time.Time{}, time.Time{}, errors.New("end_date 参数格式错误，应为 YYYYMMDD 或 YYYY-MM-DD")
+	}
+	if endDate.Before(startDate) {
+		return time.Time{}, time.Time{}, errors.New("end_date 不能早于 start_date")
+	}
+	return startDate, endDate, nil
+}
+
+func filterIndexKlinesByDateRange(list []*protocol.Kline, startDate, endDate time.Time) []*protocol.Kline {
+	if startDate.IsZero() && endDate.IsZero() {
+		return list
+	}
+	filtered := make([]*protocol.Kline, 0, len(list))
+	for _, item := range list {
+		if item == nil {
+			continue
+		}
+		if dateBefore(item.Time, startDate) {
+			continue
+		}
+		if dateAfter(item.Time, endDate) {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered
+}
+
+func limitIndexKlines(list []*protocol.Kline, limit int) []*protocol.Kline {
+	if limit > 0 && len(list) > limit {
+		return list[len(list)-limit:]
+	}
+	return list
 }
 
 // ─── 板块排名 & 板块内个股排名 ─────────────────────────────
