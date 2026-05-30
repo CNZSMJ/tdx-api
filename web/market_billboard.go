@@ -122,6 +122,14 @@ func executeMarketBillboardSync(ctx context.Context, dates []string) (billboard.
 }
 
 func projectMarketBillboardGovernanceDomain() error {
+	expectedDate, err := latestMarketBillboardExpectedDate(context.Background())
+	if err != nil {
+		return err
+	}
+	return projectMarketBillboardGovernanceDomainForExpectedDate(expectedDate)
+}
+
+func projectMarketBillboardGovernanceDomainForExpectedDate(expectedDate string) error {
 	if governanceStore == nil || marketBillboardStore == nil {
 		return nil
 	}
@@ -137,10 +145,21 @@ func projectMarketBillboardGovernanceDomain() error {
 	status := "healthy"
 	freshness := "fresh"
 	coverage := "covered"
+	expectedDate = strings.TrimSpace(expectedDate)
+	summary := fmt.Sprintf("entries=%d seat_trades=%d institutions=%d instrument_stats=%d db=%s", entries, seats, institutions, stats, filepath.Base(billboard.DefaultDBPath(databaseDir)))
 	if watermark == "" {
 		status = "missing"
 		freshness = "stale"
 		coverage = "unknown"
+		if expectedDate != "" {
+			coverage = billboard.CoverageMissing
+			summary += " expected_watermark=" + expectedDate
+		}
+	} else if expectedDate != "" && watermark < expectedDate {
+		status = "degraded"
+		freshness = "stale"
+		coverage = billboard.CoverageMissing
+		summary += " expected_watermark=" + expectedDate + " latest_watermark=" + watermark
 	}
 	return governanceStore.UpsertDomainHealthSnapshot(&collectorpkg.DomainHealthSnapshotRecord{
 		Domain:          billboard.DomainMarketBillboard,
@@ -149,7 +168,7 @@ func projectMarketBillboardGovernanceDomain() error {
 		Coverage:        coverage,
 		LatestCursor:    watermark,
 		LatestWatermark: watermark,
-		Summary:         fmt.Sprintf("entries=%d seat_trades=%d institutions=%d instrument_stats=%d db=%s", entries, seats, institutions, stats, filepath.Base(billboard.DefaultDBPath(databaseDir))),
+		Summary:         summary,
 		SnapshotAt:      now,
 	})
 }
@@ -368,15 +387,71 @@ func listBillboardEntries(query billboard.EntryQuery) (billboard.EntryList, bill
 }
 
 func marketBillboardCoverage(store *billboard.Store, startDate, endDate string, reports []string) (billboard.Freshness, error) {
+	expectedDate, err := latestMarketBillboardExpectedDate(context.Background())
+	if err != nil {
+		return billboard.Freshness{}, err
+	}
+	return marketBillboardCoverageForExpectedDate(store, startDate, endDate, reports, expectedDate)
+}
+
+func marketBillboardCoverageForExpectedDate(store *billboard.Store, startDate, endDate string, reports []string, expectedDate string) (billboard.Freshness, error) {
 	if startDate == "" && endDate == "" {
 		watermark, err := store.LatestWatermarkForReports(reports)
 		if err != nil {
 			return billboard.Freshness{}, err
 		}
+		expectedDate = strings.TrimSpace(expectedDate)
+		if expectedDate != "" {
+			freshness, err := store.Coverage(expectedDate, expectedDate, reports)
+			if err != nil {
+				return billboard.Freshness{}, err
+			}
+			freshness.ExpectedTradeDate = expectedDate
+			if freshness.Watermark == "" {
+				freshness.Watermark = watermark
+			}
+			return freshness, nil
+		}
+		if watermark == "" {
+			return billboard.Freshness{
+				Domain:   billboard.DomainMarketBillboard,
+				Coverage: billboard.CoverageMissing,
+				Status:   "stale",
+				Reports:  billboardReportsForFreshness(reports),
+			}, nil
+		}
 		startDate = watermark
 		endDate = watermark
 	}
-	return store.Coverage(startDate, endDate, reports)
+	freshness, err := store.Coverage(startDate, endDate, reports)
+	if err != nil {
+		return billboard.Freshness{}, err
+	}
+	if expectedDate = strings.TrimSpace(expectedDate); expectedDate != "" {
+		freshness.ExpectedTradeDate = expectedDate
+	}
+	return freshness, nil
+}
+
+func latestMarketBillboardExpectedDate(ctx context.Context) (string, error) {
+	if collectorRuntime == nil {
+		return "", nil
+	}
+	dates, err := collectorRuntime.ResolveRecentTradingDates(ctx, 1)
+	if err != nil {
+		return "", err
+	}
+	if len(dates) == 0 {
+		return "", nil
+	}
+	return dates[len(dates)-1], nil
+}
+
+func billboardReportsForFreshness(reports []string) []string {
+	if len(reports) == 0 {
+		reports = billboard.CoreReports()
+	}
+	return append([]string(nil), reports...)
 }
 
 func sortSeatTradesByRank(items []billboard.SeatTradeView) {

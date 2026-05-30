@@ -32,7 +32,7 @@ func TestParseConfigUsesTDXDataDirAndLifecycleDefaults(t *testing.T) {
 	if !strings.HasSuffix(cfg.ManifestPath, filepath.Join("state", "cold_manifest.db")) {
 		t.Fatalf("manifest default = %q", cfg.ManifestPath)
 	}
-	if cfg.MinVerifiedSegments != 1 || cfg.MaxCandidates != 400 || cfg.MaxArchiveDays != 366 {
+	if cfg.MinVerifiedSegments != 1 || cfg.MaxCandidates != 400 || cfg.MaxArchiveDays != 366 || cfg.CandidateSort != "size_desc" {
 		t.Fatalf("unexpected lifecycle defaults: %+v", cfg)
 	}
 }

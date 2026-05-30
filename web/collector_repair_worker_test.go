@@ -7,6 +7,7 @@ import (
 
 	collectorpkg "github.com/injoyai/tdx/collector"
 	systemgov "github.com/injoyai/tdx/governance"
+	"github.com/injoyai/tdx/market/billboard"
 )
 
 func TestRunGovernanceRepairWorkerDoesNotReplayMissedOpenRefreshTask(t *testing.T) {
@@ -175,6 +176,91 @@ func TestRunGovernanceRepairWorkerReplaysMissedCloseSyncTask(t *testing.T) {
 		t.Fatalf("received close-sync dates = %+v, want [20260417 20260418]", receivedDates)
 	}
 	window, err := store.GetWindowByKey(collectorpkg.GovernanceWindowKey(collectorpkg.GovernanceJobDailyCloseSync, "20260417,20260418"))
+	if err != nil {
+		t.Fatalf("get replay window: %v", err)
+	}
+	if window == nil || window.Status != collectorpkg.GovernanceWindowStatusPassed {
+		t.Fatalf("replay window = %+v, want passed", window)
+	}
+}
+
+func TestRunGovernanceRepairWorkerReplaysMissedMarketBillboardTask(t *testing.T) {
+	originalStore := governanceStore
+	originalPaths := governancePaths
+	originalRepairWorker := repairWorker
+	originalMarketBillboardSync := marketBillboardSync
+	originalDispatcher := governanceWindowDispatcher
+	defer func() {
+		governanceStore = originalStore
+		governancePaths = originalPaths
+		repairWorker = originalRepairWorker
+		marketBillboardSync = originalMarketBillboardSync
+		governanceWindowDispatcher = originalDispatcher
+	}()
+
+	tmp := t.TempDir()
+	governancePaths = collectorpkg.ResolveGovernancePaths(tmp)
+	store, err := collectorpkg.OpenGovernanceStore(governancePaths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	defer store.Close()
+	governanceStore = store
+
+	var receivedDates []string
+	marketBillboardSync, err = systemgov.NewMarketBillboardSyncRunner(systemgov.MarketBillboardSyncConfig{
+		Store: store,
+		Paths: governancePaths,
+		Now: func() time.Time {
+			return time.Date(2026, 5, 22, 21, 35, 0, 0, time.Local)
+		},
+		ResolveTargetDates: func(ctx context.Context, now time.Time, count int) ([]string, error) {
+			t.Fatalf("missed-window replay should use stored target window, not resolve current dates")
+			return nil, nil
+		},
+		Execute: func(ctx context.Context, dates []string) (billboard.SyncResult, error) {
+			receivedDates = append(receivedDates, dates...)
+			return billboard.SyncResult{StartDate: dates[0], EndDate: dates[len(dates)-1]}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("new market billboard sync runner: %v", err)
+	}
+	governanceWindowDispatcher = systemgov.NewWindowDispatcher(systemgov.WindowDispatcherConfig{
+		Store:   store,
+		Now:     time.Now,
+		Owner:   "test-repair-worker",
+		Execute: executeGovernanceWindow,
+	})
+
+	if err := store.UpsertTask(&collectorpkg.GovernanceTaskRecord{
+		TaskKey:      "startup_recovery:missed:market_billboard_sync:20260521,20260522",
+		JobName:      string(collectorpkg.GovernanceJobStartupRecovery),
+		Domain:       string(collectorpkg.GovernanceJobMarketBillboardSync),
+		Status:       collectorpkg.GovernanceTaskStatusOpen,
+		Priority:     1,
+		Reason:       "missed governance window queued for recovery",
+		TargetWindow: "20260521,20260522",
+	}); err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+
+	initGovernanceRepairWorker()
+
+	updated, err := runGovernanceRepairWorker("startup", 1)
+	if err != nil {
+		t.Fatalf("run governance repair worker: %v", err)
+	}
+	if len(updated) != 1 {
+		t.Fatalf("updated tasks = %d, want 1", len(updated))
+	}
+	if updated[0].Status != collectorpkg.GovernanceTaskStatusRepaired {
+		t.Fatalf("task status = %s, want repaired", updated[0].Status)
+	}
+	if len(receivedDates) != 2 || receivedDates[0] != "20260521" || receivedDates[1] != "20260522" {
+		t.Fatalf("received market billboard dates = %+v, want [20260521 20260522]", receivedDates)
+	}
+	window, err := store.GetWindowByKey(collectorpkg.GovernanceWindowKey(collectorpkg.GovernanceJobMarketBillboardSync, "20260521,20260522"))
 	if err != nil {
 		t.Fatalf("get replay window: %v", err)
 	}

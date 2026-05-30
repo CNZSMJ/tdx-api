@@ -430,6 +430,7 @@ func TestTerminalGovernanceWindowRepairRequeuesOnlySafeTerminalWindows(t *testin
 			DueAt:         now.Add(-3 * time.Hour),
 			Priority:      3,
 			Status:        GovernanceWindowStatusTerminalFailed,
+			Attempts:      3,
 			LastError:     "governance window lease expired",
 			ResultSummary: "governance window lease expired",
 		},
@@ -461,6 +462,7 @@ func TestTerminalGovernanceWindowRepairRequeuesOnlySafeTerminalWindows(t *testin
 			Priority:      4,
 			Status:        GovernanceWindowStatusTerminalFailed,
 			DependencyKey: closeReadyKey,
+			Attempts:      3,
 			LastError:     "context canceled",
 			ResultSummary: "run_id=run-audit-interrupted status=interrupted target=" + auditReadyTarget,
 		},
@@ -525,6 +527,9 @@ func TestTerminalGovernanceWindowRepairRequeuesOnlySafeTerminalWindows(t *testin
 		}
 		if window.LastError != "" || window.LeaseOwner != "" || !window.LeaseUntil.IsZero() || !window.NextRunAt.IsZero() {
 			t.Fatalf("window %s kept stale failure metadata: %+v", key, window)
+		}
+		if window.Attempts != 0 {
+			t.Fatalf("window %s attempts = %d, want reset for replay", key, window.Attempts)
 		}
 	}
 	auditMissing, err := store.GetWindowByKey(auditMissingKey)
@@ -1118,6 +1123,15 @@ func TestCoveredBacklogRepairClosesCoveredGovernanceTasks(t *testing.T) {
 			TargetWindow: "20260502",
 		},
 		{
+			TaskKey:      "startup_recovery:missed:market_billboard_sync:20260521,20260522",
+			JobName:      string(GovernanceJobStartupRecovery),
+			Domain:       string(GovernanceJobMarketBillboardSync),
+			Status:       GovernanceTaskStatusUnsupported,
+			Priority:     1,
+			Reason:       "unsupported startup recovery task domain: market_billboard_sync",
+			TargetWindow: "20260521,20260522",
+		},
+		{
 			TaskKey:      "daily_close_sync:live_capture:20260502:sh512143",
 			JobName:      string(GovernanceJobDailyCloseSync),
 			Domain:       "live_capture",
@@ -1147,7 +1161,7 @@ func TestCoveredBacklogRepairClosesCoveredGovernanceTasks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("apply covered backlog repair: %v", err)
 	}
-	if len(result.Operations) != 1 || result.Operations[0].Planned != 5 || result.Operations[0].Applied != 5 {
+	if len(result.Operations) != 1 || result.Operations[0].Planned != 6 || result.Operations[0].Applied != 6 {
 		t.Fatalf("unexpected apply result: %+v", result.Operations)
 	}
 
@@ -1461,6 +1475,7 @@ func seedCoveredGovernanceSnapshots(t *testing.T, store *GovernanceStore, now ti
 		{Domain: "finance", Status: "healthy", Freshness: "fresh", Coverage: "covered", LatestWatermark: "20260429", SnapshotAt: now},
 		{Domain: "f10", Status: "healthy", Freshness: "fresh", Coverage: "covered", LatestWatermark: "hash", SnapshotAt: now},
 		{Domain: "kline", Status: "healthy", Freshness: "fresh", Coverage: "covered", LatestWatermark: "1777532400", SnapshotAt: now},
+		{Domain: "market_billboard", Status: "healthy", Freshness: "fresh", Coverage: "covered", LatestWatermark: "20260522", SnapshotAt: now},
 	} {
 		snapshot := snapshot
 		if err := store.UpsertDomainHealthSnapshot(&snapshot); err != nil {

@@ -289,12 +289,13 @@ type InstrumentStatList struct {
 }
 
 type Freshness struct {
-	Domain         string   `json:"domain"`
-	Watermark      string   `json:"watermark,omitempty"`
-	QueryStartDate string   `json:"query_start_date,omitempty"`
-	QueryEndDate   string   `json:"query_end_date,omitempty"`
-	Coverage       string   `json:"coverage"`
-	Status         string   `json:"status"`
-	ErrorSummary   string   `json:"error_summary,omitempty"`
-	Reports        []string `json:"reports,omitempty"`
+	Domain            string   `json:"domain"`
+	Watermark         string   `json:"watermark,omitempty"`
+	ExpectedTradeDate string   `json:"expected_trade_date,omitempty"`
+	QueryStartDate    string   `json:"query_start_date,omitempty"`
+	QueryEndDate      string   `json:"query_end_date,omitempty"`
+	Coverage          string   `json:"coverage"`
+	Status            string   `json:"status"`
+	ErrorSummary      string   `json:"error_summary,omitempty"`
+	Reports           []string `json:"reports,omitempty"`
 }

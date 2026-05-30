@@ -1112,6 +1112,71 @@ GET /api/financial-reports?code=600000&start_date=20250101&end_date=20251231
 
 ---
 
+#### `GET /api/market/limit-stats` — 涨跌停板型统计
+
+**描述**: 统计股票涨停侧与跌停侧的板型结构。交易时段内优先使用新鲜 Ticker 当前快照；非交易时段、非交易日或 Ticker 未就绪时回退到本地日K最近收盘快照。传入 `trading_date` 时只查询该交易日的日K收盘快照，不回退到其他日期。顶层 `limit_up` / `limit_down` 为全量股票口径，包含 ST；`by_stock_class.non_st` / `by_stock_class.st` 分别返回非 ST 与 ST 的同结构统计。`one_line + t_board + turnover_board = total`；`floor_sky` 是涨停换手板子集，`sky_floor` 是跌停换手板子集；`broken` 为盘中触及对应涨跌停但当前未封住，不计入 `total`。
+
+**请求参数**:
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| trading_date | string | 否 | 指定交易日，支持 `YYYYMMDD` 或 `YYYY-MM-DD`；指定后精确查询该日，不跨日回退 |
+
+**响应字段**:
+
+| 字段 | 说明 |
+|------|------|
+| `limit_up.total` | 当前涨停数量 |
+| `limit_up.one_line` | 涨停一字板数量 |
+| `limit_up.t_board` | 涨停 T 字板数量 |
+| `limit_up.turnover_board` | 涨停换手板数量，包含 `floor_sky` |
+| `limit_up.broken` | 盘中触及涨停但当前未涨停数量 |
+| `limit_up.floor_sky` | 当前涨停且盘中触及跌停的地天板数量 |
+| `limit_down.total` | 当前跌停数量 |
+| `limit_down.one_line` | 跌停一字板数量 |
+| `limit_down.t_board` | 跌停倒 T 字板数量 |
+| `limit_down.turnover_board` | 跌停换手板数量，包含 `sky_floor` |
+| `limit_down.broken` | 盘中触及跌停但当前未跌停数量 |
+| `limit_down.sky_floor` | 当前跌停且盘中触及涨停的天地板数量 |
+| `by_stock_class.non_st.limit_up` / `by_stock_class.non_st.limit_down` | 非 ST 股票口径，字段结构同顶层 `limit_up` / `limit_down` |
+| `by_stock_class.st.limit_up` / `by_stock_class.st.limit_down` | ST 股票口径，字段结构同顶层 `limit_up` / `limit_down` |
+| `trading_date` | 本次统计对应交易日 |
+| `data_source` | `ticker` 或 `daily_kline` |
+| `updated_at` / `status` / `status_hint` | 数据时间、状态与提示；日K回退时 `status=closed_snapshot` |
+
+---
+
+#### `GET /api/market/limit-up/tiers` — 涨停连板梯队
+
+**描述**: 返回股票涨停连板梯队。交易时段内优先用 Ticker 当前涨停状态叠加本地日K历史连板；非交易时段、非交易日或 Ticker 未就绪时使用本地日K收盘快照。传入 `trading_date` 时只查询该交易日，不跨日回退。响应不包含 `data_source`。
+
+**请求参数**:
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| trading_date | string | 否 | 指定交易日，支持 `YYYYMMDD` 或 `YYYY-MM-DD`；指定后精确查询该日 |
+| stock_class | string | 否 | `non_st`（默认）、`st`、`all` |
+| min_streak | int | 否 | 最小连板数，默认 1 |
+
+**响应字段**:
+
+| 字段 | 说明 |
+|------|------|
+| `trading_date` | 本次统计对应交易日 |
+| `stock_class` | 本次统计口径：`non_st`、`st` 或 `all` |
+| `min_streak` | 本次请求使用的最小连板数 |
+| `total` | 符合条件的股票数量 |
+| `highest_streak` | 最高连板数 |
+| `tiers[].streak` | 梯队连板数 |
+| `tiers[].label` | 梯队标签，如 `3板` |
+| `tiers[].count` | 该梯队股票数量 |
+| `tiers[].stocks[]` | 股票列表，含 `code`、`name`、`exchange`、`is_st`、`price`、`change_pct`、`amount`、`volume`、`streak`、`first_limit_date`、`last_limit_date`、`board_type`、`limit_first_seen`、`limit_break_count` |
+| `tiers[].stocks[].limit_first_seen` | 目标交易日 Ticker 观察到的首次封板时间，格式 `HH:MM:SS`；日K回退路径为 `null` |
+| `tiers[].stocks[].limit_break_count` | 目标交易日 Ticker 观察到的涨停开板次数；日K回退路径为 `null` |
+| `updated_at` / `status` / `status_hint` | 数据时间、状态与提示；日K回退时 `status=closed_snapshot` |
+
+---
+
 #### `GET /api/market/screen` — 排行与涨跌停池
 
 **描述**: 在 Ticker 缓存上按条件筛选、排序，返回列表；涨跌停筛选**仅股票**有效。
@@ -1124,9 +1189,13 @@ GET /api/financial-reports?code=600000&start_date=20250101&end_date=20251231
 | order | string | 否 | `desc`（默认）或 `asc` |
 | filter | string | 否 | 空：不过滤；`limit_up`：涨停池；`limit_down`：跌停池（强制 `asset_type=stock`） |
 | asset_type | string | 否 | `stock`（默认）、`etf`、`all` |
-| limit | int | 否 | 返回条数，默认 50，最大 200 |
+| limit | int | 否 | 每页返回条数，默认 50，最大 200 |
+| page | int | 否 | 页码，默认 1，从 1 开始 |
+| exclude_st | bool | 否 | `true` 时排除名称包含 ST 的股票 |
+| min_change_pct | number | 否 | 最小涨跌幅百分数，例如 `5` 表示涨幅至少 5% |
+| max_change_pct | number | 否 | 最大涨跌幅百分数，例如 `-5` 表示跌幅至少 5% |
 
-**响应**: `count`、`list`（元素含 `code`、`name`、`exchange`、`asset_type`、`price`、`change_pct`、`volume`、`amount`、`amplitude`、`is_limit_up`、`is_limit_down` 等）。涨跌停池项可含 `limit_first_seen`、`limit_last_seen`、`limit_break_count`、`bid1_volume`（涨停）或 `ask1_volume`（跌停）。若使用涨跌停筛选，可能附带 `filter_note`。另含 `updated_at` 与 `status`（`live` / `stale` / `waiting` / `not_started`，与 Ticker 元数据一致）。
+**响应**: `count`、`total`、`page`、`page_size`、`total_pages`、`has_next`、`has_prev`、`list`（元素含 `code`、`name`、`exchange`、`asset_type`、`price`、`change_pct`、`volume`、`amount`、`amplitude`、`is_limit_up`、`is_limit_down` 等）。`count` 为当前页条数，`total` 为过滤后的总条数。涨跌停池项可含 `limit_first_seen`、`limit_last_seen`、`limit_break_count`、`bid1_volume`（涨停）或 `ask1_volume`（跌停）。若使用涨跌停筛选，可能附带 `filter_note`。另含 `updated_at` 与 `status`（`live` / `stale` / `waiting` / `not_started`，与 Ticker 元数据一致）。
 
 ---
 

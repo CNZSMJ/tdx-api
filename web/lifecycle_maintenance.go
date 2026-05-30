@@ -153,7 +153,7 @@ func executeDataLifecycleMaintenance(ctx context.Context, runID string) (lifecyc
 			MaxCandidates:     lifecycleEnvInt("TDX_LIFECYCLE_MAX_CANDIDATES", 400),
 			MaxArchiveDays:    lifecycleEnvInt("TDX_LIFECYCLE_MAX_ARCHIVE_DAYS", 366),
 			MaxInventoryFiles: lifecycleEnvInt("TDX_LIFECYCLE_MAX_INVENTORY_FILES", 0),
-			CandidateSort:     lifecycleEnvString("TDX_LIFECYCLE_CANDIDATE_SORT", "size_asc"),
+			CandidateSort:     lifecycleEnvString("TDX_LIFECYCLE_CANDIDATE_SORT", "size_desc"),
 		},
 	}.RunWithContext(ctx)
 }

@@ -666,6 +666,72 @@ func handleGetMarketStats(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func handleMarketLimitStats(w http.ResponseWriter, r *http.Request) {
+	req, err := parseMarketLimitStatsRequest(r)
+	if err != nil {
+		errorResponse(w, err.Error())
+		return
+	}
+	ts := getTickerService()
+	if resp, ok := buildMarketLimitStatsTickerResponse(req, ts); ok {
+		successResponse(w, resp)
+		return
+	}
+	if resp, ok := buildMarketLimitStatsCloseSnapshotResponse(req); ok {
+		successResponse(w, resp)
+		return
+	}
+	if ts == nil {
+		successResponse(w, map[string]interface{}{
+			"status":      "not_started",
+			"status_hint": "Ticker 服务未初始化，系统可能仍在启动中",
+		})
+		return
+	}
+	if ts.Running() {
+		successResponse(w, map[string]interface{}{
+			"status":      "warming_up",
+			"status_hint": "Ticker 已启动，正在等待首次行情数据采集完成",
+		})
+		return
+	}
+	successResponse(w, map[string]interface{}{
+		"status":      "out_of_session",
+		"status_hint": "当前处于非交易时段或 Ticker 尚未启动",
+	})
+}
+
+func handleMarketLimitUpTiers(w http.ResponseWriter, r *http.Request) {
+	req, err := parseMarketLimitUpTiersRequest(r)
+	if err != nil {
+		errorResponse(w, err.Error())
+		return
+	}
+	ts := getTickerService()
+	if resp, ok := buildMarketLimitUpTiersResponse(req, ts); ok {
+		successResponse(w, resp)
+		return
+	}
+	if ts == nil {
+		successResponse(w, map[string]interface{}{
+			"status":      "not_started",
+			"status_hint": "Ticker 服务未初始化，系统可能仍在启动中",
+		})
+		return
+	}
+	if ts.Running() {
+		successResponse(w, map[string]interface{}{
+			"status":      "warming_up",
+			"status_hint": "Ticker 已启动，正在等待首次行情数据采集完成",
+		})
+		return
+	}
+	successResponse(w, map[string]interface{}{
+		"status":      "out_of_session",
+		"status_hint": "当前处于非交易时段或 Ticker 尚未启动",
+	})
+}
+
 // 获取各交易所证券数量
 func handleGetMarketCount(w http.ResponseWriter, r *http.Request) {
 	type ExchangeCount struct {
@@ -1760,7 +1826,7 @@ func getSignalService() *collectorpkg.SignalService {
 func handleMarketScreen(w http.ResponseWriter, r *http.Request) {
 	req, err := parseMarketScreenRequest(r)
 	if err != nil {
-		errorResponse(w, "trading_date 参数格式错误，应为 YYYYMMDD 或 YYYY-MM-DD")
+		errorResponse(w, err.Error())
 		return
 	}
 	ts := getTickerService()

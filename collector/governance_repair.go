@@ -245,6 +245,7 @@ func (r TerminalGovernanceWindowRepair) Apply(store *GovernanceStore) ([]Governa
 			}
 		case "requeue_window":
 			window.Status = GovernanceWindowStatusQueued
+			window.Attempts = 0
 			window.NextRunAt = time.Time{}
 			window.EnqueuedAt = now
 			window.EndedAt = time.Time{}
@@ -685,6 +686,10 @@ func (r CoveredBacklogRepair) plan(store *GovernanceStore) ([]coveredBacklogPlan
 			if !domainCoverage.covers(task.Domain, target) {
 				continue
 			}
+		} else if isMarketBillboardStartupRecoveryTask(task) {
+			if !domainCoverage.covers("market_billboard", target) {
+				continue
+			}
 		} else if !coverage.covers(target) {
 			continue
 		}
@@ -709,7 +714,7 @@ func coveredBacklogTaskTarget(store *GovernanceStore, task GovernanceTaskRecord)
 		return target, ok, nil
 	case GovernanceJobStartupRecovery:
 		switch task.Domain {
-		case string(GovernanceJobDailyCloseSync), string(GovernanceJobDailyAudit):
+		case string(GovernanceJobDailyCloseSync), string(GovernanceJobDailyAudit), string(GovernanceJobMarketBillboardSync):
 			target, ok := maxWindowTargetDate(task.TargetWindow)
 			return target, ok, nil
 		case "interrupted_run":
@@ -742,7 +747,7 @@ func coveredInterruptedRunTaskTarget(store *GovernanceStore, task GovernanceTask
 
 func coveredBacklogRunJobSupported(job GovernanceJob) bool {
 	switch job {
-	case GovernanceJobDailyCloseSync, GovernanceJobDailyAudit:
+	case GovernanceJobDailyCloseSync, GovernanceJobDailyAudit, GovernanceJobMarketBillboardSync:
 		return true
 	default:
 		return false
@@ -788,7 +793,7 @@ func (c domainCoverage) covers(domain, target string) bool {
 		return false
 	}
 	switch domain {
-	case "trade_history", "live_capture", "order_history":
+	case "trade_history", "live_capture", "order_history", "market_billboard":
 		return dateWatermarkCovers(strings.TrimSpace(snapshot.LatestWatermark), target)
 	default:
 		return true
@@ -942,6 +947,11 @@ func isProviderBacklogTask(task GovernanceTaskRecord) bool {
 	default:
 		return false
 	}
+}
+
+func isMarketBillboardStartupRecoveryTask(task GovernanceTaskRecord) bool {
+	return GovernanceJob(task.JobName) == GovernanceJobStartupRecovery &&
+		task.Domain == string(GovernanceJobMarketBillboardSync)
 }
 
 func providerRepairBudgetExhausted(task GovernanceTaskRecord, maxAttempts int) bool {

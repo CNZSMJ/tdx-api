@@ -17,13 +17,19 @@ import (
 )
 
 type marketScreenRequest struct {
-	sortBy         string
-	order          string
-	filter         string
-	assetType      string
-	limit          int
-	tradingDate    string
-	hasTradingDate bool
+	sortBy          string
+	order           string
+	filter          string
+	assetType       string
+	limit           int
+	page            int
+	excludeST       bool
+	minChangePct    float64
+	maxChangePct    float64
+	hasMinChangePct bool
+	hasMaxChangePct bool
+	tradingDate     string
+	hasTradingDate  bool
 }
 
 type marketScreenCodeRow struct {
@@ -40,10 +46,65 @@ type marketScreenCloseSnapshot struct {
 
 type marketScreenQuoteFetcher func(...string) (protocol.QuotesResp, error)
 
+type marketScreenPagination struct {
+	page       int
+	pageSize   int
+	total      int
+	totalPages int
+	hasNext    bool
+	hasPrev    bool
+}
+
 type marketStatsRequest struct {
 	assetType      string
 	tradingDate    string
 	hasTradingDate bool
+}
+
+type marketLimitStatsRequest struct {
+	tradingDate    string
+	hasTradingDate bool
+}
+
+type marketLimitUpTiersRequest struct {
+	tradingDate    string
+	hasTradingDate bool
+	stockClass     string
+	minStreak      int
+}
+
+type marketLimitUpTierKlineRow struct {
+	date   int64
+	open   collectorpkg.PriceMilli
+	high   collectorpkg.PriceMilli
+	low    collectorpkg.PriceMilli
+	close  collectorpkg.PriceMilli
+	volume int64
+	amount collectorpkg.PriceMilli
+}
+
+type marketLimitUpTierStock struct {
+	Code            string  `json:"code"`
+	Name            string  `json:"name"`
+	Exchange        string  `json:"exchange"`
+	IsST            bool    `json:"is_st"`
+	Price           float64 `json:"price"`
+	ChangePct       float64 `json:"change_pct"`
+	Amount          float64 `json:"amount"`
+	Volume          int64   `json:"volume"`
+	Streak          int     `json:"streak"`
+	FirstLimitDate  string  `json:"first_limit_date"`
+	LastLimitDate   string  `json:"last_limit_date"`
+	BoardType       string  `json:"board_type"`
+	LimitFirstSeen  *string `json:"limit_first_seen"`
+	LimitBreakCount *int    `json:"limit_break_count"`
+}
+
+type marketLimitUpTier struct {
+	Streak int                      `json:"streak"`
+	Label  string                   `json:"label"`
+	Count  int                      `json:"count"`
+	Stocks []marketLimitUpTierStock `json:"stocks"`
 }
 
 type marketBlockRequest struct {
@@ -90,24 +151,56 @@ func parseMarketScreenRequest(r *http.Request) (marketScreenRequest, error) {
 			limit = n
 		}
 	}
+	page := 1
+	if v := strings.TrimSpace(r.URL.Query().Get("page")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			page = n
+		}
+	}
+	minChangePct, hasMinChangePct, err := parseMarketScreenFloatParam(r.URL.Query().Get("min_change_pct"))
+	if err != nil {
+		return marketScreenRequest{}, errors.New("min_change_pct 参数格式错误，应为数字")
+	}
+	maxChangePct, hasMaxChangePct, err := parseMarketScreenFloatParam(r.URL.Query().Get("max_change_pct"))
+	if err != nil {
+		return marketScreenRequest{}, errors.New("max_change_pct 参数格式错误，应为数字")
+	}
 	tradingDateRaw := strings.TrimSpace(r.URL.Query().Get("trading_date"))
 	tradingDate := ""
 	if tradingDateRaw != "" {
 		parsed, err := parseMarketScreenTradingDate(tradingDateRaw)
 		if err != nil {
-			return marketScreenRequest{}, err
+			return marketScreenRequest{}, errors.New("trading_date 参数格式错误，应为 YYYYMMDD 或 YYYY-MM-DD")
 		}
 		tradingDate = parsed
 	}
 	return marketScreenRequest{
-		sortBy:         sortBy,
-		order:          order,
-		filter:         strings.TrimSpace(r.URL.Query().Get("filter")),
-		assetType:      assetType,
-		limit:          limit,
-		tradingDate:    tradingDate,
-		hasTradingDate: tradingDate != "",
+		sortBy:          sortBy,
+		order:           order,
+		filter:          strings.TrimSpace(r.URL.Query().Get("filter")),
+		assetType:       assetType,
+		limit:           limit,
+		page:            page,
+		excludeST:       parseBool(strings.TrimSpace(r.URL.Query().Get("exclude_st"))),
+		minChangePct:    minChangePct,
+		maxChangePct:    maxChangePct,
+		hasMinChangePct: hasMinChangePct,
+		hasMaxChangePct: hasMaxChangePct,
+		tradingDate:     tradingDate,
+		hasTradingDate:  tradingDate != "",
 	}, nil
+}
+
+func parseMarketScreenFloatParam(raw string) (float64, bool, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, false, nil
+	}
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0, false, err
+	}
+	return value, true, nil
 }
 
 func parseMarketScreenTradingDate(raw string) (string, error) {
@@ -153,8 +246,22 @@ func buildMarketScreenTickerResponse(req marketScreenRequest, ts *collectorpkg.T
 	if !marketScreenShouldUseTicker(req, ts) {
 		return nil, false
 	}
-	ticks, filterNote := ts.MarketScreen(req.sortBy, req.order, req.filter, req.assetType, req.limit)
-	resp := buildMarketScreenResponse(ticks, req.filter, filterNote, ts)
+	pageSize := normalizeMarketScreenPageSize(req.limit)
+	result := ts.MarketScreenWithOptions(collectorpkg.MarketScreenOptions{
+		SortBy:          req.sortBy,
+		Order:           req.order,
+		Filter:          req.filter,
+		AssetType:       req.assetType,
+		Limit:           pageSize,
+		Offset:          marketScreenPageOffset(req.page, pageSize),
+		ExcludeST:       req.excludeST,
+		MinChangePct:    req.minChangePct,
+		MaxChangePct:    req.maxChangePct,
+		HasMinChangePct: req.hasMinChangePct,
+		HasMaxChangePct: req.hasMaxChangePct,
+	})
+	resp := buildMarketScreenResponse(result.Ticks, req.filter, result.FilterNote, ts)
+	addMarketScreenPaginationMeta(resp, newMarketScreenPagination(req.page, pageSize, result.Total))
 	resp["data_source"] = "ticker"
 	resp["trading_date"] = ts.UpdatedAt().In(time.Local).Format("20060102")
 	addTickerMeta(resp, ts)
@@ -165,13 +272,14 @@ func buildMarketScreenQuoteSnapshotResponse(req marketScreenRequest) (map[string
 	if req.hasTradingDate || client == nil {
 		return nil, false
 	}
-	ticks, filterNote, ok := loadMarketScreenQuoteSnapshot(req, func(codes ...string) (protocol.QuotesResp, error) {
+	ticks, filterNote, pagination, ok := loadMarketScreenQuoteSnapshot(req, func(codes ...string) (protocol.QuotesResp, error) {
 		return client.GetQuote(codes...)
 	})
 	if !ok {
 		return nil, false
 	}
 	resp := buildMarketScreenResponse(ticks, req.filter, filterNote, nil)
+	addMarketScreenPaginationMeta(resp, pagination)
 	tradingDate := inferMarketScreenQuoteTradingDate(marketScreenNow())
 	resp["status"] = "quote_snapshot"
 	resp["status_hint"] = "Ticker 无盘中快照，已使用 TDX quote 的昨收口径"
@@ -211,10 +319,11 @@ func marketScreenIsTodayTradingDay(now time.Time) bool {
 }
 
 func buildMarketScreenCloseSnapshotResponse(req marketScreenRequest) (map[string]interface{}, bool) {
-	ticks, tradingDate, filterNote, ok := loadMarketScreenCloseSnapshot(req)
+	ticks, tradingDate, filterNote, pagination, ok := loadMarketScreenCloseSnapshot(req)
 	if !ok {
 		if req.hasTradingDate {
 			resp := buildMarketScreenResponse(nil, req.filter, filterNote, nil)
+			addMarketScreenPaginationMeta(resp, newMarketScreenPagination(req.page, normalizeMarketScreenPageSize(req.limit), 0))
 			addMarketScreenCloseSnapshotMeta(resp, req.tradingDate)
 			resp["status"] = "empty"
 			resp["status_hint"] = "指定 trading_date 无日K收盘快照"
@@ -223,17 +332,13 @@ func buildMarketScreenCloseSnapshotResponse(req marketScreenRequest) (map[string
 		return nil, false
 	}
 	resp := buildMarketScreenResponse(ticks, req.filter, filterNote, nil)
+	addMarketScreenPaginationMeta(resp, pagination)
 	addMarketScreenCloseSnapshotMeta(resp, tradingDate)
 	return resp, true
 }
 
-func loadMarketScreenCloseSnapshot(req marketScreenRequest) ([]collectorpkg.StockTick, string, string, bool) {
-	if req.limit <= 0 {
-		req.limit = 50
-	}
-	if req.limit > 200 {
-		req.limit = 200
-	}
+func loadMarketScreenCloseSnapshot(req marketScreenRequest) ([]collectorpkg.StockTick, string, string, marketScreenPagination, bool) {
+	pageSize := normalizeMarketScreenPageSize(req.limit)
 	filterNote := ""
 	if req.filter == "limit_up" || req.filter == "limit_down" {
 		req.assetType = string(collectorpkg.AssetTypeStock)
@@ -242,59 +347,14 @@ func loadMarketScreenCloseSnapshot(req marketScreenRequest) ([]collectorpkg.Stoc
 
 	ticks, tradingDate, ok := loadMarketScreenCloseTicks(req.assetType, req.tradingDate)
 	if !ok {
-		return nil, "", "", false
+		return nil, "", "", marketScreenPagination{}, false
 	}
 	filtered := make([]collectorpkg.StockTick, 0, len(ticks))
 	for _, tick := range ticks {
-		switch req.filter {
-		case "limit_up":
-			if !tick.IsLimitUp {
-				continue
-			}
-		case "limit_down":
-			if !tick.IsLimitDown {
-				continue
-			}
+		if req.excludeST && marketScreenIsSTStock(tick.Name) {
+			continue
 		}
-		filtered = append(filtered, tick)
-	}
-	if len(filtered) == 0 {
-		return nil, "", "", false
-	}
-	sortMarketScreenTicks(filtered, req.sortBy, req.order)
-	if len(filtered) > req.limit {
-		filtered = filtered[:req.limit]
-	}
-	return filtered, tradingDate, filterNote, true
-}
-
-func loadMarketScreenQuoteSnapshot(req marketScreenRequest, quoteFetcher marketScreenQuoteFetcher) ([]collectorpkg.StockTick, string, bool) {
-	if req.limit <= 0 {
-		req.limit = 50
-	}
-	if req.limit > 200 {
-		req.limit = 200
-	}
-	filterNote := ""
-	if req.filter == "limit_up" || req.filter == "limit_down" {
-		req.assetType = string(collectorpkg.AssetTypeStock)
-		filterNote = "涨跌停筛选仅适用于股票"
-	}
-
-	codes, err := loadMarketScreenCodeRows(req.assetType)
-	if err != nil || len(codes) == 0 {
-		return nil, "", false
-	}
-	quotes := fetchMarketScreenQuotes(codes, quoteFetcher)
-	if len(quotes) == 0 {
-		return nil, "", false
-	}
-
-	filtered := make([]collectorpkg.StockTick, 0, len(quotes))
-	for _, code := range codes {
-		quote := quotes[strings.ToLower(code.fullCode)]
-		tick, ok := marketScreenQuoteToTick(code, quote)
-		if !ok {
+		if !marketScreenRequestMatchesChangePct(tick.PctChange, req) {
 			continue
 		}
 		switch req.filter {
@@ -310,13 +370,61 @@ func loadMarketScreenQuoteSnapshot(req marketScreenRequest, quoteFetcher marketS
 		filtered = append(filtered, tick)
 	}
 	if len(filtered) == 0 {
-		return nil, "", false
+		return nil, "", "", marketScreenPagination{}, false
 	}
 	sortMarketScreenTicks(filtered, req.sortBy, req.order)
-	if len(filtered) > req.limit {
-		filtered = filtered[:req.limit]
+	paged, pagination := paginateMarketScreenTicks(filtered, req.page, pageSize)
+	return paged, tradingDate, filterNote, pagination, true
+}
+
+func loadMarketScreenQuoteSnapshot(req marketScreenRequest, quoteFetcher marketScreenQuoteFetcher) ([]collectorpkg.StockTick, string, marketScreenPagination, bool) {
+	pageSize := normalizeMarketScreenPageSize(req.limit)
+	filterNote := ""
+	if req.filter == "limit_up" || req.filter == "limit_down" {
+		req.assetType = string(collectorpkg.AssetTypeStock)
+		filterNote = "涨跌停筛选仅适用于股票"
 	}
-	return filtered, filterNote, true
+
+	codes, err := loadMarketScreenCodeRows(req.assetType)
+	if err != nil || len(codes) == 0 {
+		return nil, "", marketScreenPagination{}, false
+	}
+	quotes := fetchMarketScreenQuotes(codes, quoteFetcher)
+	if len(quotes) == 0 {
+		return nil, "", marketScreenPagination{}, false
+	}
+
+	filtered := make([]collectorpkg.StockTick, 0, len(quotes))
+	for _, code := range codes {
+		quote := quotes[strings.ToLower(code.fullCode)]
+		tick, ok := marketScreenQuoteToTick(code, quote)
+		if !ok {
+			continue
+		}
+		if req.excludeST && marketScreenIsSTStock(tick.Name) {
+			continue
+		}
+		if !marketScreenRequestMatchesChangePct(tick.PctChange, req) {
+			continue
+		}
+		switch req.filter {
+		case "limit_up":
+			if !tick.IsLimitUp {
+				continue
+			}
+		case "limit_down":
+			if !tick.IsLimitDown {
+				continue
+			}
+		}
+		filtered = append(filtered, tick)
+	}
+	if len(filtered) == 0 {
+		return nil, "", marketScreenPagination{}, false
+	}
+	sortMarketScreenTicks(filtered, req.sortBy, req.order)
+	paged, pagination := paginateMarketScreenTicks(filtered, req.page, pageSize)
+	return paged, filterNote, pagination, true
 }
 
 func fetchMarketScreenQuotes(codes []marketScreenCodeRow, quoteFetcher marketScreenQuoteFetcher) map[string]*protocol.Quote {
@@ -418,22 +526,24 @@ func loadMarketScreenLatestCloseTicks(assetType string) ([]collectorpkg.StockTic
 }
 
 func loadMarketScreenCloseTicks(assetType, tradingDate string) ([]collectorpkg.StockTick, string, bool) {
+	if ticks, date, ok := loadMarketScreenMaterializedCloseTicks(assetType, tradingDate); ok {
+		return ticks, date, true
+	}
+	return buildAndStoreMarketScreenCloseTicks(assetType, tradingDate)
+}
+
+func buildMarketScreenCloseTicksFromKline(assetType, tradingDate string) ([]collectorpkg.StockTick, string, bool) {
 	codes, err := loadMarketScreenCodeRows(assetType)
 	if err != nil || len(codes) == 0 {
 		return nil, "", false
 	}
 
-	items := make([]marketScreenCloseSnapshot, 0, len(codes))
+	items := loadMarketScreenCloseSnapshotsForCodes(codes, tradingDate)
 	var latestDate int64
-	for _, code := range codes {
-		item, ok := loadMarketScreenCloseSnapshotForCode(code, tradingDate)
-		if !ok {
-			continue
-		}
+	for _, item := range items {
 		if item.date > latestDate {
 			latestDate = item.date
 		}
-		items = append(items, item)
 	}
 	if len(items) == 0 || latestDate == 0 {
 		return nil, "", false
@@ -566,6 +676,201 @@ func loadMarketScreenCloseSnapshotForCode(code marketScreenCodeRow, tradingDate 
 	return buildMarketScreenCloseSnapshot(code, latest, previous, hasPrevious), true
 }
 
+func loadMarketLimitUpTierRows(code marketScreenCodeRow, tradingDate string) ([]marketLimitUpTierKlineRow, bool) {
+	dbPath := filepath.Join(databaseDir, "kline", code.fullCode+".db")
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil, false
+	}
+	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro")
+	if err != nil {
+		return nil, false
+	}
+	defer db.Close()
+
+	start, end, ok := marketScreenTradingDateUnixRange(tradingDate)
+	if !ok {
+		return nil, false
+	}
+	var target marketLimitUpTierKlineRow
+	row := db.QueryRow(`SELECT Date, Open, High, Low, Close, Volume, Amount FROM DayKline WHERE Code = ? AND Date >= ? AND Date < ? ORDER BY Date DESC LIMIT 1`, code.fullCode, start, end)
+	if err := row.Scan(&target.date, &target.open, &target.high, &target.low, &target.close, &target.volume, &target.amount); err != nil {
+		return nil, false
+	}
+	rows := []marketLimitUpTierKlineRow{target}
+	previousRows, err := queryMarketLimitUpTierRowsBefore(db, code.fullCode, target.date)
+	if err != nil {
+		return rows, true
+	}
+	rows = append(rows, previousRows...)
+	return rows, true
+}
+
+func loadMarketLimitUpTierPreviousRows(code marketScreenCodeRow, tradingDate string) []marketLimitUpTierKlineRow {
+	dbPath := filepath.Join(databaseDir, "kline", code.fullCode+".db")
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil
+	}
+	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro")
+	if err != nil {
+		return nil
+	}
+	defer db.Close()
+
+	start, _, ok := marketScreenTradingDateUnixRange(tradingDate)
+	if !ok {
+		return nil
+	}
+	rows, err := queryMarketLimitUpTierRowsBefore(db, code.fullCode, start)
+	if err != nil {
+		return nil
+	}
+	return rows
+}
+
+func queryMarketLimitUpTierRowsBefore(db *sql.DB, code string, before int64) ([]marketLimitUpTierKlineRow, error) {
+	const lookback = 80
+	rows, err := db.Query(`SELECT Date, Open, High, Low, Close, Volume, Amount FROM DayKline WHERE Code = ? AND Date < ? ORDER BY Date DESC LIMIT ?`, code, before, lookback)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]marketLimitUpTierKlineRow, 0, lookback)
+	for rows.Next() {
+		var row marketLimitUpTierKlineRow
+		if err := rows.Scan(&row.date, &row.open, &row.high, &row.low, &row.close, &row.volume, &row.amount); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+func marketScreenTradingDateUnixRange(tradingDate string) (int64, int64, bool) {
+	parsed, err := time.ParseInLocation("20060102", tradingDate, time.Local)
+	if err != nil {
+		return 0, 0, false
+	}
+	start := time.Date(parsed.Year(), parsed.Month(), parsed.Day(), 0, 0, 0, 0, time.Local)
+	return start.Unix(), start.AddDate(0, 0, 1).Unix(), true
+}
+
+func marketLimitUpTierStockFromRows(code marketScreenCodeRow, rows []marketLimitUpTierKlineRow, tradingDate string) (marketLimitUpTierStock, bool) {
+	streak, firstDate, preClose := marketLimitUpDailyStreak(rows, code.fullCode, code.name)
+	if streak == 0 {
+		return marketLimitUpTierStock{}, false
+	}
+	current := rows[0]
+	closePrice := current.close.Float64()
+	changePct := 0.0
+	if preClose > 0 {
+		changePct = (closePrice - preClose) / preClose * 100
+	}
+	return marketLimitUpTierStock{
+		Code:           code.fullCode,
+		Name:           code.name,
+		Exchange:       code.exchange,
+		IsST:           marketScreenIsSTStock(code.name),
+		Price:          closePrice,
+		ChangePct:      roundMarketScreen(changePct, 2),
+		Amount:         current.amount.Float64(),
+		Volume:         current.volume,
+		Streak:         streak,
+		FirstLimitDate: firstDate,
+		LastLimitDate:  tradingDate,
+		BoardType:      marketLimitUpBoardType(current.open.Float64(), current.high.Float64(), current.low.Float64(), preClose, code.fullCode, code.name),
+	}, true
+}
+
+func marketLimitUpDailyStreak(rows []marketLimitUpTierKlineRow, code, name string) (int, string, float64) {
+	streak := 0
+	firstDate := ""
+	currentPreClose := 0.0
+	for i := 0; i+1 < len(rows); i++ {
+		row := rows[i]
+		preClose := rows[i+1].close.Float64()
+		if i == 0 {
+			currentPreClose = preClose
+		}
+		if !marketScreenPriceTouchesLimitUp(row.close.Float64(), preClose, code, name) {
+			break
+		}
+		streak++
+		firstDate = time.Unix(row.date, 0).In(time.Local).Format("20060102")
+	}
+	return streak, firstDate, currentPreClose
+}
+
+func marketLimitUpTierStockFromTick(tick collectorpkg.StockTick, streak int, firstDate, tradingDate string, limitPublic *collectorpkg.LimitSidePublic) marketLimitUpTierStock {
+	stock := marketLimitUpTierStock{
+		Code:           tick.Code,
+		Name:           tick.Name,
+		Exchange:       tick.Exchange,
+		IsST:           marketScreenIsSTStock(tick.Name),
+		Price:          tick.Last,
+		ChangePct:      tick.PctChange,
+		Amount:         tick.Amount,
+		Volume:         tick.Volume,
+		Streak:         streak,
+		FirstLimitDate: firstDate,
+		LastLimitDate:  tradingDate,
+		BoardType:      marketLimitUpBoardType(tick.Open, tick.High, tick.Low, tick.PreClose, tick.Code, tick.Name),
+	}
+	applyMarketLimitUpTierLimitPublic(&stock, limitPublic)
+	return stock
+}
+
+func applyMarketLimitUpTierLimitPublic(stock *marketLimitUpTierStock, p *collectorpkg.LimitSidePublic) {
+	if p == nil {
+		return
+	}
+	if p.FirstSeen != "" {
+		firstSeen := marketLimitObservedTimeOfDay(p.FirstSeen)
+		stock.LimitFirstSeen = &firstSeen
+	}
+	breakCount := p.BreakCount
+	stock.LimitBreakCount = &breakCount
+}
+
+func marketLimitObservedTimeOfDay(raw string) string {
+	if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
+		return parsed.In(time.Local).Format("15:04:05")
+	}
+	return raw
+}
+
+func marketLimitUpTickerStreak(tick collectorpkg.StockTick, tradingDate string, previousRows []marketLimitUpTierKlineRow) (int, string) {
+	streak := 1
+	firstDate := tradingDate
+	for i := 0; i+1 < len(previousRows); i++ {
+		row := previousRows[i]
+		preClose := previousRows[i+1].close.Float64()
+		if !marketScreenPriceTouchesLimitUp(row.close.Float64(), preClose, tick.Code, tick.Name) {
+			break
+		}
+		streak++
+		firstDate = time.Unix(row.date, 0).In(time.Local).Format("20060102")
+	}
+	return streak, firstDate
+}
+
+func marketLimitUpBoardType(open, high, low, preClose float64, code, name string) string {
+	if marketScreenPriceTouchesLimitDown(low, preClose, code, name) {
+		return "floor_sky"
+	}
+	if marketScreenPriceTouchesLimitUp(open, preClose, code, name) &&
+		marketScreenPriceTouchesLimitUp(high, preClose, code, name) &&
+		marketScreenPriceTouchesLimitUp(low, preClose, code, name) {
+		return "one_line"
+	}
+	if marketScreenPriceTouchesLimitUp(open, preClose, code, name) &&
+		marketScreenPriceTouchesLimitUp(high, preClose, code, name) &&
+		!marketScreenPriceTouchesLimitUp(low, preClose, code, name) {
+		return "t_board"
+	}
+	return "turnover_board"
+}
+
 func buildMarketScreenCloseSnapshot(code marketScreenCodeRow, latest, previous struct {
 	date   int64
 	open   collectorpkg.PriceMilli
@@ -650,6 +955,297 @@ func buildMarketStatsTickerResponse(req marketStatsRequest, ts *collectorpkg.Tic
 	resp["trading_date"] = ts.UpdatedAt().In(time.Local).Format("20060102")
 	addTickerMeta(resp, ts)
 	return resp, true
+}
+
+func parseMarketLimitStatsRequest(r *http.Request) (marketLimitStatsRequest, error) {
+	tradingDateRaw := strings.TrimSpace(r.URL.Query().Get("trading_date"))
+	tradingDate := ""
+	if tradingDateRaw != "" {
+		parsed, err := parseMarketScreenTradingDate(tradingDateRaw)
+		if err != nil {
+			return marketLimitStatsRequest{}, errors.New("trading_date 参数格式错误，应为 YYYYMMDD 或 YYYY-MM-DD")
+		}
+		tradingDate = parsed
+	}
+	return marketLimitStatsRequest{
+		tradingDate:    tradingDate,
+		hasTradingDate: tradingDate != "",
+	}, nil
+}
+
+func buildMarketLimitStatsTickerResponse(req marketLimitStatsRequest, ts *collectorpkg.TickerService) (map[string]interface{}, bool) {
+	if !marketLimitStatsShouldUseTicker(req, ts) {
+		return nil, false
+	}
+	resp := buildMarketLimitStatsBreakdownData(ts.GetLimitStatsBreakdown())
+	resp["data_source"] = "ticker"
+	resp["trading_date"] = ts.UpdatedAt().In(time.Local).Format("20060102")
+	addTickerMeta(resp, ts)
+	return resp, true
+}
+
+func marketLimitStatsShouldUseTicker(req marketLimitStatsRequest, ts *collectorpkg.TickerService) bool {
+	if req.hasTradingDate || ts == nil {
+		return false
+	}
+	updatedAt := ts.UpdatedAt()
+	if updatedAt.IsZero() {
+		return false
+	}
+	now := marketScreenNow()
+	if !marketScreenInTickerSession(now) {
+		return false
+	}
+	if updatedAt.In(time.Local).Format("20060102") != now.In(time.Local).Format("20060102") {
+		return false
+	}
+	if now.Before(updatedAt) {
+		return true
+	}
+	return now.Sub(updatedAt) < 10*time.Second
+}
+
+func marketScreenInTickerSession(now time.Time) bool {
+	if !marketScreenIsTodayTradingDay(now) {
+		return false
+	}
+	local := now.In(time.Local)
+	minutes := local.Hour()*60 + local.Minute()
+	return minutes >= 9*60+15 && minutes <= 15*60+5
+}
+
+func buildMarketLimitStatsCloseSnapshotResponse(req marketLimitStatsRequest) (map[string]interface{}, bool) {
+	ticks, tradingDate, ok := loadMarketScreenCloseTicks(string(collectorpkg.AssetTypeStock), req.tradingDate)
+	if !ok && !req.hasTradingDate {
+		return nil, false
+	}
+	resp := buildMarketLimitStatsBreakdownData(collectorpkg.ComputeLimitStatsBreakdown(ticks))
+	if req.hasTradingDate && !ok {
+		addMarketScreenCloseSnapshotMeta(resp, req.tradingDate)
+		resp["status"] = "empty"
+		resp["status_hint"] = "指定 trading_date 无日K收盘快照"
+		return resp, true
+	}
+	addMarketScreenCloseSnapshotMeta(resp, tradingDate)
+	return resp, true
+}
+
+func parseMarketLimitUpTiersRequest(r *http.Request) (marketLimitUpTiersRequest, error) {
+	tradingDateRaw := strings.TrimSpace(r.URL.Query().Get("trading_date"))
+	tradingDate := ""
+	if tradingDateRaw != "" {
+		parsed, err := parseMarketScreenTradingDate(tradingDateRaw)
+		if err != nil {
+			return marketLimitUpTiersRequest{}, errors.New("trading_date 参数格式错误，应为 YYYYMMDD 或 YYYY-MM-DD")
+		}
+		tradingDate = parsed
+	}
+
+	stockClass := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("stock_class")))
+	if stockClass == "" {
+		stockClass = "non_st"
+	}
+	switch stockClass {
+	case "non_st", "st", "all":
+	default:
+		return marketLimitUpTiersRequest{}, errors.New("stock_class 参数无效，应为 non_st、st 或 all")
+	}
+
+	minStreak := 1
+	if raw := strings.TrimSpace(r.URL.Query().Get("min_streak")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n <= 0 {
+			return marketLimitUpTiersRequest{}, errors.New("min_streak 参数无效，应为正整数")
+		}
+		minStreak = n
+	}
+
+	return marketLimitUpTiersRequest{
+		tradingDate:    tradingDate,
+		hasTradingDate: tradingDate != "",
+		stockClass:     stockClass,
+		minStreak:      minStreak,
+	}, nil
+}
+
+func buildMarketLimitUpTiersResponse(req marketLimitUpTiersRequest, ts *collectorpkg.TickerService) (map[string]interface{}, bool) {
+	if tickerByCode, limitUpByCode, tradingDate, ok := marketLimitUpTiersTickerSnapshot(req, ts); ok {
+		resp, hasTarget := buildMarketLimitUpTiersData(req, tradingDate, tickerByCode, limitUpByCode)
+		if hasTarget {
+			addTickerMeta(resp, ts)
+			return resp, true
+		}
+	}
+
+	tradingDate := req.tradingDate
+	if tradingDate == "" {
+		if _, latestDate, ok := loadMarketScreenCloseTicks(string(collectorpkg.AssetTypeStock), ""); ok {
+			tradingDate = latestDate
+		}
+	}
+	if tradingDate == "" {
+		return nil, false
+	}
+
+	resp, hasTarget := buildMarketLimitUpTiersData(req, tradingDate, nil, nil)
+	if hasTarget {
+		addMarketLimitUpTiersCloseMeta(resp, tradingDate)
+		return resp, true
+	}
+	if req.hasTradingDate {
+		resp := buildMarketLimitUpTiersPayload(req, tradingDate, nil)
+		resp["updated_at"] = nil
+		resp["status"] = "empty"
+		resp["status_hint"] = "指定 trading_date 无日K收盘快照"
+		return resp, true
+	}
+	return nil, false
+}
+
+func marketLimitUpTiersTickerSnapshot(req marketLimitUpTiersRequest, ts *collectorpkg.TickerService) (map[string]collectorpkg.StockTick, map[string]*collectorpkg.LimitSidePublic, string, bool) {
+	if !marketScreenShouldUseTicker(marketScreenRequest{
+		tradingDate:    req.tradingDate,
+		hasTradingDate: req.hasTradingDate,
+	}, ts) {
+		return nil, nil, "", false
+	}
+	ticks := ts.GetAllStocks()
+	if len(ticks) == 0 {
+		return nil, nil, "", false
+	}
+	byCode := make(map[string]collectorpkg.StockTick, len(ticks))
+	limitUpByCode := make(map[string]*collectorpkg.LimitSidePublic, len(ticks))
+	for _, tick := range ticks {
+		if tick.AssetType == string(collectorpkg.AssetTypeStock) {
+			key := strings.ToLower(tick.Code)
+			byCode[key] = tick
+			if p := ts.GetLimitUpPublic(tick.Code); p != nil {
+				limitUpByCode[key] = p
+			}
+		}
+	}
+	return byCode, limitUpByCode, ts.UpdatedAt().In(time.Local).Format("20060102"), len(byCode) > 0
+}
+
+func buildMarketLimitUpTiersData(req marketLimitUpTiersRequest, tradingDate string, tickerByCode map[string]collectorpkg.StockTick, limitUpByCode map[string]*collectorpkg.LimitSidePublic) (map[string]interface{}, bool) {
+	if tickerByCode == nil && limitUpByCode == nil {
+		if stocks, ok := loadMarketLimitUpTiersMaterialized(req, tradingDate); ok {
+			return buildMarketLimitUpTiersPayload(req, tradingDate, stocks), true
+		}
+		stocks, hasTarget := buildMarketLimitUpTierStocksFromKline(tradingDate)
+		if hasTarget {
+			saveMarketLimitUpTiersMaterialized(tradingDate, stocks)
+			return buildMarketLimitUpTiersPayload(req, tradingDate, filterMarketLimitUpTierStocks(stocks, req)), true
+		}
+		return nil, false
+	}
+
+	codes, err := loadMarketScreenCodeRows(string(collectorpkg.AssetTypeStock))
+	if err != nil || len(codes) == 0 {
+		return nil, false
+	}
+
+	stocks := make([]marketLimitUpTierStock, 0, 64)
+	hasTarget := false
+	for _, code := range codes {
+		key := strings.ToLower(code.fullCode)
+		if tick, ok := tickerByCode[key]; ok {
+			hasTarget = true
+			if !marketLimitUpTiersStockClassMatches(code.name, req.stockClass) || !tick.IsLimitUp {
+				continue
+			}
+			previousRows := loadMarketLimitUpTierPreviousRows(code, tradingDate)
+			streak, firstDate := marketLimitUpTickerStreak(tick, tradingDate, previousRows)
+			if streak < req.minStreak {
+				continue
+			}
+			stocks = append(stocks, marketLimitUpTierStockFromTick(tick, streak, firstDate, tradingDate, limitUpByCode[key]))
+			continue
+		}
+
+		rows, ok := loadMarketLimitUpTierRows(code, tradingDate)
+		if ok {
+			hasTarget = true
+		}
+		if !ok || !marketLimitUpTiersStockClassMatches(code.name, req.stockClass) {
+			continue
+		}
+		stock, ok := marketLimitUpTierStockFromRows(code, rows, tradingDate)
+		if !ok || stock.Streak < req.minStreak {
+			continue
+		}
+		stocks = append(stocks, stock)
+	}
+
+	return buildMarketLimitUpTiersPayload(req, tradingDate, stocks), hasTarget
+}
+
+func marketLimitUpTiersStockClassMatches(name, stockClass string) bool {
+	isST := marketScreenIsSTStock(name)
+	switch stockClass {
+	case "st":
+		return isST
+	case "all":
+		return true
+	default:
+		return !isST
+	}
+}
+
+func buildMarketLimitUpTiersPayload(req marketLimitUpTiersRequest, tradingDate string, stocks []marketLimitUpTierStock) map[string]interface{} {
+	sort.Slice(stocks, func(i, j int) bool {
+		if stocks[i].Streak != stocks[j].Streak {
+			return stocks[i].Streak > stocks[j].Streak
+		}
+		if stocks[i].Amount != stocks[j].Amount {
+			return stocks[i].Amount > stocks[j].Amount
+		}
+		return stocks[i].Code < stocks[j].Code
+	})
+
+	grouped := make(map[int][]marketLimitUpTierStock)
+	streaks := make([]int, 0)
+	seen := make(map[int]bool)
+	highest := 0
+	for _, stock := range stocks {
+		grouped[stock.Streak] = append(grouped[stock.Streak], stock)
+		if !seen[stock.Streak] {
+			seen[stock.Streak] = true
+			streaks = append(streaks, stock.Streak)
+		}
+		if stock.Streak > highest {
+			highest = stock.Streak
+		}
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(streaks)))
+
+	tiers := make([]marketLimitUpTier, 0, len(streaks))
+	for _, streak := range streaks {
+		items := grouped[streak]
+		tiers = append(tiers, marketLimitUpTier{
+			Streak: streak,
+			Label:  strconv.Itoa(streak) + "板",
+			Count:  len(items),
+			Stocks: items,
+		})
+	}
+
+	return map[string]interface{}{
+		"trading_date":   tradingDate,
+		"stock_class":    req.stockClass,
+		"min_streak":     req.minStreak,
+		"total":          len(stocks),
+		"highest_streak": highest,
+		"tiers":          tiers,
+	}
+}
+
+func addMarketLimitUpTiersCloseMeta(resp map[string]interface{}, tradingDate string) {
+	resp["status"] = "closed_snapshot"
+	resp["status_hint"] = "已使用本地日K收盘快照计算连板梯队"
+	if parsed, err := time.ParseInLocation("20060102", tradingDate, time.Local); err == nil {
+		resp["updated_at"] = time.Date(parsed.Year(), parsed.Month(), parsed.Day(), 15, 0, 0, 0, time.Local).Format(time.RFC3339)
+	}
 }
 
 func buildMarketStatsCloseSnapshotResponse(req marketStatsRequest) (map[string]interface{}, bool) {
@@ -775,10 +1371,14 @@ func buildBlockRankingCloseSnapshotItems(req marketBlockRequest, ticks []collect
 	if err != nil || len(groups) == 0 {
 		return nil
 	}
+	membersByGroup, err := loadMarketScreenBlockMembersByGroup(req.key)
+	if err != nil {
+		return nil
+	}
 	ranks := make([]collectorpkg.BlockRank, 0, len(groups))
 	for _, group := range groups {
-		members, err := loadMarketScreenBlockMembers(group.Source, group.BlockType, group.Name)
-		if err != nil || len(members) == 0 {
+		members := membersByGroup[marketScreenBlockMemberKey(group.Source, group.BlockType, group.Name)]
+		if len(members) == 0 {
 			continue
 		}
 		rank := collectorpkg.BlockRank{
@@ -1434,12 +2034,96 @@ func sortMarketScreenTicks(ticks []collectorpkg.StockTick, sortBy, order string)
 	})
 }
 
+func paginateMarketScreenTicks(ticks []collectorpkg.StockTick, page, pageSize int) ([]collectorpkg.StockTick, marketScreenPagination) {
+	pagination := newMarketScreenPagination(page, pageSize, len(ticks))
+	offset := marketScreenPageOffset(pagination.page, pagination.pageSize)
+	if offset >= len(ticks) {
+		return []collectorpkg.StockTick{}, pagination
+	}
+	end := offset + pagination.pageSize
+	if end > len(ticks) {
+		end = len(ticks)
+	}
+	return ticks[offset:end], pagination
+}
+
+func normalizeMarketScreenPageSize(limit int) int {
+	if limit <= 0 {
+		return 50
+	}
+	if limit > 200 {
+		return 200
+	}
+	return limit
+}
+
+func normalizeMarketScreenPage(page int) int {
+	if page <= 0 {
+		return 1
+	}
+	return page
+}
+
+func marketScreenPageOffset(page, pageSize int) int {
+	return (normalizeMarketScreenPage(page) - 1) * normalizeMarketScreenPageSize(pageSize)
+}
+
+func newMarketScreenPagination(page, pageSize, total int) marketScreenPagination {
+	page = normalizeMarketScreenPage(page)
+	pageSize = normalizeMarketScreenPageSize(pageSize)
+	totalPages := 0
+	if total > 0 {
+		totalPages = (total + pageSize - 1) / pageSize
+	}
+	return marketScreenPagination{
+		page:       page,
+		pageSize:   pageSize,
+		total:      total,
+		totalPages: totalPages,
+		hasNext:    page < totalPages,
+		hasPrev:    page > 1 && total > 0,
+	}
+}
+
+func addMarketScreenPaginationMeta(resp map[string]interface{}, pagination marketScreenPagination) {
+	resp["total"] = pagination.total
+	resp["page"] = pagination.page
+	resp["page_size"] = pagination.pageSize
+	resp["total_pages"] = pagination.totalPages
+	resp["has_next"] = pagination.hasNext
+	resp["has_prev"] = pagination.hasPrev
+}
+
+func marketScreenRequestMatchesChangePct(pct float64, req marketScreenRequest) bool {
+	if req.hasMinChangePct && pct < req.minChangePct {
+		return false
+	}
+	if req.hasMaxChangePct && pct > req.maxChangePct {
+		return false
+	}
+	return true
+}
+
 func marketScreenLimitUp(pct float64, code, name string) bool {
 	return pct >= marketScreenLimitThreshold(code, name)-0.05
 }
 
 func marketScreenLimitDown(pct float64, code, name string) bool {
 	return pct <= -(marketScreenLimitThreshold(code, name) - 0.05)
+}
+
+func marketScreenPriceTouchesLimitUp(price, preClose float64, code, name string) bool {
+	if price <= 0 || preClose <= 0 {
+		return false
+	}
+	return (price-preClose)/preClose*100 >= marketScreenLimitThreshold(code, name)-0.05
+}
+
+func marketScreenPriceTouchesLimitDown(price, preClose float64, code, name string) bool {
+	if price <= 0 || preClose <= 0 {
+		return false
+	}
+	return (price-preClose)/preClose*100 <= -(marketScreenLimitThreshold(code, name) - 0.05)
 }
 
 func marketScreenLimitThreshold(code, name string) float64 {
@@ -1455,11 +2139,15 @@ func marketScreenLimitThreshold(code, name string) float64 {
 		strings.HasPrefix(bare, "92"):
 		return 30
 	default:
-		if strings.Contains(strings.ToUpper(name), "ST") {
+		if marketScreenIsSTStock(name) {
 			return 5
 		}
 		return 10
 	}
+}
+
+func marketScreenIsSTStock(name string) bool {
+	return strings.Contains(strings.ToUpper(name), "ST")
 }
 
 func roundMarketScreen(value float64, digits int) float64 {

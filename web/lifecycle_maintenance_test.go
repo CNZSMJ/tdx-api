@@ -76,6 +76,14 @@ func TestLifecycleMaintenanceDefaultCandidateBudgetMatchesSteadyState(t *testing
 	}
 }
 
+func TestLifecycleMaintenanceDefaultsToLargestCandidatesFirst(t *testing.T) {
+	t.Setenv("TDX_LIFECYCLE_CANDIDATE_SORT", "")
+
+	if got := lifecycleEnvString("TDX_LIFECYCLE_CANDIDATE_SORT", "size_desc"); got != "size_desc" {
+		t.Fatalf("default lifecycle candidate sort = %q, want size_desc", got)
+	}
+}
+
 func TestRunDataLifecycleMaintenanceWithRetryRetriesLockConflicts(t *testing.T) {
 	attempts := 0
 	delays := make([]time.Duration, 0, 2)

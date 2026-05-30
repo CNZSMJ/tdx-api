@@ -93,6 +93,8 @@ go run .
 | `/api/index` | 指数数据 |
 | `/api/index/all` | 全部指数数据 |
 | `/api/market-stats` | 全市场宽度统计 |
+| `/api/market/limit-stats` | 涨跌停板型统计 |
+| `/api/market/limit-up/tiers` | 涨停连板梯队 |
 | `/api/market/screen` | 全市场排行 / 涨跌停池 |
 | `/api/market/signal` | K 线扫描异动 |
 | `/api/market-count` | 市场数量统计 |

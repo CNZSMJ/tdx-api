@@ -3,7 +3,6 @@ package lifecycle
 import (
 	"context"
 	"fmt"
-	"sort"
 	"time"
 )
 
@@ -38,9 +37,6 @@ type CandidatePlan struct {
 
 func SelectLifecycleCandidates(candidates []LifecycleCandidate, opts SchedulerOptions) (CandidatePlan, error) {
 	ordered := append([]LifecycleCandidate(nil), candidates...)
-	sort.Slice(ordered, func(i, j int) bool {
-		return ordered[i].SourceDBBytes < ordered[j].SourceDBBytes
-	})
 	if opts.MaxCandidates <= 0 {
 		opts.MaxCandidates = len(ordered)
 	}

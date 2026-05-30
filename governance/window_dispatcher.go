@@ -9,13 +9,17 @@ import (
 	collectorpkg "github.com/injoyai/tdx/collector"
 )
 
-const governanceWindowLeaseExpiredReason = "governance window lease expired"
+const (
+	governanceWindowLeaseExpiredReason = "governance window lease expired"
+	defaultGovernanceWindowMaxAttempts = 3
+)
 
 type WindowDispatcherConfig struct {
 	Store         *collectorpkg.GovernanceStore
 	Now           func() time.Time
 	Owner         string
 	LeaseDuration time.Duration
+	MaxAttempts   int
 	Execute       func(context.Context, collectorpkg.GovernanceWindowRecord) (WindowExecutionResult, error)
 }
 
@@ -38,6 +42,9 @@ func NewWindowDispatcher(cfg WindowDispatcherConfig) *WindowDispatcher {
 	}
 	if cfg.LeaseDuration <= 0 {
 		cfg.LeaseDuration = 30 * time.Minute
+	}
+	if cfg.MaxAttempts <= 0 {
+		cfg.MaxAttempts = defaultGovernanceWindowMaxAttempts
 	}
 	return &WindowDispatcher{cfg: cfg}
 }
@@ -82,6 +89,13 @@ func (d *WindowDispatcher) RunNext(ctx context.Context) (bool, error) {
 		if !window.NextRunAt.IsZero() && window.NextRunAt.After(now) {
 			continue
 		}
+		exhausted, err := d.terminallyDeferRetryExhaustedWindow(&window)
+		if err != nil {
+			return false, err
+		}
+		if exhausted {
+			continue
+		}
 		dependencyState, err := d.dependencyState(window)
 		if err != nil {
 			return false, err
@@ -98,7 +112,7 @@ func (d *WindowDispatcher) RunNext(ctx context.Context) (bool, error) {
 				if err := d.cfg.Store.UpdateWindow(&window); err != nil {
 					return false, err
 				}
-				return false, nil
+				continue
 			}
 			window.Status = collectorpkg.GovernanceWindowStatusWaitingDependency
 			window.LastError = ""
@@ -106,7 +120,7 @@ func (d *WindowDispatcher) RunNext(ctx context.Context) (bool, error) {
 			if err := d.cfg.Store.UpdateWindow(&window); err != nil {
 				return false, err
 			}
-			return false, nil
+			continue
 		}
 		if !dependencyState.ready {
 			if window.Status != collectorpkg.GovernanceWindowStatusWaitingDependency {
@@ -116,7 +130,7 @@ func (d *WindowDispatcher) RunNext(ctx context.Context) (bool, error) {
 					return false, err
 				}
 			}
-			return false, nil
+			continue
 		}
 
 		window.Status = collectorpkg.GovernanceWindowStatusRunning
@@ -161,6 +175,26 @@ func (d *WindowDispatcher) RunNext(ctx context.Context) (bool, error) {
 	}
 
 	return false, nil
+}
+
+func (d *WindowDispatcher) terminallyDeferRetryExhaustedWindow(window *collectorpkg.GovernanceWindowRecord) (bool, error) {
+	if window.Attempts < d.cfg.MaxAttempts {
+		return false, nil
+	}
+	reason := fmt.Sprintf("retry budget exhausted after %d attempts", window.Attempts)
+	if lastError := strings.TrimSpace(window.LastError); lastError != "" {
+		reason += ": " + lastError
+	}
+	window.Status = collectorpkg.GovernanceWindowStatusTerminalFailed
+	window.LastError = reason
+	window.ResultSummary = reason
+	window.LeaseOwner = ""
+	window.LeaseUntil = time.Time{}
+	window.NextRunAt = time.Time{}
+	if err := d.cfg.Store.UpdateWindow(window); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (d *WindowDispatcher) startLeaseRenewal(ctx context.Context, window collectorpkg.GovernanceWindowRecord) func() {

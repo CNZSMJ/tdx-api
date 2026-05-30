@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	_ "github.com/glebarez/go-sqlite"
 	tdx "github.com/injoyai/tdx"
 	collectorpkg "github.com/injoyai/tdx/collector"
 	"github.com/injoyai/tdx/extend"
@@ -61,6 +63,36 @@ func TestFilterIntradayBarRowsDoesNotFallback(t *testing.T) {
 	_, err := filterIntradayBarRows(rows, time.Date(2026, 4, 15, 0, 0, 0, 0, time.Local))
 	if err == nil {
 		t.Fatalf("expected exact-date error when requested trading_date has no rows")
+	}
+}
+
+func TestFetchIntradayBarRowsPrefersLocalKlineDB(t *testing.T) {
+	originalDir := databaseDir
+	originalClient := client
+	defer func() {
+		databaseDir = originalDir
+		client = originalClient
+	}()
+	databaseDir = t.TempDir()
+	client = nil
+
+	mustCreateIntradayKlineDB(t, filepath.Join(databaseDir, "kline", "sh600000.db"), "sh600000", []intradayKlineFixture{
+		{At: time.Date(2026, 5, 22, 9, 31, 0, 0, time.Local), Open: 12340, High: 12400, Low: 12300, Close: 12350, Volume: 100, Amount: 1235000},
+		{At: time.Date(2026, 5, 22, 9, 32, 0, 0, time.Local), Open: 12350, High: 12500, Low: 12320, Close: 12480, Volume: 200, Amount: 2496000},
+	})
+
+	rows, source, err := fetchIntradayBarRows(&tdx.CodeModel{Code: "600000", Exchange: "sh"}, 1, time.Date(2026, 5, 22, 0, 0, 0, 0, time.Local))
+	if err != nil {
+		t.Fatalf("fetch local intraday rows: %v", err)
+	}
+	if source != "local_kline" {
+		t.Fatalf("source = %q, want local_kline", source)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows len = %d, want 2", len(rows))
+	}
+	if rows[0].Close != 12.35 || rows[1].Close != 12.48 {
+		t.Fatalf("rows = %#v", rows)
 	}
 }
 
@@ -796,4 +828,34 @@ func containsString(items []string, target string) bool {
 		}
 	}
 	return false
+}
+
+type intradayKlineFixture struct {
+	At     time.Time
+	Open   int64
+	High   int64
+	Low    int64
+	Close  int64
+	Volume int64
+	Amount int64
+}
+
+func mustCreateIntradayKlineDB(t *testing.T, path, code string, rows []intradayKlineFixture) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir kline dir: %v", err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open kline db: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE MinuteKline (Code TEXT NOT NULL, Date INTEGER NOT NULL, Open INTEGER NOT NULL, High INTEGER NOT NULL, Low INTEGER NOT NULL, Close INTEGER NOT NULL, Volume INTEGER NOT NULL, Amount INTEGER NOT NULL, InDate INTEGER NULL)`); err != nil {
+		t.Fatalf("create MinuteKline table: %v", err)
+	}
+	for _, row := range rows {
+		if _, err := db.Exec(`INSERT INTO MinuteKline(Code, Date, Open, High, Low, Close, Volume, Amount) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`, code, row.At.Unix(), row.Open, row.High, row.Low, row.Close, row.Volume, row.Amount); err != nil {
+			t.Fatalf("insert MinuteKline %s: %v", code, err)
+		}
+	}
 }

@@ -450,7 +450,7 @@ func TestNewServiceDisableAutoPrefetchSkipsStartupPrefetch(t *testing.T) {
 	}
 }
 
-func TestSyncPersistsRawFactsServingPayloadAndWatermark(t *testing.T) {
+func TestSyncPersistsServingPayloadAndWatermarkWithoutRawFacts(t *testing.T) {
 	listBody := "gpcw20251231.zip,oldhash,100\n"
 	reportZip := buildZIPFixture(t, "gpcw20251231.dat", buildDATFixture(t, "600000", map[int]float32{
 		fieldBookValuePerShare: 13.88,
@@ -498,7 +498,6 @@ func TestSyncPersistsRawFactsServingPayloadAndWatermark(t *testing.T) {
 	for table, wantAtLeast := range map[string]int{
 		"prof_finance_source_file":      1,
 		"prof_finance_source_report":    1,
-		"prof_finance_source_value_raw": 1,
 		"prof_finance_report_version":   1,
 		"prof_finance_report_payload":   1,
 		"prof_finance_source_watermark": 1,
@@ -510,6 +509,13 @@ func TestSyncPersistsRawFactsServingPayloadAndWatermark(t *testing.T) {
 		if got < wantAtLeast {
 			t.Fatalf("%s count = %d, want >= %d", table, got, wantAtLeast)
 		}
+	}
+	var rawCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM prof_finance_source_value_raw").Scan(&rawCount); err != nil {
+		t.Fatalf("count prof_finance_source_value_raw: %v", err)
+	}
+	if rawCount != 0 {
+		t.Fatalf("prof_finance_source_value_raw count = %d, want 0 for normal sync", rawCount)
 	}
 
 	var jsonValid int
@@ -907,6 +913,7 @@ func TestRebuildRestoresServingLayerFromRawFacts(t *testing.T) {
 	if err := service.Sync(context.Background()); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
+	seedRawFactsForRebuild(t, service, reportZip, ReportFile{Filename: "gpcw20251231.zip", ReportDate: "20251231"})
 
 	db, err := sql.Open("sqlite", service.dbPath)
 	if err != nil {
@@ -1115,6 +1122,7 @@ func TestRebuildPreservesFallbackVisibilityAndWatermark(t *testing.T) {
 	if err := service.Sync(context.Background()); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
+	seedRawFactsForRebuild(t, service, reportZip, ReportFile{Filename: "gpcw20251231.zip", ReportDate: "20251231"})
 
 	before, err := service.Snapshot(context.Background(), SnapshotQuery{
 		FullCode:   "sh600000",
@@ -1246,5 +1254,39 @@ func assertFloatApprox(t *testing.T, got, want float64, label string) {
 	t.Helper()
 	if math.Abs(got-want) > 0.0001 {
 		t.Fatalf("%s = %v, want %v", label, got, want)
+	}
+}
+
+func seedRawFactsForRebuild(t *testing.T, service *Service, zipBody []byte, report ReportFile) {
+	t.Helper()
+
+	parsed, err := parseZipReportRaw(zipBody, report, service.registry)
+	if err != nil {
+		t.Fatalf("parse raw fixture: %v", err)
+	}
+	db, err := sql.Open("sqlite", service.dbPath)
+	if err != nil {
+		t.Fatalf("open db for raw seed: %v", err)
+	}
+	defer db.Close()
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin raw seed: %v", err)
+	}
+	defer tx.Rollback()
+
+	var sourceFileID int64
+	if err := tx.QueryRow("SELECT source_file_id FROM prof_finance_source_file WHERE filename = ? ORDER BY source_file_id DESC LIMIT 1", report.Filename).Scan(&sourceFileID); err != nil {
+		t.Fatalf("query source_file_id: %v", err)
+	}
+	if _, err := tx.Exec("DELETE FROM prof_finance_source_value_raw WHERE source_file_id = ?", sourceFileID); err != nil {
+		t.Fatalf("clear raw facts: %v", err)
+	}
+	if err := insertRawValues(tx, sourceFileID, parsed, service.now().UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("insert raw facts: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit raw seed: %v", err)
 	}
 }

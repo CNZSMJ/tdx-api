@@ -115,6 +115,132 @@ func TestStartupRecoveryHandlesInterruptedReplacementArtifacts(t *testing.T) {
 	}
 }
 
+func TestRecoverInterruptedPruningSegmentsRemovesTmpAndFailsGroupedSegments(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "sz159206.db")
+	tmp := source + ".replacement.batch-1.tmp"
+	mustCreateSQLite(t, source, []string{
+		`CREATE TABLE MinuteLive(Code TEXT, TradeDate TEXT)`,
+		`CREATE TABLE TradeLive(Code TEXT, TradeDate TEXT)`,
+		`INSERT INTO MinuteLive VALUES('sz159206','20250728')`,
+		`INSERT INTO TradeLive VALUES('sz159206','20250728')`,
+	})
+	mustCreateSQLite(t, tmp, []string{
+		`CREATE TABLE MinuteLive(Code TEXT, TradeDate TEXT)`,
+		`CREATE TABLE TradeLive(Code TEXT, TradeDate TEXT)`,
+	})
+	store, err := OpenManifestStore(filepath.Join(root, "cold_manifest.db"))
+	if err != nil {
+		t.Fatalf("open manifest: %v", err)
+	}
+	defer store.Close()
+	for _, table := range []string{"MinuteLive", "TradeLive"} {
+		if err := store.CreateSegment(ColdSegment{
+			SegmentID:            "seg-" + table,
+			DatasetID:            "a-stock-market-tdx",
+			ArchiveBatchID:       "batch-1",
+			Domain:               "live",
+			TableName:            table,
+			Instrument:           "sz159206",
+			PartitionKey:         "domain=live/table=" + table + "/instrument=sz159206/year=2025",
+			StartDate:            "20250728",
+			EndDate:              "20250822",
+			ColdURI:              "tdx-cold://a-stock-market-tdx/cold/domain=live/table=" + table + "/instrument=sz159206/year=2025/part-test.parquet",
+			Status:               SegmentPruning,
+			SchemaVersion:        1,
+			StorageScheme:        "local-v1",
+			FinalizationStrategy: "atomic_rename_same_device",
+			SourceDBPath:         source,
+		}); err != nil {
+			t.Fatalf("create segment %s: %v", table, err)
+		}
+	}
+
+	result, err := RecoverInterruptedPruningSegments(store)
+	if err != nil {
+		t.Fatalf("recover pruning segments: %v", err)
+	}
+	if result.PruningSegments != 2 || result.RecoveredGroups != 1 || result.FailedSegments != 2 {
+		t.Fatalf("unexpected recovery result: %+v", result)
+	}
+	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
+		t.Fatalf("tmp should be removed, stat err=%v", err)
+	}
+	segments, err := store.ListSegments()
+	if err != nil {
+		t.Fatalf("list segments: %v", err)
+	}
+	for _, segment := range segments {
+		if segment.Status != SegmentFailed {
+			t.Fatalf("segment %s status = %s, want failed", segment.SegmentID, segment.Status)
+		}
+	}
+}
+
+func TestRecoverInterruptedPruningSegmentsRollsBackBackup(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "sh600000.db")
+	backup := source + ".pre_lifecycle.batch-1.bak"
+	mustCreateSQLite(t, source, []string{
+		`CREATE TABLE TradeHistory(Code TEXT, TradeDate TEXT)`,
+		`INSERT INTO TradeHistory VALUES('sh600000','20260424')`,
+	})
+	mustCreateSQLite(t, backup, []string{
+		`CREATE TABLE TradeHistory(Code TEXT, TradeDate TEXT)`,
+		`INSERT INTO TradeHistory VALUES('sh600000','20250728')`,
+		`INSERT INTO TradeHistory VALUES('sh600000','20260424')`,
+	})
+	store, err := OpenManifestStore(filepath.Join(root, "cold_manifest.db"))
+	if err != nil {
+		t.Fatalf("open manifest: %v", err)
+	}
+	defer store.Close()
+	if err := store.CreateSegment(ColdSegment{
+		SegmentID:            "seg-1",
+		DatasetID:            "a-stock-market-tdx",
+		ArchiveBatchID:       "batch-1",
+		Domain:               "trade",
+		TableName:            "TradeHistory",
+		Instrument:           "sh600000",
+		PartitionKey:         "domain=trade/table=TradeHistory/instrument=sh600000/year=2025",
+		StartDate:            "20250728",
+		EndDate:              "20250822",
+		ColdURI:              "tdx-cold://a-stock-market-tdx/cold/domain=trade/table=TradeHistory/instrument=sh600000/year=2025/part-test.parquet",
+		Status:               SegmentPruning,
+		SchemaVersion:        1,
+		StorageScheme:        "local-v1",
+		FinalizationStrategy: "atomic_rename_same_device",
+		SourceDBPath:         source,
+	}); err != nil {
+		t.Fatalf("create segment: %v", err)
+	}
+
+	result, err := RecoverInterruptedPruningSegments(store)
+	if err != nil {
+		t.Fatalf("recover pruning segments: %v", err)
+	}
+	if result.RecoveredGroups != 1 || result.FailedSegments != 1 {
+		t.Fatalf("unexpected recovery result: %+v", result)
+	}
+	rows, err := countRows(source, "TradeHistory")
+	if err != nil {
+		t.Fatalf("count source rows: %v", err)
+	}
+	if rows != 2 {
+		t.Fatalf("source rows = %d, want restored backup rows", rows)
+	}
+	if _, err := os.Stat(backup); !os.IsNotExist(err) {
+		t.Fatalf("backup should be consumed by rollback, stat err=%v", err)
+	}
+	segment, err := store.GetSegment("seg-1")
+	if err != nil {
+		t.Fatalf("get segment: %v", err)
+	}
+	if segment == nil || segment.Status != SegmentFailed {
+		t.Fatalf("segment = %+v, want failed", segment)
+	}
+}
+
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

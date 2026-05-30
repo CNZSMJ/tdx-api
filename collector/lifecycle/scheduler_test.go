@@ -27,6 +27,24 @@ func TestSchedulerSelectsOnlyCandidatesThatFitPeakSpace(t *testing.T) {
 	}
 }
 
+func TestSchedulerKeepsDiscoveryPriorityWhenCandidateBudgetIsCapped(t *testing.T) {
+	candidates := []LifecycleCandidate{
+		{Domain: "trade", TableName: "TradeHistory", Instrument: "large", SourceDBBytes: 1_000, ColdRowShare: 0.1, EstimatedParquetRatio: 0.1, EstimatedReplacementRatio: 0.1},
+		{Domain: "trade", TableName: "TradeHistory", Instrument: "small", SourceDBBytes: 100, ColdRowShare: 0.1, EstimatedParquetRatio: 0.1, EstimatedReplacementRatio: 0.1},
+	}
+	plan, err := SelectLifecycleCandidates(candidates, SchedulerOptions{
+		FreeBytes:         10_000,
+		SafetyMarginBytes: 10,
+		MaxCandidates:     1,
+	})
+	if err != nil {
+		t.Fatalf("select candidates: %v", err)
+	}
+	if len(plan.Selected) != 1 || plan.Selected[0].Instrument != "large" {
+		t.Fatalf("selected = %+v, want discovery-priority large candidate", plan.Selected)
+	}
+}
+
 func TestMaintenanceRunnerSkipsWhenHigherPriorityGovernanceActive(t *testing.T) {
 	runner := MaintenanceRunner{
 		MaintenanceRuntime: MaintenanceRuntime{

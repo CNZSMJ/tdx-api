@@ -147,3 +147,7 @@ When the user corrects your approach, append a one-line rule here before ending 
 - When designing governance or scheduler behavior, identify the durable fact object and its lifecycle owner before adding cron callbacks, locks, runners, or status projections.
 - For market snapshot APIs, resolve the requested business trading date before choosing ticker memory or DB fallback; exact-date requests must never fall back to another date.
 - Governance startup recovery and task upserts must not reopen terminal facts; closed or repaired tasks are durable outcomes unless an explicit repair changes them.
+- New governance jobs must be wired through dispatcher eligibility, startup recovery replay, covered-backlog repair, status projection, and freshness semantics in the same change.
+- Instrument metrics must not register a metric code until the Web loader has a real data source or the API response explicitly reports the source as unavailable.
+- Trading endpoints that wrap existing market facts must reuse the original response field names exactly instead of inventing aliases.
+- Professional finance sync must materialize serving payloads without writing `prof_finance_source_value_raw`; raw facts are only for explicit rebuild or restore paths.

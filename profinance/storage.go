@@ -527,9 +527,6 @@ func (s *Service) ingestReport(ctx context.Context, db *sql.DB, report ReportFil
 	if err := insertSourceReport(tx, sourceFile.SourceFileID, parsed, nowText); err != nil {
 		return err
 	}
-	if err := insertRawValues(tx, sourceFile.SourceFileID, parsed, nowText); err != nil {
-		return err
-	}
 	if err := materializeReportPayloads(tx, s.registry, sourceFile.SourceFileID, report.Filename, parsed, nil, nowText, false, now, nowText); err != nil {
 		return err
 	}

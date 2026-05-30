@@ -110,3 +110,33 @@ func buildMarketStatsData(ticks []collectorpkg.StockTick, assetType string) map[
 		},
 	}
 }
+
+func buildMarketLimitStatsData(stats collectorpkg.LimitStats) map[string]interface{} {
+	return map[string]interface{}{
+		"limit_up": map[string]interface{}{
+			"total":          stats.LimitUp.Total,
+			"one_line":       stats.LimitUp.OneLine,
+			"t_board":        stats.LimitUp.TBoard,
+			"turnover_board": stats.LimitUp.TurnoverBoard,
+			"broken":         stats.LimitUp.Broken,
+			"floor_sky":      stats.LimitUp.FloorSky,
+		},
+		"limit_down": map[string]interface{}{
+			"total":          stats.LimitDown.Total,
+			"one_line":       stats.LimitDown.OneLine,
+			"t_board":        stats.LimitDown.TBoard,
+			"turnover_board": stats.LimitDown.TurnoverBoard,
+			"broken":         stats.LimitDown.Broken,
+			"sky_floor":      stats.LimitDown.SkyFloor,
+		},
+	}
+}
+
+func buildMarketLimitStatsBreakdownData(stats collectorpkg.LimitStatsBreakdown) map[string]interface{} {
+	resp := buildMarketLimitStatsData(stats.All)
+	resp["by_stock_class"] = map[string]interface{}{
+		"non_st": buildMarketLimitStatsData(stats.NonST),
+		"st":     buildMarketLimitStatsData(stats.ST),
+	}
+	return resp
+}

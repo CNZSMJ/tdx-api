@@ -1,11 +1,14 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -464,7 +467,7 @@ func serveIntradayBars(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, source, err := fetchIntradayBarRows(model, intervalMinutes)
+	rows, source, err := fetchIntradayBarRows(model, intervalMinutes, tradingDate)
 	if err != nil {
 		errorResponse(w, err.Error())
 		return
@@ -568,6 +571,7 @@ func buildBlockItems(records []collectorpkg.BlockGroupRecord) []map[string]inter
 	items := make([]map[string]interface{}, 0, len(records))
 	for _, record := range records {
 		items = append(items, map[string]interface{}{
+			"block_id":    tradingAuctionBlockID(record),
 			"source":      record.Source,
 			"block_type":  record.BlockType,
 			"name":        record.Name,
@@ -1766,7 +1770,10 @@ func fetchStockDailyBarRows(model *tdx.CodeModel, adjustMode string) ([]historyB
 	}
 }
 
-func fetchIntradayBarRows(model *tdx.CodeModel, intervalMinutes int) ([]historyBarRow, string, error) {
+func fetchIntradayBarRows(model *tdx.CodeModel, intervalMinutes int, tradingDate time.Time) ([]historyBarRow, string, error) {
+	if rows, ok := loadLocalIntradayBarRows(model.FullCode(), intervalMinutes, tradingDate); ok {
+		return rows, "local_kline", nil
+	}
 	if client == nil {
 		return nil, "", errors.New("TDX client 未初始化")
 	}
@@ -1778,33 +1785,33 @@ func fetchIntradayBarRows(model *tdx.CodeModel, intervalMinutes int) ([]historyB
 	switch intervalMinutes {
 	case 1:
 		if isIndex {
-			resp, err = client.GetIndexAll(protocol.TypeKlineMinute, model.FullCode())
+			resp, err = fetchTDXIndexIntradayRows(protocol.TypeKlineMinute, model.FullCode(), tradingDate)
 		} else {
-			resp, err = client.GetKlineMinuteAll(model.FullCode())
+			resp, err = fetchTDXStockIntradayRows(client.GetKlineMinuteAll, client.GetKlineMinuteUntil, model.FullCode(), tradingDate)
 		}
 	case 5:
 		if isIndex {
-			resp, err = client.GetIndexAll(protocol.TypeKline5Minute, model.FullCode())
+			resp, err = fetchTDXIndexIntradayRows(protocol.TypeKline5Minute, model.FullCode(), tradingDate)
 		} else {
-			resp, err = client.GetKline5MinuteAll(model.FullCode())
+			resp, err = fetchTDXStockIntradayRows(client.GetKline5MinuteAll, client.GetKline5MinuteUntil, model.FullCode(), tradingDate)
 		}
 	case 15:
 		if isIndex {
-			resp, err = client.GetIndexAll(protocol.TypeKline15Minute, model.FullCode())
+			resp, err = fetchTDXIndexIntradayRows(protocol.TypeKline15Minute, model.FullCode(), tradingDate)
 		} else {
-			resp, err = client.GetKline15MinuteAll(model.FullCode())
+			resp, err = fetchTDXStockIntradayRows(client.GetKline15MinuteAll, client.GetKline15MinuteUntil, model.FullCode(), tradingDate)
 		}
 	case 30:
 		if isIndex {
-			resp, err = client.GetIndexAll(protocol.TypeKline30Minute, model.FullCode())
+			resp, err = fetchTDXIndexIntradayRows(protocol.TypeKline30Minute, model.FullCode(), tradingDate)
 		} else {
-			resp, err = client.GetKline30MinuteAll(model.FullCode())
+			resp, err = fetchTDXStockIntradayRows(client.GetKline30MinuteAll, client.GetKline30MinuteUntil, model.FullCode(), tradingDate)
 		}
 	case 60:
 		if isIndex {
-			resp, err = client.GetIndexAll(protocol.TypeKline60Minute, model.FullCode())
+			resp, err = fetchTDXIndexIntradayRows(protocol.TypeKline60Minute, model.FullCode(), tradingDate)
 		} else {
-			resp, err = client.GetKline60MinuteAll(model.FullCode())
+			resp, err = fetchTDXStockIntradayRows(client.GetKline60MinuteAll, client.GetKline60MinuteUntil, model.FullCode(), tradingDate)
 		}
 	default:
 		return nil, "", errors.New("interval_minutes 仅支持 1/5/15/30/60")
@@ -1817,6 +1824,115 @@ func fetchIntradayBarRows(model *tdx.CodeModel, intervalMinutes int) ([]historyB
 		source = "tdx_intraday_index"
 	}
 	return historyRowsFromProtocol(resp.List), source, nil
+}
+
+type tdxIntradayAllFunc func(code string) (*protocol.KlineResp, error)
+type tdxIntradayUntilFunc func(code string, f func(k *protocol.Kline) bool) (*protocol.KlineResp, error)
+
+func fetchTDXStockIntradayRows(all tdxIntradayAllFunc, until tdxIntradayUntilFunc, code string, tradingDate time.Time) (*protocol.KlineResp, error) {
+	if tradingDate.IsZero() {
+		return all(code)
+	}
+	cutoff := tradingDateStart(tradingDate)
+	return until(code, func(k *protocol.Kline) bool {
+		return !k.Time.After(cutoff)
+	})
+}
+
+func fetchTDXIndexIntradayRows(kind uint8, code string, tradingDate time.Time) (*protocol.KlineResp, error) {
+	if tradingDate.IsZero() {
+		return client.GetIndexAll(kind, code)
+	}
+	cutoff := tradingDateStart(tradingDate)
+	return client.GetIndexUntil(kind, code, func(k *protocol.Kline) bool {
+		return !k.Time.After(cutoff)
+	})
+}
+
+func loadLocalIntradayBarRows(fullCode string, intervalMinutes int, tradingDate time.Time) ([]historyBarRow, bool) {
+	if tradingDate.IsZero() || !shouldUseLocalIntradayKline(tradingDate) {
+		return nil, false
+	}
+	table, ok := localIntradayKlineTable(intervalMinutes)
+	if !ok {
+		return nil, false
+	}
+	dbPath := filepath.Join(databaseDir, "kline", strings.ToLower(strings.TrimSpace(fullCode))+".db")
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil, false
+	}
+	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro")
+	if err != nil {
+		return nil, false
+	}
+	defer db.Close()
+
+	start := tradingDateStart(tradingDate)
+	end := start.AddDate(0, 0, 1)
+	query := fmt.Sprintf(`SELECT Date, Open, High, Low, Close, Volume, Amount FROM %s WHERE Code = ? AND Date >= ? AND Date < ? ORDER BY Date`, table)
+	rows, err := db.Query(query, strings.ToLower(strings.TrimSpace(fullCode)), start.Unix(), end.Unix())
+	if err != nil {
+		return nil, false
+	}
+	defer rows.Close()
+
+	out := make([]historyBarRow, 0, 256)
+	for rows.Next() {
+		var (
+			at     int64
+			open   collectorpkg.PriceMilli
+			high   collectorpkg.PriceMilli
+			low    collectorpkg.PriceMilli
+			close  collectorpkg.PriceMilli
+			volume int64
+			amount collectorpkg.PriceMilli
+		)
+		if err := rows.Scan(&at, &open, &high, &low, &close, &volume, &amount); err != nil {
+			return nil, false
+		}
+		out = append(out, historyBarRow{
+			Time:   time.Unix(at, 0),
+			Open:   open.Float64(),
+			High:   high.Float64(),
+			Low:    low.Float64(),
+			Close:  close.Float64(),
+			Volume: volume,
+			Amount: amount.Float64(),
+		})
+	}
+	if err := rows.Err(); err != nil || len(out) == 0 {
+		return nil, false
+	}
+	return out, true
+}
+
+func localIntradayKlineTable(intervalMinutes int) (string, bool) {
+	switch intervalMinutes {
+	case 1:
+		return "MinuteKline", true
+	case 5:
+		return "Minute5Kline", true
+	case 15:
+		return "Minute15Kline", true
+	case 30:
+		return "Minute30Kline", true
+	case 60:
+		return "HourKline", true
+	default:
+		return "", false
+	}
+}
+
+func shouldUseLocalIntradayKline(tradingDate time.Time) bool {
+	target := tradingDateStart(tradingDate)
+	now := time.Now().In(time.Local)
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+	return target.Before(today)
+}
+
+func tradingDateStart(day time.Time) time.Time {
+	local := day.In(time.Local)
+	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, time.Local)
 }
 
 func historyRowsFromProtocol(list []*protocol.Kline) []historyBarRow {
@@ -2081,17 +2197,31 @@ func resolveFullCodeModels(rawCodes []string) ([]*tdx.CodeModel, error) {
 	if len(rawCodes) == 0 {
 		return nil, errors.New("full_codes 为必填参数")
 	}
+	unresolved := make([]string, 0, len(rawCodes))
+	resolved := make([]*tdx.CodeModel, 0, len(rawCodes))
 	for _, rawCode := range rawCodes {
 		if strings.TrimSpace(rawCode) == "" {
 			return nil, errors.New("full_codes 为必填参数")
 		}
+		model, ok, err := lookupCachedFullCodeModel(rawCode)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			resolved = append(resolved, model)
+			continue
+		}
+		unresolved = append(unresolved, rawCode)
 	}
+	if len(unresolved) == 0 {
+		return resolved, nil
+	}
+
 	allModels, err := getAllCodeModels()
 	if err != nil {
 		return nil, fmt.Errorf("获取证券信息失败: %w", err)
 	}
-	resolved := make([]*tdx.CodeModel, 0, len(rawCodes))
-	for _, rawCode := range rawCodes {
+	for _, rawCode := range unresolved {
 		model, err := lookupFullCodeModel(rawCode, allModels)
 		if err != nil {
 			return nil, err
@@ -2102,6 +2232,30 @@ func resolveFullCodeModels(rawCodes []string) ([]*tdx.CodeModel, error) {
 		return nil, errors.New("full_codes 为必填参数")
 	}
 	return resolved, nil
+}
+
+func lookupCachedFullCodeModel(raw string) (*tdx.CodeModel, bool, error) {
+	fullCode := strings.ToLower(strings.TrimSpace(raw))
+	if fullCode == "" {
+		return nil, false, errors.New("full_code 为必填参数")
+	}
+	if bareCode(fullCode) == fullCode {
+		return nil, false, fmt.Errorf("full_code 参数无效，请传完整市场前缀代码，例如 sh600000：%s", raw)
+	}
+	if tdx.DefaultCodes == nil {
+		return nil, false, nil
+	}
+	if model := tdx.DefaultCodes.Get(fullCode); model != nil {
+		copyModel := *model
+		return &copyModel, true, nil
+	}
+	for _, model := range tdx.DefaultCodes.GetIndexModels() {
+		if model != nil && strings.ToLower(model.FullCode()) == fullCode {
+			copyModel := *model
+			return &copyModel, true, nil
+		}
+	}
+	return nil, false, nil
 }
 
 func resolveCodeModels(rawCodes []string) ([]*tdx.CodeModel, error) {

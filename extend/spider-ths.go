@@ -125,13 +125,18 @@ func GetTHSDayKline(code string, _type uint8) ([]*Kline, error) {
 	}
 
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("同花顺日K请求失败: status=%d url=%s", resp.StatusCode, u)
+	}
 	bs, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
 
-	n := bytes.IndexByte(bs, '(')
-	bs = bs[n+1 : len(bs)-1]
+	bs, err = decodeTHSDayKlineJSONP(bs)
+	if err != nil {
+		return nil, err
+	}
 
 	m := map[string]any{}
 	err = json.Unmarshal(bs, &m)
@@ -195,4 +200,12 @@ func GetTHSDayKline(code string, _type uint8) ([]*Kline, error) {
 	}
 
 	return ls, nil
+}
+
+func decodeTHSDayKlineJSONP(bs []byte) ([]byte, error) {
+	n := bytes.IndexByte(bs, '(')
+	if n < 0 || len(bs) <= n+1 || bs[len(bs)-1] != ')' {
+		return nil, fmt.Errorf("同花顺日K响应格式错误")
+	}
+	return bs[n+1 : len(bs)-1], nil
 }

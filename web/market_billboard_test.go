@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	collectorpkg "github.com/injoyai/tdx/collector"
 	"github.com/injoyai/tdx/market/billboard"
 )
 
@@ -152,6 +153,90 @@ func TestHandleMarketBillboardUsesWatermarkWhenDateOmitted(t *testing.T) {
 	}
 	if payload.Data.Freshness.Coverage != billboard.CoverageComplete || payload.Data.Freshness.Watermark != "20260515" {
 		t.Fatalf("unexpected freshness: %#v", payload.Data.Freshness)
+	}
+}
+
+func TestMarketBillboardCoverageUsesExpectedTradeDateWhenDateOmitted(t *testing.T) {
+	store, err := billboard.OpenStore(filepath.Join(t.TempDir(), "market_billboard.db"))
+	if err != nil {
+		t.Fatalf("open billboard store: %v", err)
+	}
+	defer store.Close()
+
+	for _, report := range billboard.CoreReports() {
+		if err := store.UpsertSyncStatus(billboard.SyncStatusRecord{
+			TradeDate:   "20260515",
+			ReportName:  report,
+			Status:      billboard.SyncStatusPassed,
+			StartedAt:   time.Now(),
+			CompletedAt: time.Now(),
+		}); err != nil {
+			t.Fatalf("upsert status: %v", err)
+		}
+	}
+
+	freshness, err := marketBillboardCoverageForExpectedDate(store, "", "", billboard.CoreReports(), "20260522")
+	if err != nil {
+		t.Fatalf("coverage: %v", err)
+	}
+	if freshness.Status != "stale" || freshness.Coverage != billboard.CoverageMissing {
+		t.Fatalf("freshness = %#v, want stale missing", freshness)
+	}
+	if freshness.Watermark != "20260515" || freshness.ExpectedTradeDate != "20260522" {
+		t.Fatalf("freshness = %#v, want actual watermark and expected trade date", freshness)
+	}
+	if freshness.QueryStartDate != "20260522" || freshness.QueryEndDate != "20260522" {
+		t.Fatalf("freshness = %#v, want query range pinned to expected trade date", freshness)
+	}
+}
+
+func TestProjectMarketBillboardGovernanceDomainMarksLaggingWatermarkStale(t *testing.T) {
+	originalBillboardStore := marketBillboardStore
+	originalGovernanceStore := governanceStore
+	defer func() {
+		marketBillboardStore = originalBillboardStore
+		governanceStore = originalGovernanceStore
+	}()
+
+	tmp := t.TempDir()
+	billboardStore, err := billboard.OpenStore(filepath.Join(tmp, "market_billboard.db"))
+	if err != nil {
+		t.Fatalf("open billboard store: %v", err)
+	}
+	defer billboardStore.Close()
+	govStore, err := collectorpkg.OpenGovernanceStore(filepath.Join(tmp, "governance.db"))
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	defer govStore.Close()
+	marketBillboardStore = billboardStore
+	governanceStore = govStore
+
+	if err := billboardStore.UpsertSyncStatus(billboard.SyncStatusRecord{
+		TradeDate:   "20260515",
+		ReportName:  billboard.ReportTradeAll,
+		Status:      billboard.SyncStatusPassed,
+		StartedAt:   time.Now(),
+		CompletedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("upsert status: %v", err)
+	}
+
+	if err := projectMarketBillboardGovernanceDomainForExpectedDate("20260522"); err != nil {
+		t.Fatalf("project domain: %v", err)
+	}
+	snapshot, err := govStore.GetDomainHealthSnapshot(billboard.DomainMarketBillboard)
+	if err != nil {
+		t.Fatalf("get snapshot: %v", err)
+	}
+	if snapshot == nil {
+		t.Fatalf("snapshot missing")
+	}
+	if snapshot.Status != "degraded" || snapshot.Freshness != "stale" || snapshot.Coverage != billboard.CoverageMissing {
+		t.Fatalf("snapshot = %+v, want degraded stale missing", snapshot)
+	}
+	if snapshot.LatestWatermark != "20260515" {
+		t.Fatalf("snapshot watermark = %q, want 20260515", snapshot.LatestWatermark)
 	}
 }
 

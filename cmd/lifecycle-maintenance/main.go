@@ -112,7 +112,7 @@ func parseConfig(args []string, stderr io.Writer) (cliConfig, error) {
 		MaxCandidates:       envInt("TDX_LIFECYCLE_MAX_CANDIDATES", 400),
 		MaxArchiveDays:      envInt("TDX_LIFECYCLE_MAX_ARCHIVE_DAYS", 366),
 		MaxInventoryFiles:   envInt("TDX_LIFECYCLE_MAX_INVENTORY_FILES", 0),
-		CandidateSort:       envString("TDX_LIFECYCLE_CANDIDATE_SORT", "size_asc"),
+		CandidateSort:       envString("TDX_LIFECYCLE_CANDIDATE_SORT", "size_desc"),
 		MinFreeBytes:        envInt64("TDX_LIFECYCLE_MIN_FREE_BYTES", defaultMinFreeBytes),
 		SafetyMarginBytes:   envInt64("TDX_LIFECYCLE_SAFETY_MARGIN_BYTES", defaultSafetyBytes),
 		RuntimeBudget:       envDuration("TDX_LIFECYCLE_RUNTIME_BUDGET", 30*time.Minute),

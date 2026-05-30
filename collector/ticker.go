@@ -46,6 +46,55 @@ type StockTick struct {
 	IsLimitDown bool    `json:"is_limit_down"`
 }
 
+type MarketScreenOptions struct {
+	SortBy          string
+	Order           string
+	Filter          string
+	AssetType       string
+	Limit           int
+	Offset          int
+	ExcludeST       bool
+	MinChangePct    float64
+	MaxChangePct    float64
+	HasMinChangePct bool
+	HasMaxChangePct bool
+}
+
+type MarketScreenResult struct {
+	Ticks      []StockTick
+	Total      int
+	FilterNote string
+}
+
+type LimitUpStats struct {
+	Total         int `json:"total"`
+	OneLine       int `json:"one_line"`
+	TBoard        int `json:"t_board"`
+	TurnoverBoard int `json:"turnover_board"`
+	Broken        int `json:"broken"`
+	FloorSky      int `json:"floor_sky"`
+}
+
+type LimitDownStats struct {
+	Total         int `json:"total"`
+	OneLine       int `json:"one_line"`
+	TBoard        int `json:"t_board"`
+	TurnoverBoard int `json:"turnover_board"`
+	Broken        int `json:"broken"`
+	SkyFloor      int `json:"sky_floor"`
+}
+
+type LimitStats struct {
+	LimitUp   LimitUpStats   `json:"limit_up"`
+	LimitDown LimitDownStats `json:"limit_down"`
+}
+
+type LimitStatsBreakdown struct {
+	All   LimitStats `json:"all"`
+	NonST LimitStats `json:"non_st"`
+	ST    LimitStats `json:"st"`
+}
+
 // AssetOverview aggregates breadth-style metrics for one asset bucket.
 type AssetOverview struct {
 	Total       int     `json:"total"`
@@ -194,6 +243,18 @@ func (t *TickerService) GetAllStocks() []StockTick {
 	return out
 }
 
+func (t *TickerService) GetLimitStats() LimitStats {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return computeLimitStats(t.cache.stocks)
+}
+
+func (t *TickerService) GetLimitStatsBreakdown() LimitStatsBreakdown {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return computeLimitStatsBreakdown(t.cache.stocks)
+}
+
 // GetLimitUpPublic returns limit-up tracking for a stock code.
 func (t *TickerService) GetLimitUpPublic(code string) *LimitSidePublic {
 	t.mu.RLock()
@@ -307,14 +368,26 @@ func (t *TickerService) UpdatedAt() time.Time {
 // MarketScreen returns sorted ticks after asset_type and optional limit-up/down filter.
 // filterNote is non-empty when filter forces stock-only semantics.
 func (t *TickerService) MarketScreen(sortBy, order, filter, assetType string, limit int) ([]StockTick, string) {
-	if limit <= 0 {
-		limit = 50
+	result := t.MarketScreenWithOptions(MarketScreenOptions{
+		SortBy:    sortBy,
+		Order:     order,
+		Filter:    filter,
+		AssetType: assetType,
+		Limit:     limit,
+	})
+	return result.Ticks, result.FilterNote
+}
+
+func (t *TickerService) MarketScreenWithOptions(opts MarketScreenOptions) MarketScreenResult {
+	limit := normalizeMarketScreenLimit(opts.Limit)
+	offset := opts.Offset
+	if offset < 0 {
+		offset = 0
 	}
-	if limit > 200 {
-		limit = 200
-	}
+
 	filterNote := ""
-	if filter == "limit_up" || filter == "limit_down" {
+	assetType := opts.AssetType
+	if opts.Filter == "limit_up" || opts.Filter == "limit_down" {
 		assetType = "stock"
 		filterNote = "涨跌停筛选仅适用于股票"
 	}
@@ -325,6 +398,12 @@ func (t *TickerService) MarketScreen(sortBy, order, filter, assetType string, li
 	list := make([]StockTick, 0, len(t.cache.stocks))
 	for _, v := range t.cache.stocks {
 		if v == nil {
+			continue
+		}
+		if opts.ExcludeST && isSTStock(v.Name) {
+			continue
+		}
+		if !marketScreenMatchesChangePct(v.PctChange, opts) {
 			continue
 		}
 		switch assetType {
@@ -341,7 +420,7 @@ func (t *TickerService) MarketScreen(sortBy, order, filter, assetType string, li
 				continue
 			}
 		}
-		switch filter {
+		switch opts.Filter {
 		case "limit_up":
 			if !v.IsLimitUp {
 				continue
@@ -354,14 +433,40 @@ func (t *TickerService) MarketScreen(sortBy, order, filter, assetType string, li
 		list = append(list, *v)
 	}
 
+	sortBy := opts.SortBy
 	if sortBy == "change_pct" || sortBy == "" {
 		sortBy = "pct_change"
 	}
-	sortStockTicks(list, sortBy, order)
-	if len(list) > limit {
-		list = list[:limit]
+	sortStockTicks(list, sortBy, opts.Order)
+	total := len(list)
+	if offset >= total {
+		return MarketScreenResult{Ticks: []StockTick{}, Total: total, FilterNote: filterNote}
 	}
-	return list, filterNote
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	return MarketScreenResult{Ticks: list[offset:end], Total: total, FilterNote: filterNote}
+}
+
+func marketScreenMatchesChangePct(pct float64, opts MarketScreenOptions) bool {
+	if opts.HasMinChangePct && pct < opts.MinChangePct {
+		return false
+	}
+	if opts.HasMaxChangePct && pct > opts.MaxChangePct {
+		return false
+	}
+	return true
+}
+
+func normalizeMarketScreenLimit(limit int) int {
+	if limit <= 0 {
+		return 50
+	}
+	if limit > 200 {
+		return 200
+	}
+	return limit
 }
 
 func (t *TickerService) loop(ctx context.Context, allCodes []string, nameResolver func(string) string) {
@@ -601,6 +706,110 @@ func computeMarketOverview(stocks map[string]*StockTick) MarketOverview {
 		ov.ByExchange[k] = v
 	}
 	return ov
+}
+
+func computeLimitStats(stocks map[string]*StockTick) LimitStats {
+	return computeLimitStatsBreakdown(stocks).All
+}
+
+func ComputeLimitStatsBreakdown(ticks []StockTick) LimitStatsBreakdown {
+	stocks := make(map[string]*StockTick, len(ticks))
+	for i := range ticks {
+		stocks[ticks[i].Code] = &ticks[i]
+	}
+	return computeLimitStatsBreakdown(stocks)
+}
+
+func computeLimitStatsBreakdown(stocks map[string]*StockTick) LimitStatsBreakdown {
+	var stats LimitStatsBreakdown
+	for _, tick := range stocks {
+		if tick == nil || tick.AssetType != string(AssetTypeStock) || tick.PreClose <= 0 {
+			continue
+		}
+		addLimitStatsTick(&stats.All, tick)
+		if isSTStock(tick.Name) {
+			addLimitStatsTick(&stats.ST, tick)
+		} else {
+			addLimitStatsTick(&stats.NonST, tick)
+		}
+	}
+	return stats
+}
+
+func addLimitStatsTick(stats *LimitStats, tick *StockTick) {
+	upTouched := priceTouchesLimitUp(tick.High, tick.PreClose, tick.Code, tick.Name)
+	downTouched := priceTouchesLimitDown(tick.Low, tick.PreClose, tick.Code, tick.Name)
+	if upTouched && !tick.IsLimitUp {
+		stats.LimitUp.Broken++
+	}
+	if downTouched && !tick.IsLimitDown {
+		stats.LimitDown.Broken++
+	}
+
+	if tick.IsLimitUp {
+		stats.LimitUp.Total++
+		if downTouched {
+			stats.LimitUp.TurnoverBoard++
+			stats.LimitUp.FloorSky++
+		} else if limitUpOneLine(tick) {
+			stats.LimitUp.OneLine++
+		} else if limitUpTBoard(tick) {
+			stats.LimitUp.TBoard++
+		} else {
+			stats.LimitUp.TurnoverBoard++
+		}
+	}
+	if tick.IsLimitDown {
+		stats.LimitDown.Total++
+		if upTouched {
+			stats.LimitDown.TurnoverBoard++
+			stats.LimitDown.SkyFloor++
+		} else if limitDownOneLine(tick) {
+			stats.LimitDown.OneLine++
+		} else if limitDownTBoard(tick) {
+			stats.LimitDown.TBoard++
+		} else {
+			stats.LimitDown.TurnoverBoard++
+		}
+	}
+}
+
+func limitUpOneLine(tick *StockTick) bool {
+	return priceTouchesLimitUp(tick.Open, tick.PreClose, tick.Code, tick.Name) &&
+		priceTouchesLimitUp(tick.High, tick.PreClose, tick.Code, tick.Name) &&
+		priceTouchesLimitUp(tick.Low, tick.PreClose, tick.Code, tick.Name)
+}
+
+func limitUpTBoard(tick *StockTick) bool {
+	return priceTouchesLimitUp(tick.Open, tick.PreClose, tick.Code, tick.Name) &&
+		priceTouchesLimitUp(tick.High, tick.PreClose, tick.Code, tick.Name) &&
+		!priceTouchesLimitUp(tick.Low, tick.PreClose, tick.Code, tick.Name)
+}
+
+func limitDownOneLine(tick *StockTick) bool {
+	return priceTouchesLimitDown(tick.Open, tick.PreClose, tick.Code, tick.Name) &&
+		priceTouchesLimitDown(tick.High, tick.PreClose, tick.Code, tick.Name) &&
+		priceTouchesLimitDown(tick.Low, tick.PreClose, tick.Code, tick.Name)
+}
+
+func limitDownTBoard(tick *StockTick) bool {
+	return priceTouchesLimitDown(tick.Open, tick.PreClose, tick.Code, tick.Name) &&
+		priceTouchesLimitDown(tick.Low, tick.PreClose, tick.Code, tick.Name) &&
+		!priceTouchesLimitDown(tick.High, tick.PreClose, tick.Code, tick.Name)
+}
+
+func priceTouchesLimitUp(price, preClose float64, code, name string) bool {
+	if price <= 0 || preClose <= 0 {
+		return false
+	}
+	return (price-preClose)/preClose*100 >= limitThreshold(code, name)-0.05
+}
+
+func priceTouchesLimitDown(price, preClose float64, code, name string) bool {
+	if price <= 0 || preClose <= 0 {
+		return false
+	}
+	return (price-preClose)/preClose*100 <= -(limitThreshold(code, name) - 0.05)
 }
 
 func (t *TickerService) batchFetchQuotes(ctx context.Context, codes []string) ([]QuoteSnapshot, error) {

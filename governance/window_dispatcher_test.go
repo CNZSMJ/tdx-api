@@ -363,6 +363,169 @@ func TestWindowDispatcherDoesNotRunWindowWhenDependencyTerminalFailed(t *testing
 	}
 }
 
+func TestWindowDispatcherRunsIndependentWindowAfterBlockedDependency(t *testing.T) {
+	paths := collectorpkg.ResolveGovernancePaths(t.TempDir())
+	store, err := collectorpkg.OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 5, 25, 1, 0, 0, 0, time.Local)
+	targetWindow := "20260521,20260522"
+	closeKey := collectorpkg.GovernanceWindowKey(collectorpkg.GovernanceJobDailyCloseSync, targetWindow)
+	auditKey := collectorpkg.GovernanceWindowKey(collectorpkg.GovernanceJobDailyAudit, targetWindow)
+	billboardKey := collectorpkg.GovernanceWindowKey(collectorpkg.GovernanceJobMarketBillboardSync, targetWindow)
+	for _, window := range []collectorpkg.GovernanceWindowRecord{
+		{
+			WindowKey:    closeKey,
+			JobName:      string(collectorpkg.GovernanceJobDailyCloseSync),
+			TargetWindow: targetWindow,
+			DueAt:        now.Add(-3 * time.Hour),
+			Priority:     3,
+			Status:       collectorpkg.GovernanceWindowStatusTerminalFailed,
+			LastError:    context.DeadlineExceeded.Error(),
+		},
+		{
+			WindowKey:     auditKey,
+			JobName:       string(collectorpkg.GovernanceJobDailyAudit),
+			TargetWindow:  targetWindow,
+			DueAt:         now.Add(-2 * time.Hour),
+			Priority:      4,
+			Status:        collectorpkg.GovernanceWindowStatusQueued,
+			DependencyKey: closeKey,
+			EnqueuedAt:    now.Add(-2 * time.Hour),
+		},
+		{
+			WindowKey:    billboardKey,
+			JobName:      string(collectorpkg.GovernanceJobMarketBillboardSync),
+			TargetWindow: targetWindow,
+			DueAt:        now.Add(-time.Hour),
+			Priority:     6,
+			Status:       collectorpkg.GovernanceWindowStatusQueued,
+			EnqueuedAt:   now.Add(-time.Hour),
+		},
+	} {
+		window := window
+		if err := store.UpsertWindow(&window); err != nil {
+			t.Fatalf("seed window %s: %v", window.WindowKey, err)
+		}
+	}
+
+	var executed []string
+	dispatcher := NewWindowDispatcher(WindowDispatcherConfig{
+		Store: store,
+		Now: func() time.Time {
+			return now
+		},
+		Owner: "test-dispatcher",
+		Execute: func(ctx context.Context, window collectorpkg.GovernanceWindowRecord) (WindowExecutionResult, error) {
+			executed = append(executed, window.WindowKey)
+			return WindowExecutionResult{Status: collectorpkg.GovernanceWindowStatusPassed, Summary: "ok"}, nil
+		},
+	})
+
+	ran, err := dispatcher.RunNext(context.Background())
+	if err != nil {
+		t.Fatalf("run next: %v", err)
+	}
+	if !ran {
+		t.Fatalf("dispatcher did not run an independent eligible window")
+	}
+	if len(executed) != 1 || executed[0] != billboardKey {
+		t.Fatalf("executed = %+v, want [%s]", executed, billboardKey)
+	}
+	audit, err := store.GetWindowByKey(auditKey)
+	if err != nil {
+		t.Fatalf("get audit window: %v", err)
+	}
+	if audit == nil || audit.Status != collectorpkg.GovernanceWindowStatusWaitingDependency {
+		t.Fatalf("audit window = %+v, want waiting_dependency", audit)
+	}
+	billboard, err := store.GetWindowByKey(billboardKey)
+	if err != nil {
+		t.Fatalf("get billboard window: %v", err)
+	}
+	if billboard == nil || billboard.Status != collectorpkg.GovernanceWindowStatusPassed {
+		t.Fatalf("billboard window = %+v, want passed", billboard)
+	}
+}
+
+func TestWindowDispatcherSkipsRetryExhaustedWindowAndRunsIndependentWindow(t *testing.T) {
+	paths := collectorpkg.ResolveGovernancePaths(t.TempDir())
+	store, err := collectorpkg.OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 5, 25, 1, 30, 0, 0, time.Local)
+	closeKey := collectorpkg.GovernanceWindowKey(collectorpkg.GovernanceJobDailyCloseSync, "20260427,20260428")
+	billboardKey := collectorpkg.GovernanceWindowKey(collectorpkg.GovernanceJobMarketBillboardSync, "20260521,20260522")
+	for _, window := range []collectorpkg.GovernanceWindowRecord{
+		{
+			WindowKey:     closeKey,
+			JobName:       string(collectorpkg.GovernanceJobDailyCloseSync),
+			TargetWindow:  "20260427,20260428",
+			DueAt:         now.Add(-7 * 24 * time.Hour),
+			Priority:      3,
+			Status:        collectorpkg.GovernanceWindowStatusQueued,
+			Attempts:      3,
+			LastError:     "context deadline exceeded",
+			ResultSummary: "durable run ended with status=interrupted; dependency state allows replay",
+			EnqueuedAt:    now.Add(-7 * 24 * time.Hour),
+		},
+		{
+			WindowKey:    billboardKey,
+			JobName:      string(collectorpkg.GovernanceJobMarketBillboardSync),
+			TargetWindow: "20260521,20260522",
+			DueAt:        now.Add(-time.Hour),
+			Priority:     6,
+			Status:       collectorpkg.GovernanceWindowStatusQueued,
+			EnqueuedAt:   now.Add(-time.Hour),
+		},
+	} {
+		window := window
+		if err := store.UpsertWindow(&window); err != nil {
+			t.Fatalf("seed window %s: %v", window.WindowKey, err)
+		}
+	}
+
+	var executed []string
+	dispatcher := NewWindowDispatcher(WindowDispatcherConfig{
+		Store: store,
+		Now: func() time.Time {
+			return now
+		},
+		Owner: "test-dispatcher",
+		Execute: func(ctx context.Context, window collectorpkg.GovernanceWindowRecord) (WindowExecutionResult, error) {
+			executed = append(executed, window.WindowKey)
+			return WindowExecutionResult{Status: collectorpkg.GovernanceWindowStatusPassed, Summary: "ok"}, nil
+		},
+	})
+
+	ran, err := dispatcher.RunNext(context.Background())
+	if err != nil {
+		t.Fatalf("run next: %v", err)
+	}
+	if !ran {
+		t.Fatalf("dispatcher did not run an independent eligible window")
+	}
+	if len(executed) != 1 || executed[0] != billboardKey {
+		t.Fatalf("executed = %+v, want [%s]", executed, billboardKey)
+	}
+	closeWindow, err := store.GetWindowByKey(closeKey)
+	if err != nil {
+		t.Fatalf("get close window: %v", err)
+	}
+	if closeWindow == nil || closeWindow.Status != collectorpkg.GovernanceWindowStatusTerminalFailed {
+		t.Fatalf("close window = %+v, want terminal_failed", closeWindow)
+	}
+	if closeWindow.LastError != "retry budget exhausted after 3 attempts: context deadline exceeded" {
+		t.Fatalf("close last error = %q", closeWindow.LastError)
+	}
+}
+
 func TestWindowDispatcherExpiresStaleRunningWindowAfterRunInterrupted(t *testing.T) {
 	paths := collectorpkg.ResolveGovernancePaths(t.TempDir())
 	store, err := collectorpkg.OpenGovernanceStore(paths.DBPath)

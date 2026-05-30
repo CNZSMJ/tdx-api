@@ -123,6 +123,41 @@ func TestHandleMarketScreenExactTradingDateDoesNotFallback(t *testing.T) {
 	}
 }
 
+func TestMarketScreenCloseTicksUsesMaterializedSnapshot(t *testing.T) {
+	originalDir := databaseDir
+	defer func() {
+		databaseDir = originalDir
+	}()
+
+	tmp := t.TempDir()
+	databaseDir = tmp
+
+	mustCreateMarketScreenCodesDB(t, filepath.Join(tmp, "codes.db"))
+	mustCreateMarketScreenKlineDB(t, filepath.Join(tmp, "kline", "sh600000.db"), "sh600000", []marketScreenKlineFixture{
+		{At: time.Date(2026, 4, 28, 15, 0, 0, 0, time.Local), Open: 9300, High: 9400, Low: 9200, Close: 9300, Volume: 100, Amount: 930000},
+		{At: time.Date(2026, 4, 29, 15, 0, 0, 0, time.Local), Open: 9300, High: 9500, Low: 9300, Close: 9500, Volume: 200, Amount: 1900000},
+	})
+
+	ticks, tradingDate, ok := loadMarketScreenCloseTicks(string(collectorpkg.AssetTypeStock), "20260429")
+	if !ok || len(ticks) != 1 || tradingDate != "20260429" {
+		t.Fatalf("first load = len %d date %q ok %v", len(ticks), tradingDate, ok)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "market_snapshot.db")); err != nil {
+		t.Fatalf("expected materialized snapshot db: %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join(tmp, "kline")); err != nil {
+		t.Fatalf("remove kline dir: %v", err)
+	}
+
+	ticks, tradingDate, ok = loadMarketScreenCloseTicks(string(collectorpkg.AssetTypeStock), "20260429")
+	if !ok || len(ticks) != 1 || tradingDate != "20260429" {
+		t.Fatalf("materialized load = len %d date %q ok %v", len(ticks), tradingDate, ok)
+	}
+	if ticks[0].Code != "sh600000" || ticks[0].Last != 9.5 {
+		t.Fatalf("materialized tick = %#v", ticks[0])
+	}
+}
+
 func TestMarketScreenUsesTodayTickerBeforeDailyKline(t *testing.T) {
 	originalNow := marketScreenNow
 	defer func() {
@@ -173,6 +208,145 @@ func TestMarketScreenUsesTodayTickerBeforeDailyKline(t *testing.T) {
 	}
 }
 
+func TestMarketScreenTickerPaginationReturnsMetadata(t *testing.T) {
+	originalNow := marketScreenNow
+	defer func() {
+		marketScreenNow = originalNow
+	}()
+	marketScreenNow = func() time.Time {
+		return time.Date(2026, 4, 29, 10, 0, 0, 0, time.Local)
+	}
+
+	ts := collectorpkg.NewTickerService(&marketScreenQuoteProvider{quotes: []collectorpkg.QuoteSnapshot{
+		marketScreenTestQuote("sh600000", "浦发银行", 13000),
+		marketScreenTestQuote("sz000001", "平安银行", 12000),
+		marketScreenTestQuote("sz000002", "万科A", 11000),
+	}}, nil, collectorpkg.TickerConfig{
+		Interval: time.Hour,
+		Now:      marketScreenNow,
+	})
+	ts.Start([]string{"sh600000", "sz000001", "sz000002"}, nil)
+	defer ts.Stop()
+	waitForMarketScreenTicker(t, ts)
+
+	req, err := parseMarketScreenRequest(httptest.NewRequest(http.MethodGet, "/api/market/screen?limit=2&page=2", nil))
+	if err != nil {
+		t.Fatalf("parse request: %v", err)
+	}
+	resp, ok := buildMarketScreenTickerResponse(req, ts)
+	if !ok {
+		t.Fatalf("ticker response not selected for current trading day")
+	}
+	if resp["count"] != 1 {
+		t.Fatalf("count = %v, want page count 1; resp=%#v", resp["count"], resp)
+	}
+	if resp["total"] != 3 {
+		t.Fatalf("total = %v, want 3; resp=%#v", resp["total"], resp)
+	}
+	if resp["page"] != 2 || resp["page_size"] != 2 || resp["total_pages"] != 2 {
+		t.Fatalf("pagination metadata mismatch: %#v", resp)
+	}
+	if resp["has_next"] != false || resp["has_prev"] != true {
+		t.Fatalf("pagination booleans mismatch: %#v", resp)
+	}
+	list := resp["list"].([]map[string]interface{})
+	if list[0]["code"] != "sz000002" {
+		t.Fatalf("second page first code = %v, want sz000002", list[0]["code"])
+	}
+}
+
+func TestMarketScreenTickerExcludeST(t *testing.T) {
+	originalNow := marketScreenNow
+	defer func() {
+		marketScreenNow = originalNow
+	}()
+	marketScreenNow = func() time.Time {
+		return time.Date(2026, 4, 29, 10, 0, 0, 0, time.Local)
+	}
+
+	ts := collectorpkg.NewTickerService(&marketScreenQuoteProvider{quotes: []collectorpkg.QuoteSnapshot{
+		marketScreenTestQuote("sh600000", "ST测试", 13000),
+		marketScreenTestQuote("sz000001", "平安银行", 12000),
+	}}, nil, collectorpkg.TickerConfig{
+		Interval: time.Hour,
+		Now:      marketScreenNow,
+	})
+	ts.Start([]string{"sh600000", "sz000001"}, nil)
+	defer ts.Stop()
+	waitForMarketScreenTicker(t, ts)
+
+	req, err := parseMarketScreenRequest(httptest.NewRequest(http.MethodGet, "/api/market/screen?exclude_st=true&limit=10", nil))
+	if err != nil {
+		t.Fatalf("parse request: %v", err)
+	}
+	resp, ok := buildMarketScreenTickerResponse(req, ts)
+	if !ok {
+		t.Fatalf("ticker response not selected for current trading day")
+	}
+	if resp["count"] != 1 || resp["total"] != 1 {
+		t.Fatalf("count/total = %v/%v, want 1/1; resp=%#v", resp["count"], resp["total"], resp)
+	}
+	list := resp["list"].([]map[string]interface{})
+	if list[0]["code"] != "sz000001" {
+		t.Fatalf("remaining code = %v, want sz000001", list[0]["code"])
+	}
+}
+
+func TestMarketScreenTickerFiltersChangePctRange(t *testing.T) {
+	originalNow := marketScreenNow
+	defer func() {
+		marketScreenNow = originalNow
+	}()
+	marketScreenNow = func() time.Time {
+		return time.Date(2026, 4, 29, 10, 0, 0, 0, time.Local)
+	}
+
+	ts := collectorpkg.NewTickerService(&marketScreenQuoteProvider{quotes: []collectorpkg.QuoteSnapshot{
+		marketScreenTestQuote("sh600000", "浦发银行", 13000),
+		marketScreenTestQuote("sz000001", "平安银行", 12000),
+		marketScreenTestQuote("sz000002", "万科A", 11000),
+		marketScreenTestQuote("sz000003", "回撤测试", 9400),
+	}}, nil, collectorpkg.TickerConfig{
+		Interval: time.Hour,
+		Now:      marketScreenNow,
+	})
+	ts.Start([]string{"sh600000", "sz000001", "sz000002", "sz000003"}, nil)
+	defer ts.Stop()
+	waitForMarketScreenTicker(t, ts)
+
+	req, err := parseMarketScreenRequest(httptest.NewRequest(http.MethodGet, "/api/market/screen?min_change_pct=15&max_change_pct=25&limit=10", nil))
+	if err != nil {
+		t.Fatalf("parse request: %v", err)
+	}
+	resp, ok := buildMarketScreenTickerResponse(req, ts)
+	if !ok {
+		t.Fatalf("ticker response not selected for current trading day")
+	}
+	if resp["count"] != 1 || resp["total"] != 1 {
+		t.Fatalf("count/total = %v/%v, want 1/1; resp=%#v", resp["count"], resp["total"], resp)
+	}
+	list := resp["list"].([]map[string]interface{})
+	if list[0]["code"] != "sz000001" {
+		t.Fatalf("range filter code = %v, want sz000001", list[0]["code"])
+	}
+
+	req, err = parseMarketScreenRequest(httptest.NewRequest(http.MethodGet, "/api/market/screen?max_change_pct=-5&limit=10", nil))
+	if err != nil {
+		t.Fatalf("parse request: %v", err)
+	}
+	resp, ok = buildMarketScreenTickerResponse(req, ts)
+	if !ok {
+		t.Fatalf("ticker response not selected for current trading day")
+	}
+	if resp["count"] != 1 || resp["total"] != 1 {
+		t.Fatalf("downside count/total = %v/%v, want 1/1; resp=%#v", resp["count"], resp["total"], resp)
+	}
+	list = resp["list"].([]map[string]interface{})
+	if list[0]["code"] != "sz000003" {
+		t.Fatalf("downside filter code = %v, want sz000003", list[0]["code"])
+	}
+}
+
 func TestMarketScreenLimitThresholdTreatsBJStocksAs30Percent(t *testing.T) {
 	if got := marketScreenLimitThreshold("bj920725", "族兴新材"); got != 30 {
 		t.Fatalf("marketScreenLimitThreshold(bj920725) = %v, want 30", got)
@@ -220,7 +394,7 @@ func TestMarketScreenQuoteSnapshotUsesQuotePrevClose(t *testing.T) {
 		}, nil
 	}
 
-	ticks, _, ok := loadMarketScreenQuoteSnapshot(marketScreenRequest{
+	ticks, _, _, ok := loadMarketScreenQuoteSnapshot(marketScreenRequest{
 		sortBy:    "change_pct",
 		order:     "asc",
 		assetType: string(collectorpkg.AssetTypeStock),
@@ -236,7 +410,7 @@ func TestMarketScreenQuoteSnapshotUsesQuotePrevClose(t *testing.T) {
 		t.Fatalf("quote snapshot marked limit down: %#v", ticks[0])
 	}
 
-	_, _, ok = loadMarketScreenQuoteSnapshot(marketScreenRequest{
+	_, _, _, ok = loadMarketScreenQuoteSnapshot(marketScreenRequest{
 		filter:    "limit_down",
 		sortBy:    "change_pct",
 		order:     "asc",
@@ -327,6 +501,307 @@ func TestMarketStatsUsesTodayTickerBeforeDailyKline(t *testing.T) {
 	stock := summary["stock"].(map[string]interface{})
 	if stock["total"] != 1 {
 		t.Fatalf("stock.total = %v, want 1; resp=%#v", stock["total"], resp)
+	}
+}
+
+func TestMarketLimitStatsClassifiesLimitBoards(t *testing.T) {
+	originalNow := marketScreenNow
+	defer func() {
+		marketScreenNow = originalNow
+	}()
+	marketScreenNow = func() time.Time {
+		return time.Date(2026, 4, 29, 10, 0, 0, 0, time.Local)
+	}
+
+	quotes := []collectorpkg.QuoteSnapshot{
+		marketScreenTestQuoteOHLC("sh600010", "一字涨停", 11000, 11000, 11000, 11000),
+		marketScreenTestQuoteOHLC("sh600011", "T字涨停", 11000, 11000, 10000, 11000),
+		marketScreenTestQuoteOHLC("sh600012", "换手涨停", 10000, 11000, 10000, 11000),
+		marketScreenTestQuoteOHLC("sh600013", "地天板", 9000, 11000, 9000, 11000),
+		marketScreenTestQuoteOHLC("sh600014", "涨停炸板", 10000, 11000, 10000, 10500),
+		marketScreenTestQuoteOHLC("sh600015", "一字跌停", 9000, 9000, 9000, 9000),
+		marketScreenTestQuoteOHLC("sh600016", "倒T跌停", 9000, 10000, 9000, 9000),
+		marketScreenTestQuoteOHLC("sh600017", "换手跌停", 10000, 10000, 9000, 9000),
+		marketScreenTestQuoteOHLC("sh600018", "天地板", 11000, 11000, 9000, 9000),
+		marketScreenTestQuoteOHLC("sh600019", "跌停撬板", 10000, 10000, 9000, 9500),
+		marketScreenTestQuoteOHLC("sh600020", "ST涨停", 10500, 10500, 10500, 10500),
+		marketScreenTestQuoteOHLC("sh600021", "ST跌停", 9500, 9500, 9500, 9500),
+	}
+	ts := collectorpkg.NewTickerService(&marketScreenQuoteProvider{quotes: quotes}, nil, collectorpkg.TickerConfig{
+		Interval: time.Hour,
+		Now:      marketScreenNow,
+	})
+	ts.Start([]string{
+		"sh600010", "sh600011", "sh600012", "sh600013", "sh600014",
+		"sh600015", "sh600016", "sh600017", "sh600018", "sh600019",
+		"sh600020", "sh600021",
+	}, nil)
+	defer ts.Stop()
+	waitForMarketScreenTicker(t, ts)
+
+	resp, ok := buildMarketLimitStatsTickerResponse(marketLimitStatsRequest{}, ts)
+	if !ok {
+		t.Fatalf("ticker limit-stats response not selected")
+	}
+	limitUp := resp["limit_up"].(map[string]interface{})
+	if limitUp["total"] != 5 || limitUp["one_line"] != 2 || limitUp["t_board"] != 1 || limitUp["turnover_board"] != 2 {
+		t.Fatalf("limit_up classification mismatch: %#v", limitUp)
+	}
+	if limitUp["floor_sky"] != 1 || limitUp["broken"] != 2 {
+		t.Fatalf("limit_up event mismatch: %#v", limitUp)
+	}
+	limitDown := resp["limit_down"].(map[string]interface{})
+	if limitDown["total"] != 5 || limitDown["one_line"] != 2 || limitDown["t_board"] != 1 || limitDown["turnover_board"] != 2 {
+		t.Fatalf("limit_down classification mismatch: %#v", limitDown)
+	}
+	if limitDown["sky_floor"] != 1 || limitDown["broken"] != 2 {
+		t.Fatalf("limit_down event mismatch: %#v", limitDown)
+	}
+	byStockClass, ok := resp["by_stock_class"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("by_stock_class missing: %#v", resp)
+	}
+	nonST := byStockClass["non_st"].(map[string]interface{})
+	nonSTLimitUp := nonST["limit_up"].(map[string]interface{})
+	if nonSTLimitUp["total"] != 4 || nonSTLimitUp["one_line"] != 1 || nonSTLimitUp["turnover_board"] != 2 {
+		t.Fatalf("non_st.limit_up mismatch: %#v", nonSTLimitUp)
+	}
+	nonSTLimitDown := nonST["limit_down"].(map[string]interface{})
+	if nonSTLimitDown["total"] != 4 || nonSTLimitDown["one_line"] != 1 || nonSTLimitDown["turnover_board"] != 2 {
+		t.Fatalf("non_st.limit_down mismatch: %#v", nonSTLimitDown)
+	}
+	st := byStockClass["st"].(map[string]interface{})
+	stLimitUp := st["limit_up"].(map[string]interface{})
+	if stLimitUp["total"] != 1 || stLimitUp["one_line"] != 1 || stLimitUp["turnover_board"] != 0 {
+		t.Fatalf("st.limit_up mismatch: %#v", stLimitUp)
+	}
+	stLimitDown := st["limit_down"].(map[string]interface{})
+	if stLimitDown["total"] != 1 || stLimitDown["one_line"] != 1 || stLimitDown["turnover_board"] != 0 {
+		t.Fatalf("st.limit_down mismatch: %#v", stLimitDown)
+	}
+}
+
+func TestMarketLimitStatsFallsBackToDailyKlineCloseSnapshot(t *testing.T) {
+	originalDir := databaseDir
+	originalRuntime := collectorRuntime
+	defer func() {
+		databaseDir = originalDir
+		collectorRuntime = originalRuntime
+	}()
+
+	tmp := t.TempDir()
+	databaseDir = tmp
+	collectorRuntime = nil
+
+	mustCreateMarketScreenCodesDB(t, filepath.Join(tmp, "codes.db"))
+	mustCreateMarketScreenKlineDB(t, filepath.Join(tmp, "kline", "sh600000.db"), "sh600000", []marketScreenKlineFixture{
+		marketLimitUpTierKlineFixture("20260428", 10000, 10000, 10000, 10000),
+		marketLimitUpTierKlineFixture("20260429", 11000, 11000, 11000, 11000),
+	})
+	mustCreateMarketScreenKlineDB(t, filepath.Join(tmp, "kline", "sz000001.db"), "sz000001", []marketScreenKlineFixture{
+		marketLimitUpTierKlineFixture("20260428", 10000, 10000, 10000, 10000),
+		marketLimitUpTierKlineFixture("20260429", 9000, 9000, 9000, 9000),
+	})
+
+	payload := callMarketScreenHandler(t, "/api/market/limit-stats", handleMarketLimitStats)
+	data := payload["data"].(map[string]interface{})
+	if data["status"] != "closed_snapshot" || data["data_source"] != "daily_kline" {
+		t.Fatalf("limit-stats fallback metadata = %#v", data)
+	}
+	if data["trading_date"] != "20260429" {
+		t.Fatalf("trading_date = %v, want 20260429", data["trading_date"])
+	}
+	limitUp := data["limit_up"].(map[string]interface{})
+	if limitUp["total"].(float64) != 1 || limitUp["one_line"].(float64) != 1 {
+		t.Fatalf("limit_up = %#v, want one-line total 1", limitUp)
+	}
+	limitDown := data["limit_down"].(map[string]interface{})
+	if limitDown["total"].(float64) != 1 || limitDown["one_line"].(float64) != 1 {
+		t.Fatalf("limit_down = %#v, want one-line total 1", limitDown)
+	}
+}
+
+func TestMarketLimitStatsExactTradingDateDoesNotFallback(t *testing.T) {
+	originalDir := databaseDir
+	originalRuntime := collectorRuntime
+	defer func() {
+		databaseDir = originalDir
+		collectorRuntime = originalRuntime
+	}()
+
+	tmp := t.TempDir()
+	databaseDir = tmp
+	collectorRuntime = nil
+
+	mustCreateMarketScreenCodesDB(t, filepath.Join(tmp, "codes.db"))
+	mustCreateMarketScreenKlineDB(t, filepath.Join(tmp, "kline", "sh600000.db"), "sh600000", []marketScreenKlineFixture{
+		marketLimitUpTierKlineFixture("20260429", 11000, 11000, 11000, 11000),
+	})
+
+	payload := callMarketScreenHandler(t, "/api/market/limit-stats?trading_date=20260428", handleMarketLimitStats)
+	data := payload["data"].(map[string]interface{})
+	if data["trading_date"] != "20260428" {
+		t.Fatalf("trading_date = %v, want exact 20260428", data["trading_date"])
+	}
+	if data["status"] != "empty" {
+		t.Fatalf("status = %v, want empty; data=%#v", data["status"], data)
+	}
+	limitUp := data["limit_up"].(map[string]interface{})
+	if limitUp["total"].(float64) != 0 {
+		t.Fatalf("exact date fell back: limit_up.total=%v data=%#v", limitUp["total"], data)
+	}
+}
+
+func TestMarketLimitStatsSkipsStaleTicker(t *testing.T) {
+	originalNow := marketScreenNow
+	defer func() {
+		marketScreenNow = originalNow
+	}()
+	currentNow := time.Date(2026, 4, 29, 10, 0, 0, 0, time.Local)
+	marketScreenNow = func() time.Time {
+		return currentNow
+	}
+
+	ts := collectorpkg.NewTickerService(&marketScreenQuoteProvider{quotes: []collectorpkg.QuoteSnapshot{
+		marketScreenTestQuoteOHLC("sh600000", "浦发银行", 10000, 11000, 10000, 11000),
+	}}, nil, collectorpkg.TickerConfig{
+		Interval: time.Hour,
+		Now:      marketScreenNow,
+	})
+	ts.Start([]string{"sh600000"}, nil)
+	defer ts.Stop()
+	waitForMarketScreenTicker(t, ts)
+
+	currentNow = time.Date(2026, 4, 29, 16, 0, 0, 0, time.Local)
+	req := marketLimitStatsRequest{}
+	if resp, ok := buildMarketLimitStatsTickerResponse(req, ts); ok {
+		t.Fatalf("stale ticker should not be selected: %#v", resp)
+	}
+}
+
+func TestMarketLimitUpTiersUsesDailyKlineStreaks(t *testing.T) {
+	originalDir := databaseDir
+	defer func() {
+		databaseDir = originalDir
+	}()
+
+	tmp := t.TempDir()
+	databaseDir = tmp
+
+	codesPath := filepath.Join(tmp, "codes.db")
+	mustCreateMarketScreenCodesDB(t, codesPath)
+	mustInsertMarketScreenCode(t, codesPath, "ST示例", "600001", "sh")
+
+	mustCreateMarketScreenKlineDB(t, filepath.Join(tmp, "kline", "sh600000.db"), "sh600000", []marketScreenKlineFixture{
+		marketLimitUpTierKlineFixture("20260424", 10000, 10000, 10000, 10000),
+		marketLimitUpTierKlineFixture("20260427", 11000, 11000, 11000, 11000),
+		marketLimitUpTierKlineFixture("20260428", 12100, 12100, 12100, 12100),
+		marketLimitUpTierKlineFixture("20260429", 13310, 13310, 13310, 13310),
+	})
+	mustCreateMarketScreenKlineDB(t, filepath.Join(tmp, "kline", "sz000001.db"), "sz000001", []marketScreenKlineFixture{
+		marketLimitUpTierKlineFixture("20260427", 10000, 10000, 10000, 10000),
+		marketLimitUpTierKlineFixture("20260428", 11000, 11000, 11000, 11000),
+		marketLimitUpTierKlineFixture("20260429", 12100, 12100, 12100, 12100),
+	})
+	mustCreateMarketScreenKlineDB(t, filepath.Join(tmp, "kline", "sh600001.db"), "sh600001", []marketScreenKlineFixture{
+		marketLimitUpTierKlineFixture("20260427", 10000, 10000, 10000, 10000),
+		marketLimitUpTierKlineFixture("20260428", 10500, 10500, 10500, 10500),
+		marketLimitUpTierKlineFixture("20260429", 11025, 11025, 11025, 11025),
+	})
+
+	payload := callMarketScreenHandler(t, "/api/market/limit-up/tiers?trading_date=20260429&min_streak=2", handleMarketLimitUpTiers)
+	data := payload["data"].(map[string]interface{})
+	if _, ok := data["data_source"]; ok {
+		t.Fatalf("limit-up tiers response should not include data_source: %#v", data)
+	}
+	if data["trading_date"] != "20260429" || data["stock_class"] != "non_st" {
+		t.Fatalf("metadata mismatch: %#v", data)
+	}
+	if data["total"].(float64) != 2 || data["highest_streak"].(float64) != 3 {
+		t.Fatalf("tier summary mismatch: %#v", data)
+	}
+	tiers := data["tiers"].([]interface{})
+	if len(tiers) != 2 {
+		t.Fatalf("tier count = %d, want 2; data=%#v", len(tiers), data)
+	}
+	firstTier := tiers[0].(map[string]interface{})
+	if firstTier["streak"].(float64) != 3 || firstTier["count"].(float64) != 1 {
+		t.Fatalf("first tier mismatch: %#v", firstTier)
+	}
+	firstStocks := firstTier["stocks"].([]interface{})
+	firstStock := firstStocks[0].(map[string]interface{})
+	if firstStock["code"] != "sh600000" || firstStock["first_limit_date"] != "20260427" || firstStock["board_type"] != "one_line" {
+		t.Fatalf("first tier stock mismatch: %#v", firstStock)
+	}
+
+	payload = callMarketScreenHandler(t, "/api/market/limit-up/tiers?trading_date=20260429&stock_class=st&min_streak=2", handleMarketLimitUpTiers)
+	data = payload["data"].(map[string]interface{})
+	if data["stock_class"] != "st" || data["total"].(float64) != 1 {
+		t.Fatalf("st tier summary mismatch: %#v", data)
+	}
+	tiers = data["tiers"].([]interface{})
+	stStocks := tiers[0].(map[string]interface{})["stocks"].([]interface{})
+	stStock := stStocks[0].(map[string]interface{})
+	if stStock["code"] != "sh600001" || stStock["is_st"] != true {
+		t.Fatalf("st stock mismatch: %#v", stStock)
+	}
+}
+
+func TestMarketLimitUpTiersUsesTickerForToday(t *testing.T) {
+	originalDir := databaseDir
+	originalNow := marketScreenNow
+	defer func() {
+		databaseDir = originalDir
+		marketScreenNow = originalNow
+	}()
+
+	tmp := t.TempDir()
+	databaseDir = tmp
+	marketScreenNow = func() time.Time {
+		return time.Date(2026, 4, 29, 10, 0, 0, 0, time.Local)
+	}
+
+	mustCreateMarketScreenCodesDB(t, filepath.Join(tmp, "codes.db"))
+	mustCreateMarketScreenKlineDB(t, filepath.Join(tmp, "kline", "sh600000.db"), "sh600000", []marketScreenKlineFixture{
+		marketLimitUpTierKlineFixture("20260424", 10000, 10000, 10000, 10000),
+		marketLimitUpTierKlineFixture("20260427", 11000, 11000, 11000, 11000),
+		marketLimitUpTierKlineFixture("20260428", 12100, 12100, 12100, 12100),
+	})
+
+	ts := collectorpkg.NewTickerService(&marketScreenQuoteProvider{quotes: []collectorpkg.QuoteSnapshot{
+		marketScreenTestQuoteOHLC("sh600000", "浦发银行", 13310, 13310, 12100, 13310),
+	}}, nil, collectorpkg.TickerConfig{
+		Interval: time.Hour,
+		Now:      marketScreenNow,
+	})
+	ts.Start([]string{"sh600000"}, nil)
+	defer ts.Stop()
+	waitForMarketScreenTicker(t, ts)
+
+	req, err := parseMarketLimitUpTiersRequest(httptest.NewRequest(http.MethodGet, "/api/market/limit-up/tiers?min_streak=2", nil))
+	if err != nil {
+		t.Fatalf("parse request: %v", err)
+	}
+	resp, ok := buildMarketLimitUpTiersResponse(req, ts)
+	if !ok {
+		t.Fatalf("ticker limit-up tiers response not selected")
+	}
+	if _, ok := resp["data_source"]; ok {
+		t.Fatalf("ticker limit-up tiers response should not include data_source: %#v", resp)
+	}
+	if resp["trading_date"] != "20260429" || resp["total"] != 1 || resp["highest_streak"] != 3 {
+		t.Fatalf("ticker tier summary mismatch: %#v", resp)
+	}
+	tiers := resp["tiers"].([]marketLimitUpTier)
+	stock := tiers[0].Stocks[0]
+	if stock.Code != "sh600000" || stock.Streak != 3 || stock.FirstLimitDate != "20260427" {
+		t.Fatalf("ticker tier stock mismatch: %#v", stock)
+	}
+	if stock.LimitFirstSeen == nil || *stock.LimitFirstSeen != "10:00:00" {
+		t.Fatalf("ticker limit_first_seen mismatch: %#v", stock)
+	}
+	if stock.LimitBreakCount == nil || *stock.LimitBreakCount != 0 {
+		t.Fatalf("ticker limit_break_count mismatch: %#v", stock)
 	}
 }
 
@@ -539,6 +1014,26 @@ func (p *marketScreenQuoteProvider) Quotes(ctx context.Context, codes []string) 
 	return p.quotes, nil
 }
 
+func marketScreenTestQuote(code, name string, last collectorpkg.PriceMilli) collectorpkg.QuoteSnapshot {
+	return marketScreenTestQuoteOHLC(code, name, collectorpkg.PriceMilli(10000), last, collectorpkg.PriceMilli(10000), last)
+}
+
+func marketScreenTestQuoteOHLC(code, name string, open, high, low, last collectorpkg.PriceMilli) collectorpkg.QuoteSnapshot {
+	return collectorpkg.QuoteSnapshot{
+		Code:       code,
+		Name:       name,
+		Exchange:   code[:2],
+		AssetType:  collectorpkg.AssetTypeStock,
+		PreClose:   collectorpkg.PriceMilli(10000),
+		Open:       open,
+		High:       high,
+		Low:        low,
+		Last:       last,
+		VolumeHand: 100,
+		AmountYuan: 100000,
+	}
+}
+
 func waitForMarketScreenTicker(t *testing.T, ts *collectorpkg.TickerService) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -616,6 +1111,18 @@ func mustCreateMarketScreenCodesDB(t *testing.T, path string) {
 	}
 }
 
+func mustInsertMarketScreenCode(t *testing.T, path, name, code, exchange string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open codes db: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`INSERT INTO codes(Name, Code, Exchange) VALUES(?, ?, ?)`, name, code, exchange); err != nil {
+		t.Fatalf("insert code %s%s: %v", exchange, code, err)
+	}
+}
+
 func mustCreateMarketScreenKlineDB(t *testing.T, path, code string, rows []marketScreenKlineFixture) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -633,6 +1140,22 @@ func mustCreateMarketScreenKlineDB(t *testing.T, path, code string, rows []marke
 		if _, err := db.Exec(`INSERT INTO DayKline(Code, Date, Open, High, Low, Close, Volume, Amount) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`, code, row.At.Unix(), row.Open, row.High, row.Low, row.Close, row.Volume, row.Amount); err != nil {
 			t.Fatalf("insert kline %s: %v", code, err)
 		}
+	}
+}
+
+func marketLimitUpTierKlineFixture(date string, open, high, low, close int64) marketScreenKlineFixture {
+	at, err := time.ParseInLocation("20060102", date, time.Local)
+	if err != nil {
+		panic(err)
+	}
+	return marketScreenKlineFixture{
+		At:     time.Date(at.Year(), at.Month(), at.Day(), 15, 0, 0, 0, time.Local),
+		Open:   open,
+		High:   high,
+		Low:    low,
+		Close:  close,
+		Volume: 100,
+		Amount: close * 100,
 	}
 }
 

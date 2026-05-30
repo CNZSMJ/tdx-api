@@ -3,6 +3,7 @@ package collector
 import (
 	"bufio"
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"os/exec"
@@ -932,6 +933,73 @@ func TestRuntimeUnifiedGovernanceStatusProjectsLegacyRunsAndDomains(t *testing.T
 	}
 }
 
+func TestRuntimeUnifiedGovernanceStatusProjectsProfessionalFinanceWatermark(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := OpenStore(filepath.Join(tmp, "collector.db"))
+	if err != nil {
+		t.Fatalf("open collector store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 5, 28, 10, 0, 0, 0, time.Local)
+	fundamentalsDir := filepath.Join(tmp, "fundamentals")
+	seedProfessionalFinanceWatermark(t, filepath.Join(fundamentalsDir, "professional_finance", "prof_finance.db"))
+
+	runtime, err := NewRuntime(store, &blockStubProvider{}, RuntimeConfig{
+		Now:          func() time.Time { return now },
+		Metadata:     MetadataConfig{CodesDBPath: filepath.Join(tmp, "codes.db"), WorkdayDBPath: filepath.Join(tmp, "workday.db")},
+		Kline:        KlineConfig{BaseDir: filepath.Join(tmp, "kline")},
+		Trade:        TradeConfig{BaseDir: filepath.Join(tmp, "trade")},
+		OrderHistory: OrderHistoryConfig{BaseDir: filepath.Join(tmp, "order_history")},
+		Live:         LiveCaptureConfig{BaseDir: filepath.Join(tmp, "live")},
+		Fundamentals: FundamentalsConfig{BaseDir: fundamentalsDir},
+		Block:        BlockConfig{BaseDir: filepath.Join(tmp, "block"), DisableAutoRefresh: true},
+	})
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+	defer runtime.Close()
+
+	paths := ResolveGovernancePaths(tmp)
+	govStore, err := OpenGovernanceStore(paths.DBPath)
+	if err != nil {
+		t.Fatalf("open governance store: %v", err)
+	}
+	defer govStore.Close()
+	if err := govStore.UpsertDomainHealthSnapshot(&DomainHealthSnapshotRecord{
+		Domain:          "professional_finance",
+		Status:          "healthy",
+		Freshness:       "fresh",
+		Coverage:        "covered",
+		LatestCursor:    "20260418",
+		LatestWatermark: "20260418",
+		Summary:         "stale professional finance snapshot",
+		SnapshotAt:      now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("seed stale professional finance snapshot: %v", err)
+	}
+
+	status, err := runtime.UnifiedGovernanceStatus(govStore, paths)
+	if err != nil {
+		t.Fatalf("unified governance status: %v", err)
+	}
+	domainMap := make(map[string]DomainHealthSnapshotRecord, len(status.Domains))
+	for _, domain := range status.Domains {
+		domainMap[domain.Domain] = domain
+	}
+	got := domainMap["professional_finance"]
+	if got.Status != "healthy" || got.Freshness != "fresh" || got.Coverage != "covered" {
+		t.Fatalf("professional_finance health = %+v, want healthy/fresh/covered", got)
+	}
+	if got.LatestCursor != "20260528" || got.LatestWatermark != "20260528" {
+		t.Fatalf("professional_finance watermark = cursor:%s watermark:%s, want 20260528", got.LatestCursor, got.LatestWatermark)
+	}
+	wantSummary := "source_watermark=20260528 latest_report_date_ingested=20260331 latest_report_date_seen=20260930"
+	if got.Summary != wantSummary {
+		t.Fatalf("professional_finance summary = %q, want %q", got.Summary, wantSummary)
+	}
+}
+
 func TestRuntimeUnifiedGovernanceStatusMarksReleasedLockMetadataStale(t *testing.T) {
 	tmp := t.TempDir()
 	store, err := OpenStore(filepath.Join(tmp, "collector.db"))
@@ -1255,5 +1323,41 @@ func TestBlockServiceConstructorDoesNotStartAutoRefreshCron(t *testing.T) {
 
 	if service.task != nil {
 		t.Fatalf("expected constructor not to start block auto-refresh cron")
+	}
+}
+
+func seedProfessionalFinanceWatermark(t *testing.T, dbPath string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o777); err != nil {
+		t.Fatalf("mkdir professional finance db dir: %v", err)
+	}
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open professional finance db: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`
+CREATE TABLE prof_finance_source_watermark(
+	source_name TEXT PRIMARY KEY,
+	manifest_fetched_at TEXT NOT NULL,
+	latest_report_date_seen TEXT NOT NULL,
+	latest_report_date_ingested TEXT NOT NULL,
+	watermark_date TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+)`); err != nil {
+		t.Fatalf("create professional finance watermark table: %v", err)
+	}
+	if _, err := db.Exec(`
+INSERT INTO prof_finance_source_watermark(
+	source_name, manifest_fetched_at, latest_report_date_seen, latest_report_date_ingested, watermark_date, updated_at
+) VALUES (?, ?, ?, ?, ?, ?)`,
+		"gpcw",
+		"2026-05-27T20:17:22Z",
+		"20260930",
+		"20260331",
+		"20260528",
+		"2026-05-27T20:17:22Z",
+	); err != nil {
+		t.Fatalf("insert professional finance watermark: %v", err)
 	}
 }

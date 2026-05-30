@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -332,6 +333,14 @@ func (r *Runtime) projectGovernanceDomains(store *GovernanceStore, now time.Time
 		return err
 	}
 
+	professionalFinanceSnapshot, err := r.buildProfessionalFinanceSnapshot(now)
+	if err != nil {
+		return err
+	}
+	if professionalFinanceSnapshot != nil {
+		return store.UpsertDomainHealthSnapshot(professionalFinanceSnapshot)
+	}
+
 	current, err := store.GetDomainHealthSnapshot("professional_finance")
 	if err != nil {
 		return err
@@ -348,6 +357,57 @@ func (r *Runtime) projectGovernanceDomains(store *GovernanceStore, now time.Time
 		Summary:    "projected by dedicated professional_finance governance in later sprints",
 		SnapshotAt: now,
 	})
+}
+
+func (r *Runtime) buildProfessionalFinanceSnapshot(now time.Time) (*DomainHealthSnapshotRecord, error) {
+	dbPath := filepath.Join(r.cfg.Fundamentals.BaseDir, "professional_finance", "prof_finance.db")
+	if !pathExists(dbPath) {
+		return nil, nil
+	}
+
+	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro")
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+
+	var latestSeen, latestIngested, watermark string
+	err = db.QueryRow(`
+SELECT latest_report_date_seen, latest_report_date_ingested, watermark_date
+FROM prof_finance_source_watermark
+WHERE source_name = ?`, "gpcw").Scan(&latestSeen, &latestIngested, &watermark)
+	if err == sql.ErrNoRows {
+		return &DomainHealthSnapshotRecord{
+			Domain:     "professional_finance",
+			Status:     "missing",
+			Freshness:  "stale",
+			Coverage:   "unknown",
+			Summary:    "source_watermark_missing",
+			SnapshotAt: now,
+		}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	status := "healthy"
+	freshness := "fresh"
+	coverage := "covered"
+	if strings.TrimSpace(watermark) == "" {
+		status = "missing"
+		freshness = "stale"
+		coverage = "unknown"
+	}
+	return &DomainHealthSnapshotRecord{
+		Domain:          "professional_finance",
+		Status:          status,
+		Freshness:       freshness,
+		Coverage:        coverage,
+		LatestCursor:    watermark,
+		LatestWatermark: watermark,
+		Summary:         fmt.Sprintf("source_watermark=%s latest_report_date_ingested=%s latest_report_date_seen=%s", watermark, latestIngested, latestSeen),
+		SnapshotAt:      now,
+	}, nil
 }
 
 func (r *Runtime) buildDomainSnapshot(domain string, now time.Time) (*DomainHealthSnapshotRecord, error) {

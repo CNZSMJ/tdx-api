@@ -2632,9 +2632,13 @@ func main() {
 	http.HandleFunc("/api/index/all", handleGetIndexAll)
 	http.HandleFunc("/api/index/members", handleGetIndexMembers)
 	http.HandleFunc("/api/market-stats", handleGetMarketStats)
+	http.HandleFunc("/api/market/limit-stats", handleMarketLimitStats)
+	http.HandleFunc("/api/market/limit-up/tiers", handleMarketLimitUpTiers)
 	http.HandleFunc("/api/market/screen", handleMarketScreen)
 	http.HandleFunc("/api/market/signal", handleMarketSignal)
 	http.HandleFunc("/api/market/signal/check", handleMarketSignalCheck)
+	http.HandleFunc("/api/trading/instrument-metrics", handleTradingInstrumentMetrics)
+	http.HandleFunc("/api/trading/auction-package", handleTradingAuctionPackage)
 	http.HandleFunc("/api/market/billboard", handleMarketBillboard)
 	http.HandleFunc("/api/market/billboard/instrument", handleMarketBillboardInstrument)
 	http.HandleFunc("/api/market/billboard/detail", handleMarketBillboardDetail)
@@ -2690,6 +2694,7 @@ func main() {
 		log.Printf("服务启动成功，访问 http://localhost%s\n", port)
 		errCh <- server.ListenAndServe()
 	}()
+	go warmMarketScreenLatestSnapshot()
 
 	select {
 	case err := <-errCh:

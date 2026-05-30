@@ -38,6 +38,12 @@ type RecoveryAction struct {
 	Detail string
 }
 
+type InterruptedPruningRecoveryResult struct {
+	PruningSegments int
+	RecoveredGroups int
+	FailedSegments  int
+}
+
 func BuildReplacementHotDB(req RebuildRequest) (RebuildResult, error) {
 	tableCutoffs := req.effectiveTableCutoffs()
 	if req.SourceDBPath == "" || req.ReplacementDBPath == "" || len(tableCutoffs) == 0 {
@@ -282,6 +288,84 @@ func RecoverHotReplacementArtifacts(sourcePath, batchID string) (RecoveryAction,
 		return RecoveryAction{Action: "source_and_backup_present", Detail: "source verified; backup retained for explicit cleanup"}, nil
 	}
 	return RecoveryAction{Action: "none"}, nil
+}
+
+func RecoverInterruptedPruningSegments(store *ManifestStore) (InterruptedPruningRecoveryResult, error) {
+	var result InterruptedPruningRecoveryResult
+	if store == nil {
+		return result, errors.New("manifest store is required")
+	}
+	segments, err := store.ListSegments()
+	if err != nil {
+		return result, err
+	}
+	groups := make(map[string][]ColdSegment)
+	for _, segment := range segments {
+		if segment.Status != SegmentPruning {
+			continue
+		}
+		result.PruningSegments++
+		sourcePath := strings.TrimSpace(segment.SourceDBPath)
+		batchID := strings.TrimSpace(segment.ArchiveBatchID)
+		if sourcePath == "" || batchID == "" {
+			return result, fmt.Errorf("pruning segment %s missing source_db_path or archive_batch_id", segment.SegmentID)
+		}
+		key := sourcePath + "\x00" + batchID
+		groups[key] = append(groups[key], segment)
+	}
+	keys := make([]string, 0, len(groups))
+	for key := range groups {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		parts := strings.SplitN(key, "\x00", 2)
+		action, err := RecoverInterruptedPruningArtifacts(parts[0], parts[1])
+		if err != nil {
+			return result, err
+		}
+		result.RecoveredGroups++
+		reason := "interrupted during hot pruning; " + action.Detail
+		for _, segment := range groups[key] {
+			if err := store.UpdateSegmentStatus(segment.SegmentID, SegmentFailed, reason); err != nil {
+				return result, err
+			}
+			result.FailedSegments++
+		}
+	}
+	return result, nil
+}
+
+func RecoverInterruptedPruningArtifacts(sourcePath, batchID string) (RecoveryAction, error) {
+	backupPath := sourcePath + ".pre_lifecycle." + batchID + ".bak"
+	tmpPath := sourcePath + ".replacement." + batchID + ".tmp"
+	sourceExists := fileExists(sourcePath)
+	backupExists := fileExists(backupPath)
+	tmpExists := fileExists(tmpPath)
+	if tmpExists {
+		if err := os.Remove(tmpPath); err != nil {
+			return RecoveryAction{}, err
+		}
+	}
+	if sourceExists && backupExists {
+		if err := RollbackHotDBReplacement(sourcePath, backupPath); err != nil {
+			return RecoveryAction{}, err
+		}
+		return RecoveryAction{Action: "rolled_back_backup", Detail: "source and backup present; restored backup after interrupted pruning"}, nil
+	}
+	if !sourceExists && backupExists {
+		if err := os.Rename(backupPath, sourcePath); err != nil {
+			return RecoveryAction{}, err
+		}
+		return RecoveryAction{Action: "restored_backup", Detail: "source missing and backup restored; tmp removed if present"}, nil
+	}
+	if tmpExists {
+		return RecoveryAction{Action: "removed_tmp", Detail: "source exists; interrupted replacement tmp removed"}, nil
+	}
+	if sourceExists {
+		return RecoveryAction{Action: "source_only", Detail: "source exists; no replacement artifacts found for pruning segment"}, nil
+	}
+	return RecoveryAction{}, fmt.Errorf("cannot recover interrupted pruning artifacts for %s: source and backup are missing", sourcePath)
 }
 
 func SQLiteIndexNames(dbPath string) ([]string, error) {

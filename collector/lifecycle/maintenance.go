@@ -21,6 +21,9 @@ func (r MaintenanceRunner) RunWithContext(ctx context.Context) (MaintenanceResul
 	if !r.Enable {
 		return MaintenanceResult{Status: "skipped", Reason: "TDX_LIFECYCLE_ENABLE is not enabled"}, nil
 	}
+	if _, err := RecoverInterruptedPruningSegments(r.Manifest); err != nil {
+		return MaintenanceResult{}, err
+	}
 	if r.HigherPriorityActive {
 		return MaintenanceResult{Status: "skipped", Reason: "higher-priority governance job active"}, nil
 	}

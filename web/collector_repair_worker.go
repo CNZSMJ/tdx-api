@@ -79,6 +79,8 @@ func executeStartupRecoveryTask(ctx context.Context, task collectorpkg.Governanc
 		return executeStartupRecoveryReplayWindow(ctx, collectorpkg.GovernanceJobDailyCloseSync, task.TargetWindow, task.Reason)
 	case collectorpkg.GovernanceJobDailyAudit:
 		return executeStartupRecoveryReplayWindow(ctx, collectorpkg.GovernanceJobDailyAudit, task.TargetWindow, task.Reason)
+	case collectorpkg.GovernanceJobMarketBillboardSync:
+		return executeStartupRecoveryReplayWindow(ctx, collectorpkg.GovernanceJobMarketBillboardSync, task.TargetWindow, task.Reason)
 	case "interrupted_run":
 		return executeInterruptedStartupRecoveryTask(ctx, task)
 	default:
@@ -109,6 +111,8 @@ func executeInterruptedStartupRecoveryTask(ctx context.Context, task collectorpk
 		return executeStartupRecoveryReplayWindow(ctx, collectorpkg.GovernanceJobDailyCloseSync, run.TargetWindow, task.Reason)
 	case collectorpkg.GovernanceJobDailyAudit:
 		return executeStartupRecoveryReplayWindow(ctx, collectorpkg.GovernanceJobDailyAudit, run.TargetWindow, task.Reason)
+	case collectorpkg.GovernanceJobMarketBillboardSync:
+		return executeStartupRecoveryReplayWindow(ctx, collectorpkg.GovernanceJobMarketBillboardSync, run.TargetWindow, task.Reason)
 	default:
 		return collectorpkg.GovernanceTaskStatusUnsupported, fmt.Sprintf("unsupported interrupted governance job: %s", run.JobName), nil
 	}
