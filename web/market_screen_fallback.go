@@ -1562,7 +1562,7 @@ func marketSignalShouldUseSnapshot(req marketSignalRequest, snap collectorpkg.Si
 }
 
 func buildMarketSignalCloseSnapshotResponse(req marketSignalRequest) (map[string]interface{}, bool) {
-	ticks, tradingDate, ok := loadMarketScreenCloseTicks("all", req.tradingDate)
+	ticks, tradingDate, ok := loadMarketScreenCloseTicks("stock", req.tradingDate)
 	if !ok && !req.hasTradingDate {
 		return nil, false
 	}
@@ -1659,7 +1659,7 @@ func buildMarketSignalCheckTickerResponse(req marketSignalCheckRequest, ss *coll
 }
 
 func buildMarketSignalCheckCloseSnapshotResponse(req marketSignalCheckRequest) (map[string]interface{}, bool) {
-	ticks, tradingDate, ok := loadMarketScreenCloseTicks("all", req.tradingDate)
+	ticks, tradingDate, ok := loadMarketScreenCloseTicks("stock", req.tradingDate)
 	if !ok && !req.hasTradingDate {
 		return nil, false
 	}

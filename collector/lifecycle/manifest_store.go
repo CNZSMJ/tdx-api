@@ -213,6 +213,7 @@ func (s *ManifestStore) ensureDefaultRetentionPolicies() error {
 		{"live", "MinuteLive"},
 		{"live", "QuoteSnapshot"},
 		{"order_history", "OrderHistory"},
+		{"auction", "AuctionSnapshot"},
 	}
 	for _, policy := range policies {
 		if _, err := s.db.Exec(`INSERT OR IGNORE INTO hot_retention_policy(domain, table_name, hot_retention_trading_days, cold_retention_years, updated_at) VALUES(?, ?, ?, ?, ?)`,

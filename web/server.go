@@ -52,6 +52,8 @@ var (
 
 const (
 	collectorDailyOpenRefreshSpec         = "0 0 9 * * *"
+	collectorAuction0920Spec              = "0 20 9 * * *"
+	collectorAuction0926Spec              = "0 26 9 * * *"
 	collectorDailySyncSpec                = "0 0 18 * * *"
 	collectorDailyReconcileSpec           = "0 0 19 * * *"
 	collectorGovernanceWindowDispatchSpec = "0 */5 * * * *"
@@ -532,6 +534,7 @@ func initCollectorRuntime() {
 			OrderHistory: collectorpkg.OrderHistoryConfig{BaseDir: filepath.Join(databaseDir, "order_history")},
 			Live:         collectorpkg.LiveCaptureConfig{BaseDir: filepath.Join(databaseDir, "live")},
 			Fundamentals: collectorpkg.FundamentalsConfig{BaseDir: filepath.Join(databaseDir, "fundamentals")},
+			Auction:      collectorpkg.AuctionConfig{BaseDir: filepath.Join(databaseDir, "auction")},
 		},
 	)
 	if err != nil {
@@ -571,6 +574,7 @@ func initCollectorRuntime() {
 			return
 		}
 	}
+	registerAuctionSnapshotCollectors()
 
 	if dailyCloseSync != nil {
 		if _, err := manager.Cron.AddFunc(collectorDailySyncSpec, func() {
@@ -660,6 +664,46 @@ func initCollectorRuntime() {
 	log.Printf("已启用 collector 计划: startup catch-up + 每日 18:00 全量同步 + 每日 19:00 对账，本地时区=%s bootstrap_start=%s min_request_interval=%s catch_up_workers=%d", time.Now().Location(), bootstrapStart, collectorRequestMinInterval(), collectorCatchUpWorkers())
 
 	go runCollectorStartupSequence()
+}
+
+func registerAuctionSnapshotCollectors() {
+	if manager == nil || manager.Cron == nil || collectorRuntime == nil || collectorRuntime.AuctionService() == nil {
+		return
+	}
+	checkpoints := []struct {
+		spec         string
+		snapshotTime string
+	}{
+		{spec: collectorAuction0920Spec, snapshotTime: "09:20:00"},
+		{spec: collectorAuction0926Spec, snapshotTime: "09:26:00"},
+	}
+	for _, checkpoint := range checkpoints {
+		snapshotTime := checkpoint.snapshotTime
+		if _, err := manager.Cron.AddFunc(checkpoint.spec, func() {
+			go func() {
+				if err := runAuctionSnapshotCollection(snapshotTime); err != nil {
+					log.Printf("auction snapshot %s 采集失败: %v", snapshotTime, err)
+				}
+			}()
+		}); err != nil {
+			log.Printf("注册 auction snapshot %s 失败: %v", snapshotTime, err)
+			return
+		}
+	}
+}
+
+func runAuctionSnapshotCollection(snapshotTime string) error {
+	if collectorRuntime == nil || collectorRuntime.AuctionService() == nil {
+		return errors.New("auction collector runtime 未初始化")
+	}
+	now := time.Now().In(time.Local)
+	if manager != nil && manager.Workday != nil && !manager.Workday.Is(now) {
+		log.Printf("auction snapshot %s 跳过：%s 不是交易日", snapshotTime, now.Format("2006-01-02"))
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	return collectorRuntime.AuctionService().Collect(ctx, now.Format("2006-01-02"), snapshotTime)
 }
 
 func initDailyOpenRefreshRunner() {
@@ -1649,6 +1693,8 @@ func handleCollectorStatus(w http.ResponseWriter, r *http.Request) {
 		"control": collectorControl.snapshot(),
 		"schedule": map[string]string{
 			"daily_open_refresh":  collectorDailyOpenRefreshSpec,
+			"auction_0920":        collectorAuction0920Spec,
+			"auction_0926":        collectorAuction0926Spec,
 			"daily_close_sync":    collectorDailySyncSpec,
 			"daily_audit":         collectorDailyReconcileSpec,
 			"market_billboard":    collectorMarketBillboardSyncSchedule(),

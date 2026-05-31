@@ -436,10 +436,10 @@ func retainedRowsFilter(db *sql.DB, table, cutoff string) (string, []any, error)
 		return "", nil, err
 	}
 	if _, ok := columns["TradeDate"]; ok {
-		return `TradeDate >= ?`, []any{cutoff}, nil
+		return normalizedSQLiteDateExpr("TradeDate") + ` >= ?`, []any{cutoff}, nil
 	}
 	if _, ok := columns["trade_date"]; ok {
-		return `trade_date >= ?`, []any{cutoff}, nil
+		return normalizedSQLiteDateExpr("trade_date") + ` >= ?`, []any{cutoff}, nil
 	}
 	if _, ok := columns["CaptureTime"]; ok {
 		start, err := cutoffUnixStart(cutoff)

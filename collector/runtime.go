@@ -34,6 +34,7 @@ type RuntimeConfig struct {
 	Fundamentals            FundamentalsConfig
 	Block                   BlockConfig
 	Ticker                  TickerConfig
+	Auction                 AuctionConfig
 }
 
 type Runtime struct {
@@ -48,6 +49,7 @@ type Runtime struct {
 	fundamentals *FundamentalsService
 	block        *BlockService
 	ticker       *TickerService
+	auction      *AuctionService
 	signal       *SignalService
 }
 
@@ -121,6 +123,11 @@ func NewRuntime(store *Store, provider Provider, cfg RuntimeConfig) (*Runtime, e
 	// and must not compete with catch-up for throttle slots.
 	ticker := NewTickerService(rawProvider, block, cfg.Ticker)
 
+	auction, err := NewAuctionService(provider, cfg.Auction)
+	if err != nil {
+		return nil, err
+	}
+
 	signal := NewSignalService(SignalConfig{
 		Now:          cfg.Now,
 		KlineBaseDir: cfg.Kline.BaseDir,
@@ -138,6 +145,7 @@ func NewRuntime(store *Store, provider Provider, cfg RuntimeConfig) (*Runtime, e
 		fundamentals: fundamentals,
 		block:        block,
 		ticker:       ticker,
+		auction:      auction,
 		signal:       signal,
 	}, nil
 }
@@ -148,6 +156,10 @@ func (r *Runtime) BlockService() *BlockService {
 
 func (r *Runtime) TickerService() *TickerService {
 	return r.ticker
+}
+
+func (r *Runtime) AuctionService() *AuctionService {
+	return r.auction
 }
 
 func (r *Runtime) SignalService() *SignalService {

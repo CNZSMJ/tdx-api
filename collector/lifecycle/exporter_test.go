@@ -124,6 +124,38 @@ func TestExportVerifyAndRestoreStageOneSegments(t *testing.T) {
 				}
 			},
 		},
+		{
+			name:     "auction snapshot",
+			domain:   "auction",
+			table:    "AuctionSnapshot",
+			sourceDB: filepath.Join(root, "auction.db"),
+			setupSQL: []string{
+				`CREATE TABLE AuctionSnapshot(TradeDate TEXT, SnapshotTime TEXT, InstrumentCode TEXT, Name TEXT, AuctionPrice REAL, AuctionAmount REAL, PrevClose REAL, AuctionPct REAL, Bid1Price REAL, Bid1Volume INTEGER, Ask1Price REAL, Ask1Volume INTEGER, IsLimitUpOpen INTEGER, IsLimitDownOpen INTEGER, CollectedAt INTEGER)`,
+				`INSERT INTO AuctionSnapshot VALUES('2024-01-02','09:20:00','sh600000','浦发银行',12.3,1230000.5,12.0,2.5,12.3,1000,12.31,2000,0,0,1704162600)`,
+			},
+			startDate: "20240101",
+			endDate:   "20240131",
+			wantRows:  1,
+			verifyRows: func(t *testing.T, restoredDB string) {
+				got, err := countRows(restoredDB, "AuctionSnapshot")
+				if err != nil || got != 1 {
+					t.Fatalf("restored auction rows=%d err=%v", got, err)
+				}
+				db, err := openLifecycleSQLiteReadOnly(restoredDB)
+				if err != nil {
+					t.Fatalf("open restored auction db: %v", err)
+				}
+				defer db.Close()
+				var tradeDate string
+				var auctionPct float64
+				if err := db.QueryRow(`SELECT TradeDate, AuctionPct FROM AuctionSnapshot WHERE InstrumentCode='sh600000'`).Scan(&tradeDate, &auctionPct); err != nil {
+					t.Fatalf("query restored auction row: %v", err)
+				}
+				if tradeDate != "2024-01-02" || auctionPct != 2.5 {
+					t.Fatalf("unexpected restored auction row date=%s pct=%v", tradeDate, auctionPct)
+				}
+			},
+		},
 	}
 
 	for _, tc := range cases {

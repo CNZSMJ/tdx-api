@@ -11,7 +11,7 @@ This document defines the end-state architecture and implementation path for red
 
 The program is not complete when the scanner, manifest, or single-segment archival works. It is complete only when:
 
-- `trade`, `live`, and `order_history` hot stores continuously stay within the latest 180 trading days.
+- `trade`, `live`, `order_history`, and `auction` hot stores continuously stay within the latest 180 trading days.
 - Historical rows older than the hot retention window are archived, verified, recoverable, and accounted for in the cold manifest.
 - `professional_finance` has a slim serving path and its non-serving raw/source assets are archived or otherwise controlled.
 - Lifecycle maintenance runs as a bounded governance job and no longer causes daily governance jobs to run indefinitely.
@@ -27,8 +27,8 @@ The program is not complete when the scanner, manifest, or single-segment archiv
 4. Cold data access must use a separate explicit `/api/v1/cold/*` API surface.
 5. The first-stage cold store is local because no external disk or object store is currently available.
 6. Manifest records must use abstract URIs so local cold files can later move to object storage.
-7. `trade`, `live`, and `order_history` hot retention is exactly 180 trading days.
-8. `live` uses the same 180-trading-day hot policy as `trade` and `order_history`.
+7. `trade`, `live`, `order_history`, and `auction` hot retention is exactly 180 trading days.
+8. `live` and `auction` use the same 180-trading-day hot policy as `trade` and `order_history`.
 9. Data movement must be resumable, batch-limited, and safe under low local disk space.
 10. Hot pruning is forbidden until restore/rehydration has been implemented and tested.
 11. Object storage migration is not implemented in the first lifecycle rollout, but the storage interface and URI model must be object-store-ready from the first implementation.
@@ -51,6 +51,7 @@ Measured from the local `state/a-stock-market-tdx` dataset during planning.
 |---|---:|---|
 | `trade` | 118G | Per-instrument SQLite files; `TradeHistory` plus derived trade bars and indexes |
 | `live` | 107G | Per-instrument SQLite files; mostly `TradeLive` and `MinuteLive` across many years |
+| `auction` | not yet measured | Shared `auction.db` with `AuctionSnapshot` checkpoint rows |
 | `fundamentals` | 65G | Mostly `professional_finance/prof_finance.db` |
 | `order_history` | 5.6G | Per-instrument SQLite files |
 | `kline` | 4.4G | Not the first-stage reduction target |
@@ -60,7 +61,7 @@ Estimated net space reclaimed when the cold store remains on the same local disk
 
 | Stage | Domains | Estimated net reclaimed |
 |---|---|---:|
-| Stage 1 | `trade`, `live`, `order_history` | 130G - 170G |
+| Stage 1 | `trade`, `live`, `order_history`, `auction` | 130G - 170G plus auction compression delta |
 | Stage 2 | `professional_finance` raw/source assets and future slim serving split | 25G - 45G |
 | Total | Stage 1 + Stage 2 | 160G - 220G |
 
@@ -132,6 +133,7 @@ The hot layer remains SQLite because collectors and several internal readers alr
 | `trade` | latest 180 trading days | per-instrument SQLite | archive rows older than cutoff and rebuild hot DBs |
 | `live` | latest 180 trading days | per-instrument SQLite plus `quotes.db` | archive `TradeLive`, `MinuteLive`, and `QuoteSnapshot` rows older than cutoff and rebuild hot DBs |
 | `order_history` | latest 180 trading days | per-instrument SQLite | archive rows older than cutoff and rebuild hot DBs |
+| `auction` | latest 180 trading days | shared `auction/auction.db` | archive `AuctionSnapshot` rows older than cutoff and rebuild hot DB |
 | `kline` | keep current behavior initially | per-instrument SQLite | no first-stage pruning; add scanner only |
 | `finance` / `f10` | keep current behavior | TDX client and existing metadata DBs | no cold lifecycle work initially |
 | `professional_finance` | canonical serving subset remains hot | `prof_finance.db` or slim serving DB | split serving data from raw/source assets |
@@ -155,6 +157,7 @@ Cutoff rules:
 - Exchange-calendar explanation is explicit: if all days after the latest known completed trading day and before today are known non-trading days in `workday.db`, the lag is acceptable; otherwise the provider freshness check must refresh or prove the calendar before lifecycle writes run.
 - `TDX_LIFECYCLE_WORKDAY_MAX_STALE_CALENDAR_DAYS` defaults to `7` so long exchange holidays such as Spring Festival do not falsely block lifecycle work.
 - `QuoteSnapshot` retention is evaluated from `CaptureTime` converted to `Asia/Shanghai`; it follows the same 180-trading-day policy as the rest of the `live` domain.
+- `AuctionSnapshot` retention is evaluated from `TradeDate`; `YYYY-MM-DD` hot values are normalized to `YYYYMMDD` for cutoff comparison and cold segment metadata.
 
 ## Cold Layer
 
@@ -165,6 +168,7 @@ ${TDX_DATA_DIR}/cold/
   domain=trade/
   domain=live/
   domain=order_history/
+  domain=auction/
   domain=professional_finance/
   _staging/
 ```
@@ -191,6 +195,7 @@ tdx-cold://a-stock-market-tdx/cold/domain=live/table=TradeLive/instrument=sh6000
 tdx-cold://a-stock-market-tdx/cold/domain=live/table=MinuteLive/instrument=sh600000/year=2024/part-{archive_batch_id_suffix}-000.parquet
 tdx-cold://a-stock-market-tdx/cold/domain=live/table=QuoteSnapshot/capture_year=2024/part-{archive_batch_id_suffix}-000.parquet
 tdx-cold://a-stock-market-tdx/cold/domain=order_history/table=OrderHistory/instrument=sh600000/year=2024/part-{archive_batch_id_suffix}-000.parquet
+tdx-cold://a-stock-market-tdx/cold/domain=auction/table=AuctionSnapshot/instrument=shared/year=2024/part-{archive_batch_id_suffix}-000.parquet
 ```
 
 Use table/report-year partitioning for professional finance:
@@ -1058,6 +1063,7 @@ Deliverables:
 - URI parser and formatter for `tdx-cold://`, with storage-scheme mapping validation.
 - Parquet schema definitions for Stage 1 tables.
 - SQLite-to-Parquet column mapping definitions for every Stage 1 table.
+- `AuctionSnapshot` schema, mapping, inventory, export, restore, and pruning support.
 - Local `Rename` behavior for same-filesystem atomic rename and cross-device fallback or fail-fast.
 - Pinned Go Parquet dependency decision.
 - Logical checksum implementation and tests.
@@ -1120,13 +1126,13 @@ Deliverables:
 - Batch budgeting, disk watermarks, and governance lease integration.
 - Domain/instrument file lease integration.
 - Space-feasible candidate ordering after pilot validation, using smallest feasible DBs first under pressure and larger DBs only when headroom exists.
-- Catch-up for `trade`, `live`, and `order_history`.
+- Catch-up for `trade`, `live`, `order_history`, and `auction`.
 - Lifecycle status endpoints.
 - Daily audit lifecycle debt reporting.
 
 Exit criteria:
 
-- `trade`, `live`, and `order_history` hot stores contain only latest 180 trading days after catch-up.
+- `trade`, `live`, `order_history`, and `auction` hot stores contain only latest 180 trading days after catch-up.
 - Cold manifest accounts for all pruned historical ranges.
 - Existing API contract tests pass unchanged.
 - Daily 09:00 / 18:00 / 19:00 jobs do not inherit lifecycle workload.
@@ -1263,8 +1269,8 @@ The program is complete only when all criteria below are true:
 
 1. Existing API contract tests pass unchanged.
 2. Existing endpoints do not read cold Parquet.
-3. `trade`, `live`, and `order_history` hot stores contain only the latest 180 trading days after catch-up.
-4. Ongoing lifecycle maintenance keeps those hot stores at 180 trading days over normal daily cycles, including `live/quotes.db` if it has material retained history.
+3. `trade`, `live`, `order_history`, and `auction` hot stores contain only the latest 180 trading days after catch-up.
+4. Ongoing lifecycle maintenance keeps those hot stores at 180 trading days over normal daily cycles, including `live/quotes.db` and `auction/auction.db` if they have material retained history.
 5. Cold manifest accounts for every pruned historical date range.
 6. Every active cold segment has row count, min/max date, file checksum, logical checksum, and schema version.
 7. `data_lifecycle_restore` can restore a pruned segment.

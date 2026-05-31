@@ -127,6 +127,25 @@ type orderHistoryArchiveRow struct {
 	Volume        int64  `parquet:"volume,zstd"`
 }
 
+type auctionSnapshotArchiveRow struct {
+	SchemaVersion   int32   `parquet:"schema_version,zstd"`
+	TradeDate       string  `parquet:"trade_date,zstd"`
+	SnapshotTime    string  `parquet:"snapshot_time,zstd"`
+	InstrumentCode  string  `parquet:"instrument_code,zstd"`
+	Name            string  `parquet:"name,zstd"`
+	AuctionPrice    float64 `parquet:"auction_price,zstd"`
+	AuctionAmount   float64 `parquet:"auction_amount,zstd"`
+	PrevClose       float64 `parquet:"prev_close,zstd"`
+	AuctionPct      float64 `parquet:"auction_pct,zstd"`
+	Bid1Price       float64 `parquet:"bid1_price,zstd"`
+	Bid1Volume      int64   `parquet:"bid1_volume,zstd"`
+	Ask1Price       float64 `parquet:"ask1_price,zstd"`
+	Ask1Volume      int64   `parquet:"ask1_volume,zstd"`
+	IsLimitUpOpen   bool    `parquet:"is_limit_up_open,zstd"`
+	IsLimitDownOpen bool    `parquet:"is_limit_down_open,zstd"`
+	CollectedAt     int64   `parquet:"collected_at,zstd"`
+}
+
 func ExportSegment(req ExportRequest) (SegmentExportResult, error) {
 	if req.Storage == nil {
 		return SegmentExportResult{}, errors.New("cold storage is required")
@@ -338,6 +357,14 @@ func writeTableParquet(req ExportRequest, path string, result *SegmentExportResu
 		fillExportRange(result, maps)
 		result.RowCount = int64(len(rows))
 		return maps, parquet.WriteFile(path, rows, parquet.Compression(&parquet.Zstd))
+	case "AuctionSnapshot":
+		rows, maps, err := loadAuctionSnapshotRows(db, req.StartDate, req.EndDate)
+		if err != nil {
+			return nil, err
+		}
+		fillExportRange(result, maps)
+		result.RowCount = int64(len(rows))
+		return maps, parquet.WriteFile(path, rows, parquet.Compression(&parquet.Zstd))
 	default:
 		return nil, fmt.Errorf("unsupported export table %s", req.TableName)
 	}
@@ -394,6 +421,16 @@ func readSegmentRows(table string, data []byte) ([]map[string]any, error) {
 		out := make([]map[string]any, 0, len(rows))
 		for _, row := range rows {
 			out = append(out, orderRowMap(row))
+		}
+		return out, nil
+	case "AuctionSnapshot":
+		rows, err := parquet.Read[auctionSnapshotArchiveRow](reader, int64(len(data)))
+		if err != nil {
+			return nil, err
+		}
+		out := make([]map[string]any, 0, len(rows))
+		for _, row := range rows {
+			out = append(out, auctionSnapshotRowMap(row))
 		}
 		return out, nil
 	default:

@@ -141,6 +141,8 @@ func hotDBPathForColdSegment(segment lifecycle.ColdSegment) (string, error) {
 		return filepath.Join(databaseDir, "trade", segment.Instrument+".db"), nil
 	case "order_history":
 		return filepath.Join(databaseDir, "order_history", segment.Instrument+".db"), nil
+	case "auction":
+		return filepath.Join(databaseDir, "auction", "auction.db"), nil
 	case "live":
 		if segment.TableName == "QuoteSnapshot" {
 			return filepath.Join(databaseDir, "live", "quotes.db"), nil

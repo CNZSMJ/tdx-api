@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	_ "github.com/glebarez/go-sqlite"
@@ -183,6 +184,47 @@ func loadOrderHistoryRows(db *sql.DB, startDate, endDate string) ([]orderHistory
 	return out, maps, rows.Err()
 }
 
+func loadAuctionSnapshotRows(db *sql.DB, startDate, endDate string) ([]auctionSnapshotArchiveRow, []map[string]any, error) {
+	dateExpr := normalizedSQLiteDateExpr("TradeDate")
+	query := fmt.Sprintf(`SELECT %s, SnapshotTime, InstrumentCode, COALESCE(Name, ''), AuctionPrice, AuctionAmount, PrevClose, AuctionPct, Bid1Price, Bid1Volume, Ask1Price, Ask1Volume, CASE WHEN IsLimitUpOpen THEN 1 ELSE 0 END, CASE WHEN IsLimitDownOpen THEN 1 ELSE 0 END, CollectedAt FROM AuctionSnapshot WHERE %s >= ? AND %s <= ? ORDER BY %s, SnapshotTime, InstrumentCode`, dateExpr, dateExpr, dateExpr, dateExpr)
+	rows, err := db.Query(query, startDate, endDate)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	out := make([]auctionSnapshotArchiveRow, 0)
+	maps := make([]map[string]any, 0)
+	for rows.Next() {
+		var row auctionSnapshotArchiveRow
+		var isLimitUpOpen, isLimitDownOpen int64
+		row.SchemaVersion = 1
+		if err := rows.Scan(
+			&row.TradeDate,
+			&row.SnapshotTime,
+			&row.InstrumentCode,
+			&row.Name,
+			&row.AuctionPrice,
+			&row.AuctionAmount,
+			&row.PrevClose,
+			&row.AuctionPct,
+			&row.Bid1Price,
+			&row.Bid1Volume,
+			&row.Ask1Price,
+			&row.Ask1Volume,
+			&isLimitUpOpen,
+			&isLimitDownOpen,
+			&row.CollectedAt,
+		); err != nil {
+			return nil, nil, err
+		}
+		row.IsLimitUpOpen = isLimitUpOpen != 0
+		row.IsLimitDownOpen = isLimitDownOpen != 0
+		out = append(out, row)
+		maps = append(maps, auctionSnapshotRowMap(row))
+	}
+	return out, maps, rows.Err()
+}
+
 func createRestoreTable(db *sql.DB, table string) error {
 	stmts := map[string]string{
 		"TradeHistory":     `CREATE TABLE IF NOT EXISTS TradeHistory(Code TEXT, TradeDate TEXT, TradeTime INTEGER, Seq INTEGER, Price INTEGER, VolumeHand INTEGER, Number INTEGER, StatusCode INTEGER, Side TEXT)`,
@@ -195,6 +237,7 @@ func createRestoreTable(db *sql.DB, table string) error {
 		"MinuteLive":       `CREATE TABLE IF NOT EXISTS MinuteLive(Code TEXT, TradeDate TEXT, Clock TEXT, Price INTEGER, Number INTEGER)`,
 		"QuoteSnapshot":    `CREATE TABLE IF NOT EXISTS QuoteSnapshot(Code TEXT, CaptureTime INTEGER, CaptureDate TEXT, Last INTEGER, PreClose INTEGER, Open INTEGER, High INTEGER, Low INTEGER, VolumeHand INTEGER, AmountYuan REAL)`,
 		"OrderHistory":     `CREATE TABLE IF NOT EXISTS OrderHistory(Code TEXT, TradeDate TEXT, Seq INTEGER, Price INTEGER, BuySellDelta INTEGER, Volume INTEGER)`,
+		"AuctionSnapshot":  `CREATE TABLE IF NOT EXISTS AuctionSnapshot(TradeDate TEXT, SnapshotTime TEXT, InstrumentCode TEXT, Name TEXT, AuctionPrice REAL, AuctionAmount REAL, PrevClose REAL, AuctionPct REAL, Bid1Price REAL, Bid1Volume INTEGER, Ask1Price REAL, Ask1Volume INTEGER, IsLimitUpOpen INTEGER, IsLimitDownOpen INTEGER, CollectedAt INTEGER)`,
 	}
 	stmt, ok := stmts[table]
 	if !ok {
@@ -228,9 +271,30 @@ func insertRestoreRow(db sqlExecer, table string, row map[string]any) error {
 	case "OrderHistory":
 		_, err := db.Exec(`INSERT INTO OrderHistory(Code, TradeDate, Seq, Price, BuySellDelta, Volume) VALUES(?, ?, ?, ?, ?, ?)`, row["code"], row["trade_date"], row["seq"], row["price_milli"], row["buy_sell_delta"], row["volume"])
 		return err
+	case "AuctionSnapshot":
+		tradeDate, err := auctionSnapshotHotTradeDate(row["trade_date"])
+		if err != nil {
+			return err
+		}
+		_, err = db.Exec(`INSERT INTO AuctionSnapshot(TradeDate, SnapshotTime, InstrumentCode, Name, AuctionPrice, AuctionAmount, PrevClose, AuctionPct, Bid1Price, Bid1Volume, Ask1Price, Ask1Volume, IsLimitUpOpen, IsLimitDownOpen, CollectedAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			tradeDate, row["snapshot_time"], row["instrument_code"], row["name"], row["auction_price"], row["auction_amount"], row["prev_close"], row["auction_pct"], row["bid1_price"], row["bid1_volume"], row["ask1_price"], row["ask1_volume"], row["is_limit_up_open"], row["is_limit_down_open"], row["collected_at"])
+		return err
 	default:
 		return fmt.Errorf("unsupported restore table %s", table)
 	}
+}
+
+func auctionSnapshotHotTradeDate(value any) (string, error) {
+	text, _ := value.(string)
+	text = strings.TrimSpace(text)
+	if _, err := time.Parse("2006-01-02", text); err == nil {
+		return text, nil
+	}
+	t, err := time.Parse("20060102", text)
+	if err != nil {
+		return "", fmt.Errorf("invalid auction snapshot trade_date %q", text)
+	}
+	return t.Format("2006-01-02"), nil
 }
 
 func fillExportRange(result *SegmentExportResult, rows []map[string]any) {
@@ -324,5 +388,26 @@ func orderRowMap(row orderHistoryArchiveRow) map[string]any {
 		"price_milli":    row.Price,
 		"buy_sell_delta": row.BuySellDelta,
 		"volume":         row.Volume,
+	}
+}
+
+func auctionSnapshotRowMap(row auctionSnapshotArchiveRow) map[string]any {
+	return map[string]any{
+		"schema_version":     int(row.SchemaVersion),
+		"trade_date":         row.TradeDate,
+		"snapshot_time":      row.SnapshotTime,
+		"instrument_code":    row.InstrumentCode,
+		"name":               row.Name,
+		"auction_price":      row.AuctionPrice,
+		"auction_amount":     row.AuctionAmount,
+		"prev_close":         row.PrevClose,
+		"auction_pct":        row.AuctionPct,
+		"bid1_price":         row.Bid1Price,
+		"bid1_volume":        row.Bid1Volume,
+		"ask1_price":         row.Ask1Price,
+		"ask1_volume":        row.Ask1Volume,
+		"is_limit_up_open":   row.IsLimitUpOpen,
+		"is_limit_down_open": row.IsLimitDownOpen,
+		"collected_at":       row.CollectedAt,
 	}
 }

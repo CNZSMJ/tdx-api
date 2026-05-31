@@ -48,6 +48,13 @@ func TestManifestStoreCreatesSchemaIndexesAndDefaultRetention(t *testing.T) {
 	if policy == nil || policy.ColdRetentionYears != 7 || policy.HotRetentionTradingDays != 180 {
 		t.Fatalf("unexpected default policy: %+v", policy)
 	}
+	auctionPolicy, err := store.GetRetentionPolicy("auction", "AuctionSnapshot")
+	if err != nil {
+		t.Fatalf("get auction retention policy: %v", err)
+	}
+	if auctionPolicy == nil || auctionPolicy.ColdRetentionYears != 7 || auctionPolicy.HotRetentionTradingDays != 180 {
+		t.Fatalf("unexpected auction default policy: %+v", auctionPolicy)
+	}
 }
 
 func TestManifestStoreEnforcesSegmentStateMachine(t *testing.T) {

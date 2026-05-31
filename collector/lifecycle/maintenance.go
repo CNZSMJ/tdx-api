@@ -508,7 +508,8 @@ func stageOneTableSupported(table string) bool {
 		"TradeLive",
 		"MinuteLive",
 		"QuoteSnapshot",
-		"OrderHistory":
+		"OrderHistory",
+		"AuctionSnapshot":
 		return true
 	default:
 		return false

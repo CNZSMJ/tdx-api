@@ -90,6 +90,25 @@ func TestExecuteDataLifecycleRestoreTemporaryAndHotPath(t *testing.T) {
 	}
 }
 
+func TestHotDBPathForColdSegmentSupportsAuctionSnapshot(t *testing.T) {
+	originalDir := databaseDir
+	defer func() { databaseDir = originalDir }()
+	tmp := t.TempDir()
+	databaseDir = tmp
+
+	got, err := hotDBPathForColdSegment(lifecycle.ColdSegment{
+		Domain:    "auction",
+		TableName: "AuctionSnapshot",
+	})
+	if err != nil {
+		t.Fatalf("hot db path: %v", err)
+	}
+	want := filepath.Join(tmp, "auction", "auction.db")
+	if got != want {
+		t.Fatalf("auction hot db path = %s, want %s", got, want)
+	}
+}
+
 func TestExecuteDataLifecycleRestoreRejectsInactiveSegment(t *testing.T) {
 	originalDir := databaseDir
 	defer func() { databaseDir = originalDir }()

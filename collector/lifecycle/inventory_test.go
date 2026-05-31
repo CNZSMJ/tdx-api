@@ -17,6 +17,13 @@ func TestInventoryStorageReportsSQLiteTablesReadOnly(t *testing.T) {
 		`INSERT INTO TradeHistory(Code, TradeDate, Price) VALUES('sh600000', '20260102', 12000)`,
 		`INSERT INTO TradeHistory(Code, TradeDate, Price) VALUES('sh600000', '20260424', 13000)`,
 	})
+	auctionDBPath := filepath.Join(root, "auction", "auction.db")
+	mustCreateSQLite(t, auctionDBPath, []string{
+		`CREATE TABLE AuctionSnapshot(TradeDate TEXT, SnapshotTime TEXT, InstrumentCode TEXT)`,
+		`CREATE INDEX idx_auction_snapshot_date ON AuctionSnapshot(TradeDate, SnapshotTime)`,
+		`INSERT INTO AuctionSnapshot(TradeDate, SnapshotTime, InstrumentCode) VALUES('2026-01-02', '09:20:00', 'sh600000')`,
+		`INSERT INTO AuctionSnapshot(TradeDate, SnapshotTime, InstrumentCode) VALUES('2026-04-24', '09:25:00', 'sh600001')`,
+	})
 
 	report, err := InventoryStorage(root)
 	if err != nil {
@@ -34,6 +41,16 @@ func TestInventoryStorageReportsSQLiteTablesReadOnly(t *testing.T) {
 	}
 	if row.PageCount <= 0 || row.FreelistCount < 0 {
 		t.Fatalf("missing sqlite page metrics: %+v", row)
+	}
+	auctionRow, ok := findInventoryRow(report, "auction", "", "AuctionSnapshot")
+	if !ok {
+		t.Fatalf("missing AuctionSnapshot inventory row: %+v", report.Tables)
+	}
+	if auctionRow.DBPath != auctionDBPath || auctionRow.RowCount != 2 || auctionRow.MinDate != "20260102" || auctionRow.MaxDate != "20260424" {
+		t.Fatalf("unexpected auction inventory row: %+v", auctionRow)
+	}
+	if auctionRow.Instrument != "" {
+		t.Fatalf("auction db should be database-level inventory, got instrument %q", auctionRow.Instrument)
 	}
 
 	after, err := countRows(dbPath, "TradeHistory")

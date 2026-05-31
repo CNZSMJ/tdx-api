@@ -77,6 +77,24 @@ func StageOneParquetSchemas() map[string]ParquetSchema {
 			col("buy_sell_delta", "int32", false, ""),
 			col("volume", "int32", false, ""),
 		}),
+		"AuctionSnapshot": schema("AuctionSnapshot", []string{"trade_date", "snapshot_time", "instrument_code"}, []ParquetColumn{
+			col("schema_version", "int32", false, ""),
+			col("trade_date", "string(YYYYMMDD)", false, "Asia/Shanghai"),
+			col("snapshot_time", "string(HH:MM:SS)", false, "Asia/Shanghai"),
+			col("instrument_code", "string", false, ""),
+			col("name", "string", true, ""),
+			col("auction_price", "double", false, "CNY"),
+			col("auction_amount", "double", false, "CNY"),
+			col("prev_close", "double", false, "CNY"),
+			col("auction_pct", "double", false, "percent"),
+			col("bid1_price", "double", false, "CNY"),
+			col("bid1_volume", "int64", false, ""),
+			col("ask1_price", "double", false, "CNY"),
+			col("ask1_volume", "int64", false, ""),
+			col("is_limit_up_open", "bool", false, ""),
+			col("is_limit_down_open", "bool", false, ""),
+			col("collected_at", "int64(unix_seconds)", false, "Asia/Shanghai"),
+		}),
 	}
 }
 
@@ -169,6 +187,23 @@ func sqliteToParquetMappings() map[string]map[string]string {
 			"Price":        "price_milli",
 			"BuySellDelta": "buy_sell_delta",
 			"Volume":       "volume",
+		},
+		"AuctionSnapshot": {
+			"TradeDate":       "trade_date",
+			"SnapshotTime":    "snapshot_time",
+			"InstrumentCode":  "instrument_code",
+			"Name":            "name",
+			"AuctionPrice":    "auction_price",
+			"AuctionAmount":   "auction_amount",
+			"PrevClose":       "prev_close",
+			"AuctionPct":      "auction_pct",
+			"Bid1Price":       "bid1_price",
+			"Bid1Volume":      "bid1_volume",
+			"Ask1Price":       "ask1_price",
+			"Ask1Volume":      "ask1_volume",
+			"IsLimitUpOpen":   "is_limit_up_open",
+			"IsLimitDownOpen": "is_limit_down_open",
+			"CollectedAt":     "collected_at",
 		},
 	}
 }

@@ -255,6 +255,240 @@ func TestHandleTradingAuctionPackageReportsMissingExplicitCodes(t *testing.T) {
 	}
 }
 
+func TestHandleTradingAuctionPackageUsesStoredAuctionSnapshot(t *testing.T) {
+	originalDir := databaseDir
+	originalQuoteFetcher := tradingAuctionQuoteFetcher
+	originalNow := tradingAuctionNow
+	defer func() {
+		databaseDir = originalDir
+		tradingAuctionQuoteFetcher = originalQuoteFetcher
+		tradingAuctionNow = originalNow
+	}()
+	databaseDir = t.TempDir()
+	tradingAuctionNow = func() time.Time {
+		return time.Date(2026, 5, 31, 10, 0, 0, 0, time.Local)
+	}
+	quoteCalled := false
+	tradingAuctionQuoteFetcher = func(codes ...string) (protocol.QuotesResp, error) {
+		quoteCalled = true
+		return protocol.QuotesResp{}, fmt.Errorf("historical snapshot path must not fetch live quotes")
+	}
+
+	mustCreateMarketScreenCodesDB(t, filepath.Join(databaseDir, "codes.db"))
+	mustInsertMarketScreenCode(t, filepath.Join(databaseDir, "codes.db"), "中京电子", "002579", "sz")
+	if err := collectorpkg.StoreAuctionSnapshot(filepath.Join(databaseDir, "auction"), collectorpkg.AuctionSnapshot{
+		TradeDate:    "2026-05-29",
+		SnapshotTime: "09:20:00",
+		CollectedAt:  time.Date(2026, 5, 29, 9, 20, 3, 0, time.Local).Format(time.RFC3339),
+		Items: []collectorpkg.AuctionSnapshotItem{
+			{
+				InstrumentCode:  "sz002579",
+				Name:            "中京电子",
+				AuctionPrice:    19.3,
+				AuctionAmount:   85000000,
+				PrevClose:       18.5,
+				AuctionPct:      4.32,
+				Bid1Price:       19.29,
+				Bid1Volume:      120000,
+				IsLimitUpOpen:   false,
+				IsLimitDownOpen: false,
+				CollectedAt:     time.Date(2026, 5, 29, 9, 20, 3, 0, time.Local).Format(time.RFC3339),
+			},
+		},
+	}); err != nil {
+		t.Fatalf("store auction snapshot: %v", err)
+	}
+
+	body := bytes.NewBufferString(`{
+		"market":"CN",
+		"trade_date":"2026-05-29",
+		"auction_phase":"CANCELLABLE",
+		"snapshot_time":"09:20:00",
+		"planned_full_codes":["sz002579"]
+	}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/trading/auction-package", body)
+	handleTradingAuctionPackage(rec, req)
+
+	var payload struct {
+		Code int `json:"code"`
+		Data struct {
+			AuctionMkt struct {
+				Availability string `json:"availability"`
+				Precision    string `json:"precision"`
+			} `json:"auction_mkt"`
+			PlannedNames []struct {
+				FullCode      string  `json:"full_code"`
+				Symbol        string  `json:"symbol"`
+				AuctionPrice  float64 `json:"auction_price"`
+				PrevClose     float64 `json:"prev_close"`
+				AuctionPct    float64 `json:"auction_pct"`
+				AuctionAmount float64 `json:"auction_amount"`
+				Bid1Price     float64 `json:"bid1_price"`
+				Bid1Volume    int     `json:"bid1_volume"`
+				Precision     string  `json:"precision"`
+				Availability  string  `json:"availability"`
+			} `json:"planned_names"`
+			Failures []map[string]any `json:"failures"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v body=%s", err, rec.Body.String())
+	}
+	if payload.Code != 0 {
+		t.Fatalf("unexpected envelope: %s", rec.Body.String())
+	}
+	if quoteCalled {
+		t.Fatal("historical snapshot request fetched live quotes")
+	}
+	if payload.Data.AuctionMkt.Availability != "AVAILABLE" || payload.Data.AuctionMkt.Precision != "AUCTION_HISTORY" {
+		t.Fatalf("unexpected auction_mkt metadata: %+v", payload.Data.AuctionMkt)
+	}
+	if len(payload.Data.PlannedNames) != 1 {
+		t.Fatalf("planned_names length = %d, want 1 body=%s", len(payload.Data.PlannedNames), rec.Body.String())
+	}
+	planned := payload.Data.PlannedNames[0]
+	if planned.FullCode != "sz002579" || planned.Symbol != "002579.SZ" {
+		t.Fatalf("unexpected identity: %+v", planned)
+	}
+	if planned.AuctionPrice != 19.3 || planned.PrevClose != 18.5 || planned.AuctionPct != 4.32 || planned.AuctionAmount != 85000000 {
+		t.Fatalf("unexpected auction fields: %+v", planned)
+	}
+	if planned.Bid1Price != 19.29 || planned.Bid1Volume != 120000 || planned.Precision != "AUCTION_HISTORY" || planned.Availability != "AVAILABLE" {
+		t.Fatalf("unexpected snapshot metadata: %+v", planned)
+	}
+	if len(payload.Data.Failures) != 0 {
+		t.Fatalf("failures = %+v, want empty", payload.Data.Failures)
+	}
+}
+
+func TestHandleTradingAuctionPackageDoesNotUseFinalHistoryForCancellable(t *testing.T) {
+	originalDir := databaseDir
+	originalQuoteFetcher := tradingAuctionQuoteFetcher
+	originalNow := tradingAuctionNow
+	defer func() {
+		databaseDir = originalDir
+		tradingAuctionQuoteFetcher = originalQuoteFetcher
+		tradingAuctionNow = originalNow
+	}()
+	databaseDir = t.TempDir()
+	tradingAuctionNow = func() time.Time {
+		return time.Date(2026, 5, 31, 10, 0, 0, 0, time.Local)
+	}
+	tradingAuctionQuoteFetcher = func(codes ...string) (protocol.QuotesResp, error) {
+		return protocol.QuotesResp{}, nil
+	}
+	mustCreateMarketScreenCodesDB(t, filepath.Join(databaseDir, "codes.db"))
+	mustInsertMarketScreenCode(t, filepath.Join(databaseDir, "codes.db"), "中京电子", "002579", "sz")
+	mustCreateTradingMetricDailyKlineDB(t, filepath.Join(databaseDir, "kline", "sz002579.db"), "sz002579", time.Date(2026, 5, 29, 0, 0, 0, 0, time.Local), []int64{18500}, []int64{100000})
+	mustCreateTradingMetricTradeHistoryDB(t, filepath.Join(databaseDir, "trade", "sz002579.db"), "sz002579", []tradingMetricTradeFixture{
+		{date: "20260529", clock: "09:25:00", price: 19300, volumeHand: 10000},
+	})
+
+	body := bytes.NewBufferString(`{
+		"market":"CN",
+		"trade_date":"2026-05-29",
+		"auction_phase":"CANCELLABLE",
+		"snapshot_time":"09:20:00",
+		"planned_full_codes":["sz002579"]
+	}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/trading/auction-package", body)
+	handleTradingAuctionPackage(rec, req)
+
+	var payload struct {
+		Code int `json:"code"`
+		Data struct {
+			PlannedNames []map[string]any `json:"planned_names"`
+			Failures     []struct {
+				FullCode string `json:"full_code"`
+				Message  string `json:"message"`
+			} `json:"failures"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v body=%s", err, rec.Body.String())
+	}
+	if payload.Code != 0 {
+		t.Fatalf("unexpected envelope: %s", rec.Body.String())
+	}
+	if len(payload.Data.PlannedNames) != 0 {
+		t.Fatalf("cancellable historical request used final opening history: %+v", payload.Data.PlannedNames)
+	}
+	if len(payload.Data.Failures) != 1 || payload.Data.Failures[0].FullCode != "sz002579" {
+		t.Fatalf("failures = %+v, want explicit missing sz002579", payload.Data.Failures)
+	}
+}
+
+func TestHandleTradingAuctionPackageUsesFinalHistoryWhenSnapshotMissing(t *testing.T) {
+	originalDir := databaseDir
+	originalQuoteFetcher := tradingAuctionQuoteFetcher
+	originalNow := tradingAuctionNow
+	defer func() {
+		databaseDir = originalDir
+		tradingAuctionQuoteFetcher = originalQuoteFetcher
+		tradingAuctionNow = originalNow
+	}()
+	databaseDir = t.TempDir()
+	tradingAuctionNow = func() time.Time {
+		return time.Date(2026, 5, 31, 10, 0, 0, 0, time.Local)
+	}
+	tradingAuctionQuoteFetcher = func(codes ...string) (protocol.QuotesResp, error) {
+		return protocol.QuotesResp{}, nil
+	}
+	mustCreateMarketScreenCodesDB(t, filepath.Join(databaseDir, "codes.db"))
+	mustInsertMarketScreenCode(t, filepath.Join(databaseDir, "codes.db"), "中京电子", "002579", "sz")
+	mustCreateTradingMetricDailyKlineDB(t, filepath.Join(databaseDir, "kline", "sz002579.db"), "sz002579", time.Date(2026, 5, 29, 0, 0, 0, 0, time.Local), []int64{18500}, []int64{100000})
+	mustCreateTradingMetricTradeHistoryDB(t, filepath.Join(databaseDir, "trade", "sz002579.db"), "sz002579", []tradingMetricTradeFixture{
+		{date: "20260529", clock: "09:25:00", price: 19300, volumeHand: 10000},
+	})
+
+	body := bytes.NewBufferString(`{
+		"market":"CN",
+		"trade_date":"2026-05-29",
+		"auction_phase":"FINAL",
+		"snapshot_time":"09:26:00",
+		"planned_full_codes":["sz002579"]
+	}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/trading/auction-package", body)
+	handleTradingAuctionPackage(rec, req)
+
+	var payload struct {
+		Code int `json:"code"`
+		Data struct {
+			PlannedNames []struct {
+				FullCode      string  `json:"full_code"`
+				AuctionPrice  float64 `json:"auction_price"`
+				PrevClose     float64 `json:"prev_close"`
+				AuctionAmount float64 `json:"auction_amount"`
+				Precision     string  `json:"precision"`
+				Availability  string  `json:"availability"`
+			} `json:"planned_names"`
+			Failures []map[string]any `json:"failures"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v body=%s", err, rec.Body.String())
+	}
+	if payload.Code != 0 {
+		t.Fatalf("unexpected envelope: %s", rec.Body.String())
+	}
+	if len(payload.Data.PlannedNames) != 1 {
+		t.Fatalf("planned_names length = %d, want 1 body=%s", len(payload.Data.PlannedNames), rec.Body.String())
+	}
+	planned := payload.Data.PlannedNames[0]
+	if planned.FullCode != "sz002579" || planned.AuctionPrice != 19.3 || planned.PrevClose != 18.5 || planned.AuctionAmount != 19300000 {
+		t.Fatalf("unexpected final history fields: %+v", planned)
+	}
+	if planned.Precision != "AUCTION_HISTORY" || planned.Availability != "AVAILABLE" {
+		t.Fatalf("unexpected metadata: %+v", planned)
+	}
+	if len(payload.Data.Failures) != 0 {
+		t.Fatalf("failures = %+v, want empty", payload.Data.Failures)
+	}
+}
+
 func testTradingAuctionQuote(exchange protocol.Exchange, code string, prevClose, open, price protocol.Price, amount float64, bid1 protocol.Price, bid1Volume int) *protocol.Quote {
 	return &protocol.Quote{
 		Exchange:  exchange,

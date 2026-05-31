@@ -227,26 +227,63 @@ func buildTradingAuctionPackage(ctx context.Context, req tradingAuctionPackageRe
 
 	resp.AuctionMkt = applyTradingAuctionLimitStats(resp.AuctionMkt, tradeDay)
 	resp.BlockMembers, resp.Failures = resolveTradingAuctionBlockMembers(req.WatchedBlockIDs, resp.Failures)
+	quoteTime := tradingAuctionQuoteTime(tradeDay, snapshotTime)
+	now := tradingAuctionNow().In(time.Local)
+	nowClock := now.Format("15:04:05")
+	allowQuoteAuctionAmount := tradeDay.Format("20060102") == now.Format("20060102") && snapshotTime < "09:30:00" && nowClock >= "09:15:00" && nowClock < "09:30:00"
+
+	var storedSnapshot *collectorpkg.AuctionSnapshot
+	if !allowQuoteAuctionAmount {
+		var err error
+		storedSnapshot, err = loadTradingAuctionStoredSnapshot(tradeDay, snapshotTime)
+		resp.AuctionMkt.Precision = tradingAuctionPrecisionAuctionHistory
+		if err != nil {
+			resp.Failures = append(resp.Failures, tradingAuctionFailure{Scope: "auction_snapshot", Message: err.Error()})
+			resp.AuctionMkt.Availability = tradingAuctionAvailabilityMissing
+		} else if storedSnapshot != nil && len(storedSnapshot.Items) > 0 {
+			resp.AuctionMkt.Availability = tradingAuctionAvailabilityAvailable
+		} else {
+			resp.AuctionMkt.Availability = tradingAuctionAvailabilityMissing
+		}
+	}
+
 	candidateBlocks := collectTradingAuctionCandidateBlocks(req)
+	if !allowQuoteAuctionAmount {
+		candidateBlocks = nil
+		if storedSnapshot != nil {
+			candidateBlocks = collectTradingAuctionCandidateBlocksFromSnapshot(req, storedSnapshot)
+		}
+	}
 	explicitRows, err := tradingAuctionExplicitRows(req)
 	if err != nil {
 		return tradingAuctionPackageResponse{}, err
 	}
 	candidateRows := tradingAuctionRowsFromCandidateBlocks(candidateBlocks)
 	allRows := mergeTradingAuctionRows(explicitRows, candidateRows)
-	quotes := fetchMarketScreenQuotes(allRows, tradingAuctionQuoteFetcher)
-	quoteTime := tradingAuctionQuoteTime(tradeDay, snapshotTime)
-	now := tradingAuctionNow().In(time.Local)
-	nowClock := now.Format("15:04:05")
-	allowQuoteAuctionAmount := tradeDay.Format("20060102") == now.Format("20060102") && snapshotTime < "09:30:00" && nowClock >= "09:15:00" && nowClock < "09:30:00"
+	if !allowQuoteAuctionAmount && storedSnapshot != nil && req.IncludeAuctionBornCandidates {
+		allRows = mergeTradingAuctionRows(allRows, tradingAuctionRowsFromSnapshot(storedSnapshot))
+	}
+	quotes := map[string]*protocol.Quote{}
+	if allowQuoteAuctionAmount {
+		quotes = fetchMarketScreenQuotes(allRows, tradingAuctionQuoteFetcher)
+	}
 	explicitSet := tradingAuctionExplicitSet(req)
+	storedItemsByCode := tradingAuctionSnapshotByCode(storedSnapshot)
 
 	itemsByCode := make(map[string]tradingAuctionSnapshotItem, len(allRows))
 	for _, row := range allRows {
-		quote := quotes[strings.ToLower(row.fullCode)]
+		fullCode := strings.ToLower(row.fullCode)
+		if snapItem, ok := storedItemsByCode[fullCode]; ok {
+			_, isExplicit := explicitSet[fullCode]
+			item := buildTradingAuctionSnapshotItemFromStored(ctx, row, snapItem, tradeDay, phase, snapshotTime, isExplicit)
+			itemsByCode[fullCode] = item
+			continue
+		}
+		quote := quotes[fullCode]
 		_, isExplicit := explicitSet[strings.ToLower(row.fullCode)]
-		item := buildTradingAuctionSnapshotItem(ctx, row, quote, tradeDay, phase, snapshotTime, quoteTime, allowQuoteAuctionAmount, isExplicit, isExplicit && !allowQuoteAuctionAmount)
-		itemsByCode[strings.ToLower(row.fullCode)] = item
+		useLocalAuctionHistory := isExplicit && !allowQuoteAuctionAmount && storedSnapshot == nil && phase == "FINAL"
+		item := buildTradingAuctionSnapshotItem(ctx, row, quote, tradeDay, phase, snapshotTime, quoteTime, allowQuoteAuctionAmount, isExplicit, useLocalAuctionHistory)
+		itemsByCode[fullCode] = item
 	}
 
 	resp.PlannedNames, resp.Failures = collectTradingAuctionExplicitItems("planned_names", req.PlannedFullCodes, itemsByCode, resp.Failures)
@@ -700,17 +737,7 @@ func collectTradingAuctionCandidateBlocks(req tradingAuctionPackageRequest) []tr
 	if bs == nil || ts == nil || !req.IncludeAuctionBornCandidates {
 		return nil
 	}
-	typeSet := make(map[string]struct{}, len(req.CandidateBlockTypes))
-	for _, blockType := range req.CandidateBlockTypes {
-		text := strings.TrimSpace(blockType)
-		if text != "" {
-			typeSet[text] = struct{}{}
-		}
-	}
-	if len(typeSet) == 0 {
-		typeSet[string(collectorpkg.BlockTypeConcept)] = struct{}{}
-		typeSet[string(collectorpkg.BlockTypeStyle)] = struct{}{}
-	}
+	typeSet := tradingAuctionCandidateTypeSet(req.CandidateBlockTypes)
 
 	groups := bs.GetBlocks("")
 	groupByKey := make(map[string]collectorpkg.BlockGroupRecord, len(groups))
@@ -737,6 +764,71 @@ func collectTradingAuctionCandidateBlocks(req tradingAuctionPackageRequest) []tr
 			seen[key] = struct{}{}
 			out = append(out, tradingAuctionCandidateBlock{Group: group, Members: members})
 		}
+	}
+	return out
+}
+
+func tradingAuctionCandidateTypeSet(blockTypes []string) map[string]struct{} {
+	typeSet := make(map[string]struct{}, len(blockTypes))
+	for _, blockType := range blockTypes {
+		text := strings.TrimSpace(blockType)
+		if text != "" {
+			typeSet[text] = struct{}{}
+		}
+	}
+	if len(typeSet) == 0 {
+		typeSet[string(collectorpkg.BlockTypeConcept)] = struct{}{}
+		typeSet[string(collectorpkg.BlockTypeStyle)] = struct{}{}
+	}
+	return typeSet
+}
+
+func collectTradingAuctionCandidateBlocksFromSnapshot(req tradingAuctionPackageRequest, snap *collectorpkg.AuctionSnapshot) []tradingAuctionCandidateBlock {
+	bs := getBlockServiceForProvider()
+	if bs == nil || !req.IncludeAuctionBornCandidates || snap == nil {
+		return nil
+	}
+	strongCodes := make(map[string]struct{})
+	for _, item := range snap.Items {
+		fullCode := normalizeTradingAuctionStoredCode(item.InstrumentCode)
+		if fullCode == "" {
+			continue
+		}
+		if item.IsLimitUpOpen || item.AuctionPct >= 2 {
+			strongCodes[fullCode] = struct{}{}
+		}
+	}
+	if len(strongCodes) == 0 {
+		return nil
+	}
+	typeSet := tradingAuctionCandidateTypeSet(req.CandidateBlockTypes)
+	groups := bs.GetBlocks("")
+	out := []tradingAuctionCandidateBlock{}
+	seen := map[string]struct{}{}
+	for _, group := range groups {
+		if _, ok := typeSet[group.BlockType]; !ok {
+			continue
+		}
+		key := marketScreenBlockMemberKey(group.Source, group.BlockType, group.Name)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		members := bs.GetBlockMembers(group.Source, group.BlockType, group.Name)
+		if len(members) == 0 {
+			continue
+		}
+		hasStrongMember := false
+		for _, rawCode := range members {
+			if _, ok := strongCodes[normalizeTradingAuctionStoredCode(rawCode)]; ok {
+				hasStrongMember = true
+				break
+			}
+		}
+		if !hasStrongMember {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, tradingAuctionCandidateBlock{Group: group, Members: members})
 	}
 	return out
 }
@@ -855,4 +947,113 @@ func tradingAuctionMinInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func loadTradingAuctionStoredSnapshot(tradeDay time.Time, snapshotTime string) (*collectorpkg.AuctionSnapshot, error) {
+	return collectorpkg.LoadAuctionSnapshot(filepath.Join(databaseDir, "auction"), tradeDay.Format("2006-01-02"), snapshotTime)
+}
+
+func tradingAuctionRowsFromSnapshot(snap *collectorpkg.AuctionSnapshot) []marketScreenCodeRow {
+	if snap == nil {
+		return nil
+	}
+	rows := make([]marketScreenCodeRow, 0, len(snap.Items))
+	seen := map[string]struct{}{}
+	for _, item := range snap.Items {
+		fullCode := normalizeTradingAuctionStoredCode(item.InstrumentCode)
+		if fullCode == "" {
+			continue
+		}
+		if _, ok := seen[fullCode]; ok {
+			continue
+		}
+		seen[fullCode] = struct{}{}
+		rows = append(rows, marketScreenCodeRow{
+			fullCode:  fullCode,
+			name:      item.Name,
+			exchange:  fullCode[:2],
+			assetType: classifyAssetType(fullCode),
+		})
+	}
+	return rows
+}
+
+func tradingAuctionSnapshotByCode(snap *collectorpkg.AuctionSnapshot) map[string]collectorpkg.AuctionSnapshotItem {
+	out := map[string]collectorpkg.AuctionSnapshotItem{}
+	if snap == nil {
+		return out
+	}
+	for _, item := range snap.Items {
+		fullCode := normalizeTradingAuctionStoredCode(item.InstrumentCode)
+		if fullCode == "" {
+			continue
+		}
+		out[fullCode] = item
+	}
+	return out
+}
+
+func normalizeTradingAuctionStoredCode(raw string) string {
+	text := strings.ToLower(strings.TrimSpace(raw))
+	if len(text) == 8 && (strings.HasPrefix(text, "sh") || strings.HasPrefix(text, "sz") || strings.HasPrefix(text, "bj")) {
+		return text
+	}
+	parts := strings.Split(text, ".")
+	if len(parts) == 2 && len(parts[0]) == 6 {
+		switch parts[1] {
+		case "sh", "sz", "bj":
+			return parts[1] + parts[0]
+		}
+	}
+	return ""
+}
+
+func buildTradingAuctionSnapshotItemFromStored(ctx context.Context, row marketScreenCodeRow, snapItem collectorpkg.AuctionSnapshotItem, tradeDay time.Time, phase, snapshotTime string, includeAvg bool) tradingAuctionSnapshotItem {
+	fullCode := strings.ToLower(row.fullCode)
+	name := row.name
+	if name == "" {
+		name = snapItem.Name
+	}
+	item := tradingAuctionSnapshotItem{
+		FullCode:                       fullCode,
+		Symbol:                         tradingMetricSymbol(fullCode),
+		Name:                           name,
+		TradeDate:                      tradeDay.Format("2006-01-02"),
+		SnapshotTime:                   snapshotTime,
+		AuctionPhase:                   phase,
+		IsST:                           marketScreenIsSTStock(name),
+		AuctionPrice:                   roundMarketScreen(snapItem.AuctionPrice, 3),
+		PrevClose:                      roundMarketScreen(snapItem.PrevClose, 3),
+		AuctionPct:                     roundMarketScreen(snapItem.AuctionPct, 2),
+		AuctionAmount:                  roundMarketScreen(snapItem.AuctionAmount, 2),
+		Bid1Price:                      roundMarketScreen(snapItem.Bid1Price, 3),
+		Bid1Volume:                     int(snapItem.Bid1Volume),
+		QuoteTime:                      snapItem.CollectedAt,
+		Availability:                   tradingAuctionAvailabilityAvailable,
+		Precision:                      tradingAuctionPrecisionAuctionHistory,
+		AvgAuctionAmount5DAvailability: tradingAuctionAvailabilityMissing,
+		MissingFields:                  []string{"seal_volume"},
+		IsLimitUpOpen:                  snapItem.IsLimitUpOpen,
+	}
+	if item.AuctionPct == 0 && item.PrevClose > 0 && item.AuctionPrice > 0 {
+		item.AuctionPct = roundMarketScreen((item.AuctionPrice/item.PrevClose-1)*100, 2)
+	}
+	if !item.IsLimitUpOpen && item.PrevClose > 0 && item.AuctionPrice > 0 {
+		item.IsLimitUpOpen = marketScreenPriceTouchesLimitUp(item.AuctionPrice, item.PrevClose, item.FullCode, item.Name)
+	}
+	if includeAvg {
+		avg, avgAvailability := loadTradingAuctionAvgAmount5D(ctx, fullCode, tradeDay)
+		item.AvgAuctionAmount5DAvailability = avgAvailability
+		if avg > 0 {
+			item.AvgAuctionAmount5D = avg
+			if item.AuctionAmount > 0 {
+				item.AmountVsAvgAuction5D = roundMarketScreen(item.AuctionAmount/avg, 2)
+			}
+		}
+	}
+	item.MissingFields = tradingAuctionMissingFields(item, includeAvg)
+	if item.AuctionPrice <= 0 || item.PrevClose <= 0 || item.AuctionAmount <= 0 {
+		item.Availability = tradingAuctionAvailabilityPartial
+	}
+	return item
 }

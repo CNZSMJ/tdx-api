@@ -181,7 +181,8 @@ func loadMarketScreenMaterializedCloseTicks(assetType, tradingDate string) ([]co
 		tick.IsLimitUp = isLimitUp == 1
 		tick.IsLimitDown = isLimitDown == 1
 		if !marketScreenCloseTickLimitFlagsValid(tick) {
-			return nil, "", false
+			// 跳过单条限价校验失败的行（如 ETF/指数限价规则不匹配），不影响整批数据
+			continue
 		}
 		ticks = append(ticks, tick)
 	}

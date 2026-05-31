@@ -56,8 +56,8 @@ func deleteHotRowsForRestore(db sqlExecer, table, minDate, maxDate string) error
 		return fmt.Errorf("restore date range is required for %s", table)
 	}
 	switch table {
-	case "TradeHistory", "TradeMinute1Bar", "TradeMinute5Bar", "TradeMinute15Bar", "TradeMinute30Bar", "TradeMinute60Bar", "TradeLive", "MinuteLive", "OrderHistory":
-		_, err := db.Exec(`DELETE FROM `+quoteIdent(table)+` WHERE TradeDate >= ? AND TradeDate <= ?`, minDate, maxDate)
+	case "TradeHistory", "TradeMinute1Bar", "TradeMinute5Bar", "TradeMinute15Bar", "TradeMinute30Bar", "TradeMinute60Bar", "TradeLive", "MinuteLive", "OrderHistory", "AuctionSnapshot":
+		_, err := db.Exec(`DELETE FROM `+quoteIdent(table)+` WHERE `+normalizedSQLiteDateExpr("TradeDate")+` >= ? AND `+normalizedSQLiteDateExpr("TradeDate")+` <= ?`, minDate, maxDate)
 		return err
 	case "QuoteSnapshot":
 		startUnix, err := cutoffUnixStart(minDate)

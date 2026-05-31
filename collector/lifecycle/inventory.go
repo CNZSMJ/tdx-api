@@ -59,7 +59,7 @@ func InventoryStorage(root string) (StorageInventoryReport, error) {
 		GeneratedAt: time.Now(),
 		Root:        root,
 	}
-	for _, domain := range []string{"trade", "live", "order_history"} {
+	for _, domain := range []string{"trade", "live", "order_history", "auction"} {
 		domainDir := filepath.Join(root, domain)
 		if _, err := os.Stat(domainDir); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
@@ -75,7 +75,7 @@ func InventoryStorage(root string) (StorageInventoryReport, error) {
 				return nil
 			}
 			instrument := strings.TrimSuffix(entry.Name(), ".db")
-			if entry.Name() == "quotes.db" {
+			if entry.Name() == "quotes.db" || entry.Name() == "auction.db" {
 				instrument = ""
 			}
 			rows, err := inventorySQLiteFile(path, domain, instrument)
@@ -151,7 +151,7 @@ func discoverLifecycleDBFiles(root string) ([]lifecycleDBFile, error) {
 		return nil, errors.New("inventory root is required")
 	}
 	files := make([]lifecycleDBFile, 0)
-	for _, domain := range []string{"trade", "live", "order_history"} {
+	for _, domain := range []string{"trade", "live", "order_history", "auction"} {
 		domainDir := filepath.Join(root, domain)
 		if _, err := os.Stat(domainDir); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
@@ -171,7 +171,7 @@ func discoverLifecycleDBFiles(root string) ([]lifecycleDBFile, error) {
 				return err
 			}
 			instrument := strings.TrimSuffix(entry.Name(), ".db")
-			if entry.Name() == "quotes.db" {
+			if entry.Name() == "quotes.db" || entry.Name() == "auction.db" {
 				instrument = ""
 			}
 			files = append(files, lifecycleDBFile{
@@ -328,7 +328,7 @@ func sqliteColumns(db *sql.DB, table string) (map[string]string, error) {
 func inventoryDateExpression(columns map[string]string) (string, string) {
 	for _, name := range []string{"TradeDate", "trade_date", "report_date", "Date", "date"} {
 		if _, ok := columns[name]; ok {
-			return name, quoteIdent(name)
+			return name, normalizedSQLiteDateExpr(name)
 		}
 	}
 	for _, name := range []string{"CaptureTime", "capture_time"} {
@@ -337,6 +337,10 @@ func inventoryDateExpression(columns map[string]string) (string, string) {
 		}
 	}
 	return "", ""
+}
+
+func normalizedSQLiteDateExpr(name string) string {
+	return "replace(" + quoteIdent(name) + ", '-', '')"
 }
 
 func sqliteIndexCount(db *sql.DB, table string) int {

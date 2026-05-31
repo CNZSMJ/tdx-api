@@ -110,6 +110,71 @@ func TestMaintenanceRunnerArchivesRestoreTestsAndPrunesCandidate(t *testing.T) {
 	}
 }
 
+func TestMaintenanceRunnerArchivesAuctionSnapshotAndPrunesCandidate(t *testing.T) {
+	root := t.TempDir()
+	sourceDB := filepath.Join(root, "data", "auction", "auction.db")
+	mustCreateSQLite(t, sourceDB, []string{
+		`CREATE TABLE AuctionSnapshot(TradeDate TEXT, SnapshotTime TEXT, InstrumentCode TEXT, Name TEXT, AuctionPrice REAL, AuctionAmount REAL, PrevClose REAL, AuctionPct REAL, Bid1Price REAL, Bid1Volume INTEGER, Ask1Price REAL, Ask1Volume INTEGER, IsLimitUpOpen INTEGER, IsLimitDownOpen INTEGER, CollectedAt INTEGER)`,
+		`CREATE INDEX idx_auction_snapshot_date ON AuctionSnapshot(TradeDate, SnapshotTime)`,
+		`INSERT INTO AuctionSnapshot VALUES('2023-01-02','09:20:00','sh600000','PF Bank',11.0,1000000,10.0,10.0,11.0,1000,0,0,1,0,1672622400)`,
+		`INSERT INTO AuctionSnapshot VALUES('2026-04-24','09:25:00','sh600000','PF Bank',12.0,1200000,11.0,9.09,12.0,2000,0,0,0,0,1776993900)`,
+	})
+	sourceStat, err := os.Stat(sourceDB)
+	if err != nil {
+		t.Fatalf("source stat: %v", err)
+	}
+	manifest, err := OpenManifestStore(filepath.Join(root, "cold_manifest.db"))
+	if err != nil {
+		t.Fatalf("open manifest: %v", err)
+	}
+	defer manifest.Close()
+
+	result, err := testMaintenanceRunner(root, manifest, []LifecycleCandidate{{
+		DBPath:                    sourceDB,
+		Domain:                    "auction",
+		TableName:                 "AuctionSnapshot",
+		Instrument:                "",
+		MinDate:                   "20230102",
+		MaxDate:                   "20260424",
+		SourceDBBytes:             sourceStat.Size(),
+		ColdRowShare:              0.5,
+		EstimatedParquetRatio:     0.4,
+		EstimatedReplacementRatio: 0.5,
+	}}).RunWithContext(context.Background())
+	if err != nil {
+		t.Fatalf("maintenance run: %v", err)
+	}
+	if result.Status != "passed" || result.ProcessedSegments != 1 || result.PrunedSegments != 1 || result.RowsArchived != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	rows, err := countRows(sourceDB, "AuctionSnapshot")
+	if err != nil {
+		t.Fatalf("count remaining rows: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("remaining auction rows = %d, want 1 hot row", rows)
+	}
+	db, err := openLifecycleSQLiteReadOnly(sourceDB)
+	if err != nil {
+		t.Fatalf("open pruned auction db: %v", err)
+	}
+	defer db.Close()
+	var tradeDate string
+	if err := db.QueryRow(`SELECT TradeDate FROM AuctionSnapshot`).Scan(&tradeDate); err != nil {
+		t.Fatalf("query remaining auction row: %v", err)
+	}
+	if tradeDate != "2026-04-24" {
+		t.Fatalf("remaining auction date = %s, want 2026-04-24", tradeDate)
+	}
+	segments, err := manifest.ListSegments()
+	if err != nil {
+		t.Fatalf("list segments: %v", err)
+	}
+	if len(segments) != 1 || segments[0].Domain != "auction" || segments[0].TableName != "AuctionSnapshot" || segments[0].Status != SegmentActive {
+		t.Fatalf("unexpected auction segment: %+v", segments)
+	}
+}
+
 func TestMaintenanceRunnerDoesNotPruneWhenPruneSwitchDisabled(t *testing.T) {
 	root := t.TempDir()
 	sourceDB := filepath.Join(root, "data", "order_history", "sh600000.db")

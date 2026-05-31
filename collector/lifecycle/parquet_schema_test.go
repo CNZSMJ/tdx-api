@@ -4,7 +4,7 @@ import "testing"
 
 func TestStageOneParquetSchemasAndMappings(t *testing.T) {
 	schemas := StageOneParquetSchemas()
-	requiredTables := []string{"TradeHistory", "TradeMinute1Bar", "TradeLive", "MinuteLive", "QuoteSnapshot", "OrderHistory"}
+	requiredTables := []string{"TradeHistory", "TradeMinute1Bar", "TradeLive", "MinuteLive", "QuoteSnapshot", "OrderHistory", "AuctionSnapshot"}
 	for _, table := range requiredTables {
 		schema, ok := schemas[table]
 		if !ok {
@@ -19,17 +19,19 @@ func TestStageOneParquetSchemasAndMappings(t *testing.T) {
 	}
 
 	tests := map[string]string{
-		"TradeHistory.Code":         "code",
-		"TradeHistory.TradeDate":    "trade_date",
-		"TradeHistory.TradeTime":    "trade_time",
-		"TradeHistory.Price":        "price_milli",
-		"TradeHistory.StatusCode":   "status_code",
-		"TradeBarRow.BucketTime":    "bucket_time",
-		"TradeBarRow.Open":          "open_milli",
-		"TradeBarRow.Amount":        "amount_milli",
-		"QuoteSnapshot.CaptureTime": "capture_time",
-		"QuoteSnapshot.Last":        "last_milli",
-		"OrderHistory.Price":        "price_milli",
+		"TradeHistory.Code":          "code",
+		"TradeHistory.TradeDate":     "trade_date",
+		"TradeHistory.TradeTime":     "trade_time",
+		"TradeHistory.Price":         "price_milli",
+		"TradeHistory.StatusCode":    "status_code",
+		"TradeBarRow.BucketTime":     "bucket_time",
+		"TradeBarRow.Open":           "open_milli",
+		"TradeBarRow.Amount":         "amount_milli",
+		"QuoteSnapshot.CaptureTime":  "capture_time",
+		"QuoteSnapshot.Last":         "last_milli",
+		"OrderHistory.Price":         "price_milli",
+		"AuctionSnapshot.TradeDate":  "trade_date",
+		"AuctionSnapshot.AuctionPct": "auction_pct",
 	}
 	for key, want := range tests {
 		table, col := splitMappingKey(key)
