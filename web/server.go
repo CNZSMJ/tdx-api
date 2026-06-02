@@ -2685,6 +2685,7 @@ func main() {
 	http.HandleFunc("/api/market/signal/check", handleMarketSignalCheck)
 	http.HandleFunc("/api/trading/instrument-metrics", handleTradingInstrumentMetrics)
 	http.HandleFunc("/api/trading/auction-package", handleTradingAuctionPackage)
+	http.HandleFunc("/api/trading/market-loop-snapshot", handleTradingMarketLoopSnapshot)
 	http.HandleFunc("/api/market/billboard", handleMarketBillboard)
 	http.HandleFunc("/api/market/billboard/instrument", handleMarketBillboardInstrument)
 	http.HandleFunc("/api/market/billboard/detail", handleMarketBillboardDetail)
