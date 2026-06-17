@@ -89,7 +89,7 @@ launch_background_process() {
     cmd=(go run .)
   fi
 
-  if command -v python3 >/dev/null 2>&1; then
+  if [[ "${TDX_WEB_USE_PYTHON_LAUNCHER:-0}" == "1" ]] && command -v python3 >/dev/null 2>&1; then
     pid="$(
       python3 - "${LOG_FILE}" "${cmd[@]}" <<'PY'
 import subprocess

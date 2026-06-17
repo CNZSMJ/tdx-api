@@ -152,3 +152,4 @@ When the user corrects your approach, append a one-line rule here before ending 
 - Trading endpoints that wrap existing market facts must reuse the original response field names exactly instead of inventing aliases.
 - Professional finance sync must materialize serving payloads without writing `prof_finance_source_value_raw`; raw facts are only for explicit rebuild or restore paths.
 - When diagnosing disk pressure, do not change collector control state unless a live active run is confirmed or the user explicitly asks to pause or stop it.
+- On this machine, recover local TDX by rebuilding/running the native `web/stock-web` process; do not start `tdx-api` through Docker unless the user explicitly asks for Docker.
