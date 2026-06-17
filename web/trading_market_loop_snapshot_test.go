@@ -53,6 +53,9 @@ func TestTradingMarketLoopSnapshotUsesLiveTickerOnly(t *testing.T) {
 	if resp.SourcePolicy.TickerUpdatedAt == "" {
 		t.Fatalf("ticker_updated_at should be set")
 	}
+	if resp.SourcePolicy.AgeSeconds != 0 {
+		t.Fatalf("age_seconds should reflect live ticker age, got %#v", resp.SourcePolicy)
+	}
 	if resp.TradeDate != "2026-04-29" || resp.SnapshotTime != "10:00:05" {
 		t.Fatalf("unexpected snapshot identity: %#v", resp)
 	}
@@ -79,6 +82,56 @@ func TestTradingMarketLoopSnapshotUsesLiveTickerOnly(t *testing.T) {
 		if strings.Contains(string(raw), forbidden) {
 			t.Fatalf("market-loop snapshot must not expose fallback marker %q: %s", forbidden, string(raw))
 		}
+	}
+}
+
+func TestTradingMarketLoopSnapshotDefaultStalenessAllowsSchedulerDelay(t *testing.T) {
+	originalNow := marketScreenNow
+	defer func() {
+		marketScreenNow = originalNow
+	}()
+	base := time.Date(2026, 4, 29, 10, 0, 0, 0, time.Local)
+	now := base
+	marketScreenNow = func() time.Time { return now }
+
+	ts := collectorpkg.NewTickerService(&marketScreenQuoteProvider{quotes: []collectorpkg.QuoteSnapshot{
+		marketScreenTestQuote("sh600000", "浦发银行", 10900),
+	}}, nil, collectorpkg.TickerConfig{
+		Interval: time.Hour,
+		Now:      marketScreenNow,
+	})
+	ts.Start([]string{"sh600000"}, nil)
+	defer ts.Stop()
+	waitForMarketScreenTicker(t, ts)
+
+	now = base.Add(120 * time.Second)
+	resp, err := buildTradingMarketLoopSnapshot(tradingMarketLoopSnapshotRequest{
+		Market:       "CN",
+		TradeDate:    "2026-04-29",
+		SnapshotTime: "10:02:00",
+		ScreenLimit:  5,
+		RankingLimit: 5,
+	}, ts)
+	if err != nil {
+		t.Fatalf("build snapshot with default staleness: %v", err)
+	}
+	if resp.SourcePolicy.MaxStalenessSeconds != tradingMarketLoopDefaultMaxStalenessSeconds || resp.SourcePolicy.AgeSeconds != 120 {
+		t.Fatalf("unexpected default source policy: %#v", resp.SourcePolicy)
+	}
+
+	now = base.Add(time.Duration(tradingMarketLoopDefaultMaxStalenessSeconds+1) * time.Second)
+	_, err = buildTradingMarketLoopSnapshot(tradingMarketLoopSnapshotRequest{
+		Market:       "CN",
+		TradeDate:    "2026-04-29",
+		SnapshotTime: "10:03:01",
+		ScreenLimit:  5,
+		RankingLimit: 5,
+	}, ts)
+	if err == nil || err.ErrorCode != "LIVE_TICKER_STALE" {
+		t.Fatalf("error = %#v, want LIVE_TICKER_STALE", err)
+	}
+	if err.Details["max_staleness_seconds"] != tradingMarketLoopDefaultMaxStalenessSeconds || err.Details["age_seconds"] != tradingMarketLoopDefaultMaxStalenessSeconds+1 {
+		t.Fatalf("unexpected stale details: %#v", err.Details)
 	}
 }
 

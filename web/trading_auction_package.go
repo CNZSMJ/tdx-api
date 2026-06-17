@@ -37,19 +37,20 @@ var (
 )
 
 type tradingAuctionPackageRequest struct {
-	Market                       string   `json:"market"`
-	TradeDate                    string   `json:"trade_date"`
-	AuctionPhase                 string   `json:"auction_phase"`
-	SnapshotTime                 string   `json:"snapshot_time"`
-	PlannedFullCodes             []string `json:"planned_full_codes"`
-	YDLimitUpFullCodes           []string `json:"yd_limit_up_full_codes"`
-	YDChainFullCodes             []string `json:"yd_chain_full_codes"`
-	YDHighBoardFullCodes         []string `json:"yd_high_board_full_codes"`
-	WatchedBlockIDs              []string `json:"watched_block_ids"`
-	IncludeAuctionBornCandidates bool     `json:"include_auction_born_candidates"`
-	CandidateBlockTypes          []string `json:"candidate_block_types"`
-	CandidateLimit               int      `json:"candidate_limit"`
-	LowOpenThresholdPct          float64  `json:"low_open_threshold_pct"`
+	Market                       string                        `json:"market"`
+	TradeDate                    string                        `json:"trade_date"`
+	AuctionPhase                 string                        `json:"auction_phase"`
+	SnapshotTime                 string                        `json:"snapshot_time"`
+	PlannedFullCodes             []string                      `json:"planned_full_codes"`
+	YDLimitUpFullCodes           []string                      `json:"yd_limit_up_full_codes"`
+	YDChainFullCodes             []string                      `json:"yd_chain_full_codes"`
+	YDHighBoardFullCodes         []string                      `json:"yd_high_board_full_codes"`
+	WatchedBlockIDs              []string                      `json:"watched_block_ids"`
+	WatchedBlocks                []tradingAuctionBlockSelector `json:"watched_blocks"`
+	IncludeAuctionBornCandidates bool                          `json:"include_auction_born_candidates"`
+	CandidateBlockTypes          []string                      `json:"candidate_block_types"`
+	CandidateLimit               int                           `json:"candidate_limit"`
+	LowOpenThresholdPct          float64                       `json:"low_open_threshold_pct"`
 }
 
 type tradingAuctionPackageResponse struct {
@@ -112,7 +113,7 @@ type tradingAuctionSnapshotItem struct {
 	IsST                           bool     `json:"is_st"`
 	AuctionPrice                   float64  `json:"auction_price"`
 	PrevClose                      float64  `json:"prev_close"`
-	AuctionPct                     float64  `json:"auction_pct"`
+	AuctionPct                     *float64 `json:"auction_pct"`
 	AuctionAmount                  float64  `json:"auction_amount"`
 	AvgAuctionAmount5D             float64  `json:"avg_auction_amount_5d,omitempty"`
 	AvgAuctionAmount5DAvailability string   `json:"avg_auction_amount_5d_availability,omitempty"`
@@ -120,6 +121,7 @@ type tradingAuctionSnapshotItem struct {
 	IsLimitUpOpen                  bool     `json:"is_limit_up_open"`
 	Bid1Price                      float64  `json:"bid1_price,omitempty"`
 	Bid1Volume                     int      `json:"bid1_volume,omitempty"`
+	IndicativeBidPct               *float64 `json:"indicative_bid_pct,omitempty"`
 	QuoteTime                      string   `json:"quote_time"`
 	Availability                   string   `json:"availability"`
 	Precision                      string   `json:"precision"`
@@ -132,6 +134,12 @@ type tradingAuctionBlockMembers struct {
 	BlockType string   `json:"block_type"`
 	Source    string   `json:"source"`
 	Members   []string `json:"members"`
+}
+
+type tradingAuctionBlockSelector struct {
+	Source    string `json:"source"`
+	BlockType string `json:"block_type"`
+	Name      string `json:"name"`
 }
 
 type tradingAuctionCandidateBlock struct {
@@ -226,7 +234,7 @@ func buildTradingAuctionPackage(ctx context.Context, req tradingAuctionPackageRe
 	}
 
 	resp.AuctionMkt = applyTradingAuctionLimitStats(resp.AuctionMkt, tradeDay)
-	resp.BlockMembers, resp.Failures = resolveTradingAuctionBlockMembers(req.WatchedBlockIDs, resp.Failures)
+	resp.BlockMembers, resp.Failures = resolveTradingAuctionBlockMembers(req.WatchedBlocks, req.WatchedBlockIDs, resp.Failures)
 	quoteTime := tradingAuctionQuoteTime(tradeDay, snapshotTime)
 	now := tradingAuctionNow().In(time.Local)
 	nowClock := now.Format("15:04:05")
@@ -241,7 +249,7 @@ func buildTradingAuctionPackage(ctx context.Context, req tradingAuctionPackageRe
 			resp.Failures = append(resp.Failures, tradingAuctionFailure{Scope: "auction_snapshot", Message: err.Error()})
 			resp.AuctionMkt.Availability = tradingAuctionAvailabilityMissing
 		} else if storedSnapshot != nil && len(storedSnapshot.Items) > 0 {
-			resp.AuctionMkt.Availability = tradingAuctionAvailabilityAvailable
+			resp.AuctionMkt.Availability = tradingAuctionStoredSnapshotAvailability(storedSnapshot)
 		} else {
 			resp.AuctionMkt.Availability = tradingAuctionAvailabilityMissing
 		}
@@ -439,11 +447,12 @@ func buildTradingAuctionSnapshotItem(ctx context.Context, row marketScreenCodeRo
 		if allowQuoteAuctionAmount {
 			item.AuctionAmount = roundMarketScreen(quote.Amount, 2)
 		}
-		if quote.BuyLevel[0].Price > 0 {
+		if len(quote.BuyLevel) > 0 && quote.BuyLevel[0].Price > 0 {
 			item.Bid1Price = roundMarketScreen(quote.BuyLevel[0].Price.Float64(), 3)
 			item.Bid1Volume = quote.BuyLevel[0].Number
 		}
 	}
+	item.IndicativeBidPct = tradingAuctionIndicativePct(item.Bid1Price, item.PrevClose)
 	if useLocalAuctionHistory {
 		if prevClose, ok := loadTradingAuctionPrevClose(fullCode, tradeDay); ok {
 			item.PrevClose = prevClose
@@ -457,7 +466,7 @@ func buildTradingAuctionSnapshotItem(ctx context.Context, row marketScreenCodeRo
 		}
 	}
 	if item.PrevClose > 0 && item.AuctionPrice > 0 {
-		item.AuctionPct = roundMarketScreen((item.AuctionPrice/item.PrevClose-1)*100, 2)
+		item.AuctionPct = tradingAuctionFloatPtr(roundMarketScreen((item.AuctionPrice/item.PrevClose-1)*100, 2))
 		item.IsLimitUpOpen = marketScreenPriceTouchesLimitUp(item.AuctionPrice, item.PrevClose, item.FullCode, item.Name)
 	}
 	if includeAvg {
@@ -504,6 +513,44 @@ func tradingAuctionMissingFields(item tradingAuctionSnapshotItem, includeAvg boo
 		missing = append(missing, "avg_auction_amount_5d")
 	}
 	return missing
+}
+
+func tradingAuctionIndicativePct(price float64, prevClose float64) *float64 {
+	if price <= 0 || prevClose <= 0 {
+		return nil
+	}
+	value := roundMarketScreen((price/prevClose-1)*100, 2)
+	return &value
+}
+
+func tradingAuctionFloatPtr(value float64) *float64 {
+	return &value
+}
+
+func tradingAuctionPctValue(item tradingAuctionSnapshotItem) float64 {
+	if item.AuctionPct == nil {
+		return 0
+	}
+	return *item.AuctionPct
+}
+
+func tradingAuctionHasAuctionValue(item tradingAuctionSnapshotItem) bool {
+	return item.AuctionPrice > 0 && item.PrevClose > 0 && item.AuctionAmount > 0 && item.AuctionPct != nil
+}
+
+func tradingAuctionStoredSnapshotAvailability(snap *collectorpkg.AuctionSnapshot) string {
+	if snap == nil || len(snap.Items) == 0 {
+		return tradingAuctionAvailabilityMissing
+	}
+	for _, item := range snap.Items {
+		if item.AuctionPrice > 0 && item.PrevClose > 0 && item.AuctionAmount > 0 {
+			return tradingAuctionAvailabilityAvailable
+		}
+		if item.Bid1Price > 0 || item.AuctionPrice > 0 || item.PrevClose > 0 || item.AuctionAmount > 0 {
+			return tradingAuctionAvailabilityPartial
+		}
+	}
+	return tradingAuctionAvailabilityMissing
 }
 
 func collectTradingAuctionExplicitItems(scope string, fullCodes []string, itemsByCode map[string]tradingAuctionSnapshotItem, failures []tradingAuctionFailure) ([]tradingAuctionSnapshotItem, []tradingAuctionFailure) {
@@ -635,12 +682,15 @@ func tradingAuctionQuoteTime(tradeDay time.Time, snapshotTime string) string {
 	return at.Format(time.RFC3339)
 }
 
-func resolveTradingAuctionBlockMembers(blockIDs []string, failures []tradingAuctionFailure) ([]tradingAuctionBlockMembers, []tradingAuctionFailure) {
-	if len(blockIDs) == 0 {
+func resolveTradingAuctionBlockMembers(blocks []tradingAuctionBlockSelector, blockIDs []string, failures []tradingAuctionFailure) ([]tradingAuctionBlockMembers, []tradingAuctionFailure) {
+	if len(blocks) == 0 && len(blockIDs) == 0 {
 		return []tradingAuctionBlockMembers{}, failures
 	}
 	bs := getBlockServiceForProvider()
 	if bs == nil {
+		for _, block := range blocks {
+			failures = append(failures, tradingAuctionFailure{BlockID: tradingAuctionBlockSelectorLabel(block), Scope: "block_members", Message: "block service unavailable"})
+		}
 		for _, id := range blockIDs {
 			failures = append(failures, tradingAuctionFailure{BlockID: id, Scope: "block_members", Message: "block service unavailable"})
 		}
@@ -652,23 +702,55 @@ func resolveTradingAuctionBlockMembers(blockIDs []string, failures []tradingAuct
 	for _, group := range groups {
 		groupByID[tradingAuctionBlockID(group)] = group
 	}
-	out := make([]tradingAuctionBlockMembers, 0, len(blockIDs))
+	groupByKey := make(map[string]collectorpkg.BlockGroupRecord, len(groups))
+	for _, group := range groups {
+		groupByKey[marketScreenBlockMemberKey(group.Source, group.BlockType, group.Name)] = group
+	}
+	out := make([]tradingAuctionBlockMembers, 0, len(blocks)+len(blockIDs))
+	for _, block := range blocks {
+		selector, ok := normalizeTradingAuctionBlockSelector(block)
+		if !ok {
+			failures = append(failures, tradingAuctionFailure{BlockID: tradingAuctionBlockSelectorLabel(block), Scope: "block_members", Message: "watched_blocks selector is incomplete"})
+			continue
+		}
+		group, ok := groupByKey[marketScreenBlockMemberKey(selector.Source, selector.BlockType, selector.Name)]
+		if !ok {
+			failures = append(failures, tradingAuctionFailure{BlockID: tradingAuctionBlockSelectorLabel(selector), Scope: "block_members", Message: "block selector not found"})
+			continue
+		}
+		out = append(out, tradingAuctionBlockMembersFromGroup(bs, group))
+	}
 	for _, id := range blockIDs {
 		group, ok := groupByID[strings.TrimSpace(id)]
 		if !ok {
 			failures = append(failures, tradingAuctionFailure{BlockID: id, Scope: "block_members", Message: "block_id not found"})
 			continue
 		}
-		members := bs.GetBlockMembers(group.Source, group.BlockType, group.Name)
-		out = append(out, tradingAuctionBlockMembers{
-			BlockID:   tradingAuctionBlockID(group),
-			Name:      group.Name,
-			BlockType: group.BlockType,
-			Source:    group.Source,
-			Members:   members,
-		})
+		out = append(out, tradingAuctionBlockMembersFromGroup(bs, group))
 	}
 	return out, failures
+}
+
+func normalizeTradingAuctionBlockSelector(block tradingAuctionBlockSelector) (tradingAuctionBlockSelector, bool) {
+	block.Source = strings.ToLower(strings.TrimSpace(block.Source))
+	block.BlockType = strings.ToLower(strings.TrimSpace(block.BlockType))
+	block.Name = strings.TrimSpace(block.Name)
+	return block, block.Source != "" && block.BlockType != "" && block.Name != ""
+}
+
+func tradingAuctionBlockSelectorLabel(block tradingAuctionBlockSelector) string {
+	block, _ = normalizeTradingAuctionBlockSelector(block)
+	return block.Source + "\x1f" + block.BlockType + "\x1f" + block.Name
+}
+
+func tradingAuctionBlockMembersFromGroup(bs *collectorpkg.BlockService, group collectorpkg.BlockGroupRecord) tradingAuctionBlockMembers {
+	return tradingAuctionBlockMembers{
+		BlockID:   tradingAuctionBlockID(group),
+		Name:      group.Name,
+		BlockType: group.BlockType,
+		Source:    group.Source,
+		Members:   bs.GetBlockMembers(group.Source, group.BlockType, group.Name),
+	}
 }
 
 func tradingAuctionBlockID(group collectorpkg.BlockGroupRecord) string {
@@ -685,12 +767,13 @@ func summarizeTradingAuctionItems(items []tradingAuctionSnapshotItem, lowOpenThr
 	}
 	sum := 0.0
 	for _, item := range items {
-		if item.Availability == tradingAuctionAvailabilityMissing {
+		if item.Availability == tradingAuctionAvailabilityMissing || !tradingAuctionHasAuctionValue(item) {
 			continue
 		}
+		auctionPct := tradingAuctionPctValue(item)
 		stats.AvailableCount++
-		sum += item.AuctionPct
-		if item.AuctionPct <= lowOpenThreshold {
+		sum += auctionPct
+		if auctionPct <= lowOpenThreshold {
 			stats.LowOpenCount++
 			stats.WeakSymbols = append(stats.WeakSymbols, item.Symbol)
 		}
@@ -700,7 +783,7 @@ func summarizeTradingAuctionItems(items []tradingAuctionSnapshotItem, lowOpenThr
 		stats.Items = append(stats.Items, tradingAuctionCompactItem{
 			Symbol:        item.Symbol,
 			Name:          item.Name,
-			AuctionPct:    item.AuctionPct,
+			AuctionPct:    auctionPct,
 			AuctionAmount: item.AuctionAmount,
 			IsLimitUpOpen: item.IsLimitUpOpen,
 		})
@@ -794,7 +877,7 @@ func collectTradingAuctionCandidateBlocksFromSnapshot(req tradingAuctionPackageR
 		if fullCode == "" {
 			continue
 		}
-		if item.IsLimitUpOpen || item.AuctionPct >= 2 {
+		if item.AuctionPrice > 0 && item.AuctionAmount > 0 && (item.IsLimitUpOpen || item.AuctionPct >= 2) {
 			strongCodes[fullCode] = struct{}{}
 		}
 	}
@@ -874,12 +957,13 @@ func buildTradingAuctionCandidateGroups(blocks []tradingAuctionCandidateBlock, l
 		oneLine := 0
 		for _, code := range block.Members {
 			item, ok := itemsByCode[strings.ToLower(code)]
-			if !ok || item.Availability == tradingAuctionAvailabilityMissing {
+			if !ok || item.Availability == tradingAuctionAvailabilityMissing || !tradingAuctionHasAuctionValue(item) {
 				continue
 			}
-			if item.IsLimitUpOpen || item.AuctionPct >= 2 {
+			auctionPct := tradingAuctionPctValue(item)
+			if item.IsLimitUpOpen || auctionPct >= 2 {
 				frontline = append(frontline, item)
-				sum += item.AuctionPct
+				sum += auctionPct
 				if item.IsLimitUpOpen {
 					oneLine++
 				}
@@ -892,8 +976,10 @@ func buildTradingAuctionCandidateGroups(blocks []tradingAuctionCandidateBlock, l
 			if frontline[i].IsLimitUpOpen != frontline[j].IsLimitUpOpen {
 				return frontline[i].IsLimitUpOpen
 			}
-			if frontline[i].AuctionPct != frontline[j].AuctionPct {
-				return frontline[i].AuctionPct > frontline[j].AuctionPct
+			leftPct := tradingAuctionPctValue(frontline[i])
+			rightPct := tradingAuctionPctValue(frontline[j])
+			if leftPct != rightPct {
+				return leftPct > rightPct
 			}
 			return frontline[i].AuctionAmount > frontline[j].AuctionAmount
 		})
@@ -1024,10 +1110,10 @@ func buildTradingAuctionSnapshotItemFromStored(ctx context.Context, row marketSc
 		IsST:                           marketScreenIsSTStock(name),
 		AuctionPrice:                   roundMarketScreen(snapItem.AuctionPrice, 3),
 		PrevClose:                      roundMarketScreen(snapItem.PrevClose, 3),
-		AuctionPct:                     roundMarketScreen(snapItem.AuctionPct, 2),
 		AuctionAmount:                  roundMarketScreen(snapItem.AuctionAmount, 2),
 		Bid1Price:                      roundMarketScreen(snapItem.Bid1Price, 3),
 		Bid1Volume:                     int(snapItem.Bid1Volume),
+		IndicativeBidPct:               tradingAuctionIndicativePct(snapItem.Bid1Price, snapItem.PrevClose),
 		QuoteTime:                      snapItem.CollectedAt,
 		Availability:                   tradingAuctionAvailabilityAvailable,
 		Precision:                      tradingAuctionPrecisionAuctionHistory,
@@ -1035,8 +1121,8 @@ func buildTradingAuctionSnapshotItemFromStored(ctx context.Context, row marketSc
 		MissingFields:                  []string{"seal_volume"},
 		IsLimitUpOpen:                  snapItem.IsLimitUpOpen,
 	}
-	if item.AuctionPct == 0 && item.PrevClose > 0 && item.AuctionPrice > 0 {
-		item.AuctionPct = roundMarketScreen((item.AuctionPrice/item.PrevClose-1)*100, 2)
+	if item.PrevClose > 0 && item.AuctionPrice > 0 {
+		item.AuctionPct = tradingAuctionFloatPtr(roundMarketScreen((item.AuctionPrice/item.PrevClose-1)*100, 2))
 	}
 	if !item.IsLimitUpOpen && item.PrevClose > 0 && item.AuctionPrice > 0 {
 		item.IsLimitUpOpen = marketScreenPriceTouchesLimitUp(item.AuctionPrice, item.PrevClose, item.FullCode, item.Name)

@@ -8,8 +8,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/glebarez/go-sqlite"
@@ -106,31 +108,94 @@ func DiscoverLifecycleCandidates(ctx context.Context, root, hotCutoffDate string
 	}
 	maxCandidates := opts.MaxCandidates
 	out := make([]LifecycleCandidate, 0)
-	for i := 0; i < maxFiles; i++ {
+	windowSize := lifecycleDiscoveryWindowSize()
+	for start := 0; start < maxFiles; start += windowSize {
 		if err := ctx.Err(); err != nil {
 			return out, err
 		}
-		file := files[i]
-		rows, err := inventorySQLiteFile(file.Path, file.Domain, file.Instrument)
+		end := start + windowSize
+		if end > maxFiles {
+			end = maxFiles
+		}
+		results, err := discoverLifecycleCandidatesWindow(ctx, root, hotCutoffDate, files[start:end])
 		if err != nil {
 			return out, err
 		}
-		report := StorageInventoryReport{
-			GeneratedAt: time.Now(),
-			Root:        root,
-			Tables:      rows,
-		}
-		for _, candidate := range PlanSteadyStateRetention(report, hotCutoffDate).Candidates {
-			if !stageOneTableSupported(candidate.TableName) {
-				continue
-			}
-			out = append(out, candidate)
-			if maxCandidates > 0 && len(out) >= maxCandidates {
-				return out, nil
+		for _, candidates := range results {
+			for _, candidate := range candidates {
+				if !stageOneTableSupported(candidate.TableName) {
+					continue
+				}
+				out = append(out, candidate)
+				if maxCandidates > 0 && len(out) >= maxCandidates {
+					return out, nil
+				}
 			}
 		}
 	}
 	return out, nil
+}
+
+func discoverLifecycleCandidatesWindow(ctx context.Context, root, hotCutoffDate string, files []lifecycleDBFile) ([][]LifecycleCandidate, error) {
+	results := make([][]LifecycleCandidate, len(files))
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var firstErr error
+	sem := make(chan struct{}, lifecycleDiscoveryWorkers())
+	for i, file := range files {
+		if err := ctx.Err(); err != nil {
+			return results, err
+		}
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(i int, file lifecycleDBFile) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if err := ctx.Err(); err != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
+				return
+			}
+			rows, err := inventorySQLiteFile(file.Path, file.Domain, file.Instrument)
+			if err != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
+				return
+			}
+			report := StorageInventoryReport{
+				GeneratedAt: time.Now(),
+				Root:        root,
+				Tables:      rows,
+			}
+			results[i] = PlanSteadyStateRetention(report, hotCutoffDate).Candidates
+		}(i, file)
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return results, firstErr
+	}
+	return results, nil
+}
+
+func lifecycleDiscoveryWorkers() int {
+	workers := runtime.NumCPU()
+	if workers < 2 {
+		return 2
+	}
+	if workers > 8 {
+		return 8
+	}
+	return workers
+}
+
+func lifecycleDiscoveryWindowSize() int {
+	return lifecycleDiscoveryWorkers() * 8
 }
 
 func sortLifecycleDBFiles(files []lifecycleDBFile, sortMode string) {

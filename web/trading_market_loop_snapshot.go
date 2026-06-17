@@ -12,11 +12,12 @@ import (
 )
 
 const (
-	tradingMarketLoopMaxExplicitCodes = 200
-	tradingMarketLoopMaxWatchedBlocks = 50
-	tradingMarketLoopMaxRankingLimit  = 50
-	tradingMarketLoopMaxScreenLimit   = 100
-	tradingMarketLoopCandidateMembers = 5
+	tradingMarketLoopMaxExplicitCodes           = 200
+	tradingMarketLoopMaxWatchedBlocks           = 50
+	tradingMarketLoopMaxRankingLimit            = 50
+	tradingMarketLoopMaxScreenLimit             = 100
+	tradingMarketLoopCandidateMembers           = 5
+	tradingMarketLoopDefaultMaxStalenessSeconds = 180
 )
 
 type tradingMarketLoopSnapshotRequest struct {
@@ -59,6 +60,7 @@ type tradingMarketLoopSourcePolicy struct {
 	ProviderStatus      string `json:"provider_status"`
 	FallbackAllowed     bool   `json:"fallback_allowed"`
 	TickerUpdatedAt     string `json:"ticker_updated_at"`
+	AgeSeconds          int    `json:"age_seconds"`
 	MaxStalenessSeconds int    `json:"max_staleness_seconds"`
 }
 
@@ -187,11 +189,15 @@ func buildTradingMarketLoopSnapshot(req tradingMarketLoopSnapshotRequest, ts *co
 			"trade_date":        tradeDay.Format("2006-01-02"),
 		})
 	}
-	if now.After(updatedAt) && now.Sub(updatedAt) > time.Duration(normalized.MaxStalenessSeconds)*time.Second {
+	ageSeconds := 0
+	if now.After(updatedAt) {
+		ageSeconds = int(now.Sub(updatedAt).Seconds())
+	}
+	if ageSeconds > normalized.MaxStalenessSeconds {
 		return tradingMarketLoopSnapshotResponse{}, marketLoopErr(http.StatusServiceUnavailable, "LIVE_TICKER_STALE", "live ticker snapshot is stale", true, map[string]any{
 			"ticker_updated_at":     updatedAt.Format(time.RFC3339),
 			"max_staleness_seconds": normalized.MaxStalenessSeconds,
-			"age_seconds":           int(now.Sub(updatedAt).Seconds()),
+			"age_seconds":           ageSeconds,
 		})
 	}
 
@@ -214,6 +220,7 @@ func buildTradingMarketLoopSnapshot(req tradingMarketLoopSnapshotRequest, ts *co
 			ProviderStatus:      "live_tick",
 			FallbackAllowed:     false,
 			TickerUpdatedAt:     updatedAt.Format(time.RFC3339),
+			AgeSeconds:          ageSeconds,
 			MaxStalenessSeconds: normalized.MaxStalenessSeconds,
 		},
 		MarketBreadth:      buildMarketStatsData(ticks, string(collectorpkg.AssetTypeStock)),
@@ -245,7 +252,7 @@ func normalizeTradingMarketLoopRequest(req tradingMarketLoopSnapshotRequest) (tr
 		return req, time.Time{}, marketLoopErr(http.StatusBadRequest, "INVALID_SCOPE", "snapshot_time 参数格式错误，应为 HH:MM:SS", false, map[string]any{"field": "snapshot_time"})
 	}
 	if req.MaxStalenessSeconds <= 0 {
-		req.MaxStalenessSeconds = 10
+		req.MaxStalenessSeconds = tradingMarketLoopDefaultMaxStalenessSeconds
 	}
 	if req.ScreenLimit <= 0 {
 		req.ScreenLimit = 20

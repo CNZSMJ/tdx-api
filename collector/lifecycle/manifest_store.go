@@ -216,7 +216,8 @@ func (s *ManifestStore) ensureDefaultRetentionPolicies() error {
 		{"auction", "AuctionSnapshot"},
 	}
 	for _, policy := range policies {
-		if _, err := s.db.Exec(`INSERT OR IGNORE INTO hot_retention_policy(domain, table_name, hot_retention_trading_days, cold_retention_years, updated_at) VALUES(?, ?, ?, ?, ?)`,
+		if _, err := s.db.Exec(`INSERT INTO hot_retention_policy(domain, table_name, hot_retention_trading_days, cold_retention_years, updated_at) VALUES(?, ?, ?, ?, ?)
+			ON CONFLICT(domain, table_name) DO UPDATE SET hot_retention_trading_days=excluded.hot_retention_trading_days, cold_retention_years=excluded.cold_retention_years, updated_at=excluded.updated_at`,
 			policy[0], policy[1], DefaultHotRetentionTradingDays, 7, now); err != nil {
 			return err
 		}

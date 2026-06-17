@@ -45,15 +45,43 @@ func TestManifestStoreCreatesSchemaIndexesAndDefaultRetention(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get retention policy: %v", err)
 	}
-	if policy == nil || policy.ColdRetentionYears != 7 || policy.HotRetentionTradingDays != 180 {
+	if policy == nil || policy.ColdRetentionYears != 7 || policy.HotRetentionTradingDays != DefaultHotRetentionTradingDays {
 		t.Fatalf("unexpected default policy: %+v", policy)
 	}
 	auctionPolicy, err := store.GetRetentionPolicy("auction", "AuctionSnapshot")
 	if err != nil {
 		t.Fatalf("get auction retention policy: %v", err)
 	}
-	if auctionPolicy == nil || auctionPolicy.ColdRetentionYears != 7 || auctionPolicy.HotRetentionTradingDays != 180 {
+	if auctionPolicy == nil || auctionPolicy.ColdRetentionYears != 7 || auctionPolicy.HotRetentionTradingDays != DefaultHotRetentionTradingDays {
 		t.Fatalf("unexpected auction default policy: %+v", auctionPolicy)
+	}
+}
+
+func TestManifestStoreUpdatesDefaultRetentionPolicy(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "cold_manifest.db")
+	store, err := OpenManifestStore(dbPath)
+	if err != nil {
+		t.Fatalf("open manifest: %v", err)
+	}
+	if _, err := store.db.Exec(`UPDATE hot_retention_policy SET hot_retention_trading_days=180 WHERE domain='trade' AND table_name='TradeHistory'`); err != nil {
+		t.Fatalf("seed old retention policy: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close manifest: %v", err)
+	}
+
+	reopened, err := OpenManifestStore(dbPath)
+	if err != nil {
+		t.Fatalf("reopen manifest: %v", err)
+	}
+	defer reopened.Close()
+
+	policy, err := reopened.GetRetentionPolicy("trade", "TradeHistory")
+	if err != nil {
+		t.Fatalf("get retention policy: %v", err)
+	}
+	if policy == nil || policy.HotRetentionTradingDays != DefaultHotRetentionTradingDays {
+		t.Fatalf("retention policy was not updated: %+v", policy)
 	}
 }
 

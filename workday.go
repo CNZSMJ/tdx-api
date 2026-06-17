@@ -19,6 +19,8 @@ import (
 	"xorm.io/xorm"
 )
 
+var workdayNow = time.Now
+
 func DialWorkday(op ...client.Option) (*Workday, error) {
 	c, err := DialDefault(op...)
 	if err != nil {
@@ -134,7 +136,7 @@ func (this *Workday) Update() error {
 		return err
 	}
 
-	now := time.Now()
+	now := workdayNow()
 	if this.latestUnix < canonicalWorkdayTime(now).Unix() {
 		resp, err := this.Client.GetIndexDayAll("sh000001")
 		if err != nil {
@@ -277,7 +279,33 @@ func (this *Workday) Is(t time.Time) bool {
 
 // TodayIs 今天是否是工作日
 func (this *Workday) TodayIs() bool {
-	return this.Is(time.Now())
+	if this == nil {
+		return false
+	}
+	now := workdayNow()
+	if this.Is(now) {
+		return true
+	}
+	todayUnix := canonicalWorkdayTime(now).Unix()
+	if this.latestUnix >= todayUnix {
+		return false
+	}
+	if err := this.Update(); err == nil {
+		return this.Is(now)
+	}
+	return workdayStaleCacheAllowsToday(now, this.latestUnix)
+}
+
+func workdayStaleCacheAllowsToday(now time.Time, latestUnix int64) bool {
+	if latestUnix == 0 {
+		return false
+	}
+	switch now.In(time.Local).Weekday() {
+	case time.Saturday, time.Sunday:
+		return false
+	default:
+		return true
+	}
 }
 
 // Latest returns the latest cached trading day known to the local workday store.

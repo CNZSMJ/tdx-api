@@ -23,6 +23,7 @@ var DefaultCodes *Codes
 const (
 	DefaultIndexCodesFile = "index_codes.json"
 	IndexCodesEnv         = "TDX_INDEX_CODES"
+	StartupCodeRefreshEnv = "TDX_STARTUP_CODE_REFRESH"
 )
 
 var defaultIndexModels = []*CodeModel{
@@ -139,6 +140,14 @@ func NewCodes(c *Client, db *xorm.Engine) (*Codes, error) {
 			}
 		}
 		if needRefresh {
+			if startupCodeRefreshUsesCache() {
+				cached, cacheErr := cc.GetCodes(true)
+				if cacheErr == nil && len(cached) > 0 {
+					cc.applyCodes(cached)
+					logs.Debug("codes: startup uses local code cache")
+					return cc, nil
+				}
+			}
 			if err := cc.Update(); err != nil {
 				cached, cacheErr := cc.GetCodes(true)
 				if cacheErr != nil || len(cached) == 0 {
@@ -159,6 +168,15 @@ func NewCodes(c *Client, db *xorm.Engine) (*Codes, error) {
 	}
 	cc.applyCodes(cached)
 	return cc, nil
+}
+
+func startupCodeRefreshUsesCache() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(StartupCodeRefreshEnv))) {
+	case "cache", "cached", "local", "skip":
+		return true
+	default:
+		return false
+	}
 }
 
 type Codes struct {

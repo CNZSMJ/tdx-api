@@ -151,3 +151,4 @@ When the user corrects your approach, append a one-line rule here before ending 
 - Instrument metrics must not register a metric code until the Web loader has a real data source or the API response explicitly reports the source as unavailable.
 - Trading endpoints that wrap existing market facts must reuse the original response field names exactly instead of inventing aliases.
 - Professional finance sync must materialize serving payloads without writing `prof_finance_source_value_raw`; raw facts are only for explicit rebuild or restore paths.
+- When diagnosing disk pressure, do not change collector control state unless a live active run is confirmed or the user explicitly asks to pause or stop it.

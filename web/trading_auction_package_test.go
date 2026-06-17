@@ -129,7 +129,7 @@ func TestHandleTradingAuctionPackageReturnsFactsOnly(t *testing.T) {
 				Symbol                         string   `json:"symbol"`
 				AuctionPrice                   float64  `json:"auction_price"`
 				PrevClose                      float64  `json:"prev_close"`
-				AuctionPct                     float64  `json:"auction_pct"`
+				AuctionPct                     *float64 `json:"auction_pct"`
 				AuctionAmount                  float64  `json:"auction_amount"`
 				AvgAuctionAmount5D             float64  `json:"avg_auction_amount_5d"`
 				AvgAuctionAmount5DAvailability string   `json:"avg_auction_amount_5d_availability"`
@@ -175,7 +175,7 @@ func TestHandleTradingAuctionPackageReturnsFactsOnly(t *testing.T) {
 	if planned.FullCode != "sz300394" || planned.Symbol != "300394.SZ" {
 		t.Fatalf("unexpected planned identity: %+v", planned)
 	}
-	if planned.AuctionPrice != 123.45 || planned.PrevClose != 120 || planned.AuctionPct != 2.88 {
+	if planned.AuctionPrice != 123.45 || planned.PrevClose != 120 || planned.AuctionPct == nil || *planned.AuctionPct != 2.88 {
 		t.Fatalf("unexpected planned auction price fields: %+v", planned)
 	}
 	if planned.AuctionAmount != 123450000 {
@@ -204,6 +204,74 @@ func TestHandleTradingAuctionPackageReturnsFactsOnly(t *testing.T) {
 	}
 	if len(payload.Data.Failures) != 0 {
 		t.Fatalf("failures = %+v, want empty", payload.Data.Failures)
+	}
+}
+
+func TestHandleTradingAuctionPackageResolvesWatchedBlockSelectors(t *testing.T) {
+	originalDir := databaseDir
+	defer func() {
+		databaseDir = originalDir
+	}()
+	databaseDir = t.TempDir()
+
+	installBlockMemberRuntime(t, map[string][]collectorpkg.BlockInfo{
+		"block_gn.dat": {
+			{Name: "国防军工", BlockType: collectorpkg.BlockTypeConcept, Source: "block_gn.dat", Codes: []string{"sh600000", "sz000001"}},
+		},
+	})
+
+	body := bytes.NewBufferString(`{
+		"market":"CN",
+		"trade_date":"2026-05-26",
+		"auction_phase":"FINAL",
+		"snapshot_time":"09:26:00",
+		"watched_blocks":[{"source":"block_gn.dat","block_type":"concept","name":"国防军工"}]
+	}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/trading/auction-package", body)
+	handleTradingAuctionPackage(rec, req)
+
+	if strings.Contains(rec.Body.String(), "block_id not found") {
+		t.Fatalf("watched_blocks selector should not report block_id not found: %s", rec.Body.String())
+	}
+
+	var payload struct {
+		Code int `json:"code"`
+		Data struct {
+			BlockMembers []struct {
+				BlockID   string   `json:"block_id"`
+				Name      string   `json:"name"`
+				BlockType string   `json:"block_type"`
+				Source    string   `json:"source"`
+				Members   []string `json:"members"`
+			} `json:"block_members"`
+			Failures []struct {
+				BlockID string `json:"block_id"`
+				Scope   string `json:"scope"`
+				Message string `json:"message"`
+			} `json:"failures"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v body=%s", err, rec.Body.String())
+	}
+	if payload.Code != 0 {
+		t.Fatalf("unexpected envelope: %s", rec.Body.String())
+	}
+	if len(payload.Data.BlockMembers) != 1 {
+		t.Fatalf("block_members = %+v, want one selector match body=%s", payload.Data.BlockMembers, rec.Body.String())
+	}
+	block := payload.Data.BlockMembers[0]
+	if block.Source != "block_gn.dat" || block.BlockType != "concept" || block.Name != "国防军工" {
+		t.Fatalf("unexpected block member identity: %+v", block)
+	}
+	if len(block.Members) != 2 || block.Members[0] != "sh600000" || block.Members[1] != "sz000001" {
+		t.Fatalf("unexpected block members: %+v", block.Members)
+	}
+	for _, failure := range payload.Data.Failures {
+		if failure.Scope == "block_members" {
+			t.Fatalf("unexpected block member failure: %+v", failure)
+		}
 	}
 }
 
@@ -318,16 +386,16 @@ func TestHandleTradingAuctionPackageUsesStoredAuctionSnapshot(t *testing.T) {
 				Precision    string `json:"precision"`
 			} `json:"auction_mkt"`
 			PlannedNames []struct {
-				FullCode      string  `json:"full_code"`
-				Symbol        string  `json:"symbol"`
-				AuctionPrice  float64 `json:"auction_price"`
-				PrevClose     float64 `json:"prev_close"`
-				AuctionPct    float64 `json:"auction_pct"`
-				AuctionAmount float64 `json:"auction_amount"`
-				Bid1Price     float64 `json:"bid1_price"`
-				Bid1Volume    int     `json:"bid1_volume"`
-				Precision     string  `json:"precision"`
-				Availability  string  `json:"availability"`
+				FullCode      string   `json:"full_code"`
+				Symbol        string   `json:"symbol"`
+				AuctionPrice  float64  `json:"auction_price"`
+				PrevClose     float64  `json:"prev_close"`
+				AuctionPct    *float64 `json:"auction_pct"`
+				AuctionAmount float64  `json:"auction_amount"`
+				Bid1Price     float64  `json:"bid1_price"`
+				Bid1Volume    int      `json:"bid1_volume"`
+				Precision     string   `json:"precision"`
+				Availability  string   `json:"availability"`
 			} `json:"planned_names"`
 			Failures []map[string]any `json:"failures"`
 		} `json:"data"`
@@ -351,11 +419,123 @@ func TestHandleTradingAuctionPackageUsesStoredAuctionSnapshot(t *testing.T) {
 	if planned.FullCode != "sz002579" || planned.Symbol != "002579.SZ" {
 		t.Fatalf("unexpected identity: %+v", planned)
 	}
-	if planned.AuctionPrice != 19.3 || planned.PrevClose != 18.5 || planned.AuctionPct != 4.32 || planned.AuctionAmount != 85000000 {
+	if planned.AuctionPrice != 19.3 || planned.PrevClose != 18.5 || planned.AuctionPct == nil || *planned.AuctionPct != 4.32 || planned.AuctionAmount != 85000000 {
 		t.Fatalf("unexpected auction fields: %+v", planned)
 	}
 	if planned.Bid1Price != 19.29 || planned.Bid1Volume != 120000 || planned.Precision != "AUCTION_HISTORY" || planned.Availability != "AVAILABLE" {
 		t.Fatalf("unexpected snapshot metadata: %+v", planned)
+	}
+	if len(payload.Data.Failures) != 0 {
+		t.Fatalf("failures = %+v, want empty", payload.Data.Failures)
+	}
+}
+
+func TestHandleTradingAuctionPackageMarksCancellableStoredSnapshotWithoutAuctionPricePartial(t *testing.T) {
+	originalDir := databaseDir
+	originalQuoteFetcher := tradingAuctionQuoteFetcher
+	originalNow := tradingAuctionNow
+	defer func() {
+		databaseDir = originalDir
+		tradingAuctionQuoteFetcher = originalQuoteFetcher
+		tradingAuctionNow = originalNow
+	}()
+	databaseDir = t.TempDir()
+	tradingAuctionNow = func() time.Time {
+		return time.Date(2026, 6, 16, 10, 0, 0, 0, time.Local)
+	}
+	tradingAuctionQuoteFetcher = func(codes ...string) (protocol.QuotesResp, error) {
+		return protocol.QuotesResp{}, fmt.Errorf("historical snapshot path must not fetch live quotes")
+	}
+
+	mustCreateMarketScreenCodesDB(t, filepath.Join(databaseDir, "codes.db"))
+	mustInsertMarketScreenCode(t, filepath.Join(databaseDir, "codes.db"), "深桑达Ａ", "000032", "sz")
+	if err := collectorpkg.StoreAuctionSnapshot(filepath.Join(databaseDir, "auction"), collectorpkg.AuctionSnapshot{
+		TradeDate:    "2026-06-16",
+		SnapshotTime: "09:20:00",
+		CollectedAt:  time.Date(2026, 6, 16, 9, 20, 1, 0, time.Local).Format(time.RFC3339),
+		Items: []collectorpkg.AuctionSnapshotItem{
+			{
+				InstrumentCode: "sz000032",
+				Name:           "深桑达Ａ",
+				AuctionPrice:   0,
+				AuctionAmount:  0,
+				PrevClose:      20.81,
+				AuctionPct:     -100,
+				Bid1Price:      22.82,
+				Bid1Volume:     6574,
+				Ask1Price:      22.82,
+				Ask1Volume:     6574,
+				CollectedAt:    time.Date(2026, 6, 16, 9, 20, 1, 0, time.Local).Format(time.RFC3339),
+			},
+		},
+	}); err != nil {
+		t.Fatalf("store auction snapshot: %v", err)
+	}
+
+	body := bytes.NewBufferString(`{
+		"market":"CN",
+		"trade_date":"2026-06-16",
+		"auction_phase":"CANCELLABLE",
+		"snapshot_time":"09:20:00",
+		"planned_full_codes":["sz000032"]
+	}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/trading/auction-package", body)
+	handleTradingAuctionPackage(rec, req)
+
+	var payload struct {
+		Code int `json:"code"`
+		Data struct {
+			PlannedNames []struct {
+				FullCode         string   `json:"full_code"`
+				AuctionPrice     float64  `json:"auction_price"`
+				AuctionPct       *float64 `json:"auction_pct"`
+				AuctionAmount    float64  `json:"auction_amount"`
+				Bid1Price        float64  `json:"bid1_price"`
+				Bid1Volume       int      `json:"bid1_volume"`
+				IndicativeBidPct float64  `json:"indicative_bid_pct"`
+				Availability     string   `json:"availability"`
+				MissingFields    []string `json:"missing_fields"`
+			} `json:"planned_names"`
+			AuctionMkt struct {
+				YDLimitUpChainFeedback struct {
+					AvailableCount int      `json:"available_count"`
+					LowOpenCount   int      `json:"low_open_count"`
+					AvgAuctionPct  *float64 `json:"avg_auction_pct"`
+				} `json:"yd_limit_up_chain_feedback"`
+			} `json:"auction_mkt"`
+			Failures []map[string]any `json:"failures"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v body=%s", err, rec.Body.String())
+	}
+	if payload.Code != 0 {
+		t.Fatalf("unexpected envelope: %s", rec.Body.String())
+	}
+	if len(payload.Data.PlannedNames) != 1 {
+		t.Fatalf("planned_names length = %d, want 1 body=%s", len(payload.Data.PlannedNames), rec.Body.String())
+	}
+	planned := payload.Data.PlannedNames[0]
+	if planned.FullCode != "sz000032" || planned.AuctionPrice != 0 || planned.AuctionAmount != 0 {
+		t.Fatalf("unexpected identity or missing auction fields: %+v", planned)
+	}
+	if planned.AuctionPct != nil {
+		t.Fatalf("missing auction price must have auction_pct=null: %+v", planned)
+	}
+	if planned.Bid1Price != 22.82 || planned.Bid1Volume != 6574 || planned.IndicativeBidPct != 9.66 {
+		t.Fatalf("unexpected indicative bid fields: %+v", planned)
+	}
+	if planned.Availability != "PARTIAL" {
+		t.Fatalf("availability = %s, want PARTIAL", planned.Availability)
+	}
+	for _, field := range []string{"auction_price", "auction_amount"} {
+		if !stringSliceContains(planned.MissingFields, field) {
+			t.Fatalf("missing_fields = %+v, want %s", planned.MissingFields, field)
+		}
+	}
+	if payload.Data.AuctionMkt.YDLimitUpChainFeedback.AvailableCount != 0 || payload.Data.AuctionMkt.YDLimitUpChainFeedback.LowOpenCount != 0 || payload.Data.AuctionMkt.YDLimitUpChainFeedback.AvgAuctionPct != nil {
+		t.Fatalf("partial auction price must not feed auction pct stats: %+v", payload.Data.AuctionMkt.YDLimitUpChainFeedback)
 	}
 	if len(payload.Data.Failures) != 0 {
 		t.Fatalf("failures = %+v, want empty", payload.Data.Failures)
@@ -487,6 +667,15 @@ func TestHandleTradingAuctionPackageUsesFinalHistoryWhenSnapshotMissing(t *testi
 	if len(payload.Data.Failures) != 0 {
 		t.Fatalf("failures = %+v, want empty", payload.Data.Failures)
 	}
+}
+
+func stringSliceContains(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }
 
 func testTradingAuctionQuote(exchange protocol.Exchange, code string, prevClose, open, price protocol.Price, amount float64, bid1 protocol.Price, bid1Volume int) *protocol.Quote {

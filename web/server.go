@@ -48,6 +48,7 @@ var (
 	collectorJobState          = newCollectorExecutionState()
 	collectorActiveRun         = newCollectorActiveRunState()
 	governanceActiveRun        = newCollectorActiveRunState()
+	tdxDialOffset              atomic.Uint64
 )
 
 const (
@@ -400,7 +401,7 @@ func init() {
 	var err error
 	configureDatabaseDir()
 	// 连接通达信服务器
-	client, err = tdx.DialDefault(tdx.WithDebug(false))
+	client, err = dialTDX(tdx.WithDebug(false))
 	if err != nil {
 		log.Fatalf("连接服务器失败: %v", err)
 	}
@@ -417,26 +418,76 @@ func init() {
 		log.Printf("初始化代码库失败: %v", err)
 	} else {
 		tdx.DefaultCodes = codes
-		if err := tdx.DefaultCodes.Update(); err != nil {
-			log.Printf("更新代码库失败: %v", err)
-		} else {
-			log.Printf("已加载股票代码，共 %d 条", len(tdx.DefaultCodes.Map))
-		}
+		refreshCodesForStartup("代码库", tdx.DefaultCodes)
 	}
 
 	manager, err = tdx.NewManage(&tdx.ManageConfig{
 		Number:          collectorCatchupWorkersForPool(),
 		CodesFilename:   filepath.Join(databaseDir, "codes.db"),
 		WorkdayFileName: filepath.Join(databaseDir, "workday.db"),
+		Dial:            dialTDX,
 	})
 	if err != nil {
 		log.Fatalf("初始化数据管理器失败: %v", err)
 	}
-	if err := manager.Codes.Update(); err != nil {
-		log.Printf("更新管理器代码库失败: %v", err)
-	}
+	refreshCodesForStartup("管理器代码库", manager.Codes)
 	manager.Cron.Start()
 	initCollectorRuntime()
+}
+
+func refreshCodesForStartup(label string, codes *tdx.Codes) {
+	if codes == nil {
+		return
+	}
+	if startupCodeRefreshUsesCache() {
+		if err := codes.Update(true); err != nil {
+			log.Printf("加载%s本地缓存失败: %v", label, err)
+		} else {
+			log.Printf("%s使用本地缓存，共 %d 条", label, len(codes.Map))
+		}
+		return
+	}
+	if err := codes.Update(); err != nil {
+		log.Printf("更新%s失败: %v", label, err)
+	} else {
+		log.Printf("已加载%s，共 %d 条", label, len(codes.Map))
+	}
+}
+
+func startupCodeRefreshUsesCache() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(tdx.StartupCodeRefreshEnv))) {
+	case "cache", "cached", "local", "skip":
+		return true
+	default:
+		return false
+	}
+}
+
+func tdxHostsForWeb() []string {
+	raw := strings.TrimSpace(os.Getenv("TDX_HOSTS"))
+	if raw == "" {
+		return append([]string(nil), tdx.Hosts...)
+	}
+	raw = strings.NewReplacer(",", " ", ";", " ").Replace(raw)
+	hosts := []string{}
+	for _, item := range strings.Fields(raw) {
+		hosts = append(hosts, item)
+	}
+	if len(hosts) == 0 {
+		return append([]string(nil), tdx.Hosts...)
+	}
+	return hosts
+}
+
+func rotatedTDXHosts(hosts []string, offset uint64) []string {
+	if len(hosts) == 0 {
+		return nil
+	}
+	start := int(offset % uint64(len(hosts)))
+	out := make([]string, 0, len(hosts))
+	out = append(out, hosts[start:]...)
+	out = append(out, hosts[:start]...)
+	return out
 }
 
 func initGovernanceControlPlane() {
@@ -697,7 +748,11 @@ func runAuctionSnapshotCollection(snapshotTime string) error {
 		return errors.New("auction collector runtime 未初始化")
 	}
 	now := time.Now().In(time.Local)
-	if manager != nil && manager.Workday != nil && !manager.Workday.Is(now) {
+	tradingDay, err := resolveTradingDay(now)
+	if err != nil {
+		return fmt.Errorf("auction snapshot %s 交易日判断失败: %w", snapshotTime, err)
+	}
+	if !tradingDay {
 		log.Printf("auction snapshot %s 跳过：%s 不是交易日", snapshotTime, now.Format("2006-01-02"))
 		return nil
 	}
@@ -719,11 +774,11 @@ func initDailyOpenRefreshRunner() {
 			return resolveTradingDay(day)
 		},
 		CodesRefresh: func(ctx context.Context) error {
-			if err := manager.Codes.Update(); err != nil {
+			if err := updateCodesForRefresh(manager.Codes); err != nil {
 				return err
 			}
 			if tdx.DefaultCodes != nil && tdx.DefaultCodes != manager.Codes {
-				if err := tdx.DefaultCodes.Update(true); err != nil {
+				if err := updateCodesForRefresh(tdx.DefaultCodes); err != nil {
 					return err
 				}
 			}
@@ -752,6 +807,13 @@ func initDailyOpenRefreshRunner() {
 		return
 	}
 	dailyOpenRefresh = runner
+}
+
+func updateCodesForRefresh(codes *tdx.Codes) error {
+	if startupCodeRefreshUsesCache() {
+		return codes.Update(true)
+	}
+	return codes.Update()
 }
 
 func initDailyCloseSyncRunner() {
@@ -1155,7 +1217,7 @@ func collectorRequestMinInterval() time.Duration {
 // 须与 collectorCatchUpWorkers / 限流 slot 数一致，否则 worker 会在 manage.Do 上空等连接。
 func collectorCatchupWorkersForPool() int {
 	if n, ok := collectorCatchupWorkersFromEnv(); ok {
-		return n
+		return collectorConnectionPoolWorkers(n)
 	}
 	return collectorDefaultWorkers
 }
@@ -1179,12 +1241,42 @@ func collectorCatchupWorkersFromEnv() (int, bool) {
 
 func collectorCatchUpWorkers() int {
 	if n, ok := collectorCatchupWorkersFromEnv(); ok {
-		return n
+		return collectorIntradayWorkerCap(n)
 	}
 	if manager != nil && manager.Config != nil && manager.Config.Number > 0 {
 		return manager.Config.Number
 	}
 	return collectorDefaultWorkers
+}
+
+func collectorConnectionPoolWorkers(workers int) int {
+	if workers > collectorDefaultWorkers {
+		log.Printf("collector: TDX 连接池启动规模限制为 %d，COLLECTOR_CATCHUP_WORKERS=%d 仅用于补采调度", collectorDefaultWorkers, workers)
+		return collectorDefaultWorkers
+	}
+	return workers
+}
+
+func collectorIntradayWorkerCap(workers int) int {
+	return collectorIntradayWorkerCapAt(workers, time.Now())
+}
+
+func collectorIntradayWorkerCapAt(workers int, now time.Time) int {
+	if workers > collectorDefaultWorkers && collectorInAshareTickerClock(now) {
+		log.Printf("collector: 盘中将 COLLECTOR_CATCHUP_WORKERS=%d 限制为 %d，避免压制实时 ticker", workers, collectorDefaultWorkers)
+		return collectorDefaultWorkers
+	}
+	return workers
+}
+
+func collectorInAshareTickerClock(now time.Time) bool {
+	local := now.In(time.Local)
+	switch local.Weekday() {
+	case time.Saturday, time.Sunday:
+		return false
+	}
+	minutes := local.Hour()*60 + local.Minute()
+	return minutes >= 9*60+15 && minutes <= 15*60+5
 }
 
 func collectorKlinePeriods() []collectorpkg.KlinePeriod {

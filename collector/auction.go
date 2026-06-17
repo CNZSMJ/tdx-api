@@ -161,7 +161,10 @@ func (s *AuctionService) Collect(ctx context.Context, tradeDate string, snapshot
 		}
 		last := q.Last.Float64()
 
-		aucPct := (last - prevClose) / prevClose * 100
+		aucPct := 0.0
+		if last > 0 {
+			aucPct = (last - prevClose) / prevClose * 100
+		}
 
 		bid1Price := 0.0
 		var bid1Volume int64
@@ -177,7 +180,7 @@ func (s *AuctionService) Collect(ctx context.Context, tradeDate string, snapshot
 		}
 
 		amount := q.AmountYuan // already in yuan from QuoteSnapshot
-		if amount == 0 {
+		if amount == 0 && last > 0 {
 			amount = float64(q.VolumeHand) * last * 100 // fallback: hand * price * 100
 		}
 
@@ -192,8 +195,8 @@ func (s *AuctionService) Collect(ctx context.Context, tradeDate string, snapshot
 			Bid1Volume:      bid1Volume,
 			Ask1Price:       ask1Price,
 			Ask1Volume:      ask1Volume,
-			IsLimitUpOpen:   aucPct >= limitUpPct,
-			IsLimitDownOpen: aucPct <= limitDownPct,
+			IsLimitUpOpen:   last > 0 && aucPct >= limitUpPct,
+			IsLimitDownOpen: last > 0 && aucPct <= limitDownPct,
 			CollectedAt:     now.Format(time.RFC3339),
 		}
 		snapshot.Items = append(snapshot.Items, item)

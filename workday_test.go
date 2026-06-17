@@ -98,3 +98,74 @@ func TestWorkdayLoadCacheRepairsLegacyDuplicateDates(t *testing.T) {
 		t.Fatalf("expected UQE_workday_Date index to exist after repair")
 	}
 }
+
+func TestWorkdayTodayIsFallsBackToWeekdayWhenCacheIsStaleAndRefreshFails(t *testing.T) {
+	originalNow := workdayNow
+	defer func() {
+		workdayNow = originalNow
+	}()
+	workdayNow = func() time.Time {
+		return time.Date(2026, 6, 4, 9, 20, 0, 0, time.Local)
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "workday.db")
+	engine, err := xorm.NewEngine("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite engine: %v", err)
+	}
+	defer engine.Close()
+	engine.SetMapper(core.SameMapper{})
+	engine.DB().SetMaxOpenConns(1)
+
+	if err := engine.Sync2(new(WorkdayModel)); err != nil {
+		t.Fatalf("sync workday schema: %v", err)
+	}
+	prev := canonicalWorkdayTime(time.Date(2026, 6, 3, 0, 0, 0, 0, time.Local))
+	if _, err := engine.Insert(&WorkdayModel{Unix: prev.Unix(), Date: prev.Format("20060102")}); err != nil {
+		t.Fatalf("seed previous workday: %v", err)
+	}
+
+	w := &Workday{db: engine, cache: maps.NewBit()}
+	if _, err := w.loadCache(); err != nil {
+		t.Fatalf("load cache: %v", err)
+	}
+	if !w.TodayIs() {
+		t.Fatal("expected stale weekday cache to allow today's scheduler gate")
+	}
+}
+
+func TestWorkdayTodayIsDoesNotFallbackWhenCacheCoversDate(t *testing.T) {
+	originalNow := workdayNow
+	defer func() {
+		workdayNow = originalNow
+	}()
+	workdayNow = func() time.Time {
+		return time.Date(2026, 6, 4, 9, 20, 0, 0, time.Local)
+	}
+
+	w := &Workday{
+		cache:      maps.NewBit(),
+		latestUnix: canonicalWorkdayTime(time.Date(2026, 6, 5, 0, 0, 0, 0, time.Local)).Unix(),
+	}
+	if w.TodayIs() {
+		t.Fatal("expected covered non-workday date to stay false")
+	}
+}
+
+func TestWorkdayTodayIsDoesNotFallbackOnWeekend(t *testing.T) {
+	originalNow := workdayNow
+	defer func() {
+		workdayNow = originalNow
+	}()
+	workdayNow = func() time.Time {
+		return time.Date(2026, 6, 6, 9, 20, 0, 0, time.Local)
+	}
+
+	w := &Workday{
+		cache:      maps.NewBit(),
+		latestUnix: canonicalWorkdayTime(time.Date(2026, 6, 5, 0, 0, 0, 0, time.Local)).Unix(),
+	}
+	if w.TodayIs() {
+		t.Fatal("expected stale weekend cache to stay false")
+	}
+}

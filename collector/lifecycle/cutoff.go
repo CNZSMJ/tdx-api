@@ -10,7 +10,7 @@ import (
 	_ "github.com/glebarez/go-sqlite"
 )
 
-const DefaultHotRetentionTradingDays = 180
+const DefaultHotRetentionTradingDays = 132
 const DefaultWorkdayMaxStaleCalendarDays = 7
 
 type CutoffResult struct {
