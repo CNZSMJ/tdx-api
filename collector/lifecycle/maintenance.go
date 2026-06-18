@@ -9,10 +9,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
 const defaultLifecycleDataset = "a-stock-market-tdx"
+
+var errLifecycleRuntimeBudgetExhausted = errors.New("runtime budget exhausted")
 
 func (r MaintenanceRunner) RunWithContext(ctx context.Context) (MaintenanceResult, error) {
 	if r.Manifest == nil || r.Storage == nil || strings.TrimSpace(r.DataDir) == "" {
@@ -77,39 +80,8 @@ func (r MaintenanceRunner) RunWithContext(ctx context.Context) (MaintenanceResul
 		result.LifecycleDebt.FailedSegments = status.SegmentCounts[string(SegmentFailed)]
 	}
 
-	for _, group := range groupCandidatesByDB(plan.Selected) {
-		if err := ctx.Err(); err != nil {
-			result.Status = "interrupted"
-			result.Reason = err.Error()
-			return result, err
-		}
-		if time.Since(r.StartedAt) > r.RuntimeBudget {
-			result.Status = "partial"
-			result.Reason = "runtime budget exhausted"
-			return result, nil
-		}
-		segments, err := r.processCandidateGroup(ctx, group, cutoff)
-		if err != nil {
-			result.Status = "partial"
-			if result.Reason == "" {
-				result.Reason = err.Error()
-			}
-			continue
-		}
-		for _, segment := range segments {
-			result.ProcessedSegments++
-			result.RowsArchived += segment.Export.RowCount
-			if segment.Pruned {
-				result.PrunedSegments++
-				result.BytesReleased += segment.BytesReleased
-			} else if r.AllowPrune {
-				result.Status = "partial"
-				result.Reason = "candidate exported and restore-tested but not pruned"
-			} else {
-				result.Status = "partial"
-				result.Reason = "hot pruning disabled"
-			}
-		}
+	if err := r.processCandidateGroups(ctx, groupCandidatesByDB(plan.Selected), cutoff, &result); err != nil {
+		return result, err
 	}
 	if result.ProcessedSegments == 0 && len(plan.Selected) == 0 {
 		result.Status = "skipped"
@@ -130,6 +102,116 @@ type archivedSegment struct {
 	Candidate   LifecycleCandidate
 	Export      SegmentExportResult
 	PruneCutoff string
+}
+
+type candidateGroupResult struct {
+	Segments []processedSegment
+	Err      error
+}
+
+func (r MaintenanceRunner) processCandidateGroups(ctx context.Context, groups [][]LifecycleCandidate, cutoff string, result *MaintenanceResult) error {
+	if r.processWorkers() <= 1 {
+		return r.processCandidateGroupsSerial(ctx, groups, cutoff, result)
+	}
+	return r.processCandidateGroupsParallel(ctx, groups, cutoff, result)
+}
+
+func (r MaintenanceRunner) processCandidateGroupsSerial(ctx context.Context, groups [][]LifecycleCandidate, cutoff string, result *MaintenanceResult) error {
+	for _, group := range groups {
+		if err := ctx.Err(); err != nil {
+			result.Status = "interrupted"
+			result.Reason = err.Error()
+			return err
+		}
+		if time.Since(r.StartedAt) > r.RuntimeBudget {
+			result.Status = "partial"
+			result.Reason = errLifecycleRuntimeBudgetExhausted.Error()
+			return nil
+		}
+		segments, err := r.processCandidateGroup(ctx, group, cutoff)
+		r.applyCandidateGroupResult(result, candidateGroupResult{Segments: segments, Err: err})
+	}
+	return nil
+}
+
+func (r MaintenanceRunner) processCandidateGroupsParallel(ctx context.Context, groups [][]LifecycleCandidate, cutoff string, result *MaintenanceResult) error {
+	jobs := make(chan []LifecycleCandidate, len(groups))
+	results := make(chan candidateGroupResult, len(groups))
+	workers := r.processWorkers()
+	if workers > len(groups) {
+		workers = len(groups)
+	}
+	for _, group := range groups {
+		jobs <- group
+	}
+	close(jobs)
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			for group := range jobs {
+				if err := ctx.Err(); err != nil {
+					results <- candidateGroupResult{Err: err}
+					continue
+				}
+				if time.Since(r.StartedAt) > r.RuntimeBudget {
+					results <- candidateGroupResult{Err: errLifecycleRuntimeBudgetExhausted}
+					continue
+				}
+				segments, err := r.processCandidateGroup(ctx, group, cutoff)
+				results <- candidateGroupResult{Segments: segments, Err: err}
+			}
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	var interruptErr error
+	for groupResult := range results {
+		if errors.Is(groupResult.Err, context.Canceled) || errors.Is(groupResult.Err, context.DeadlineExceeded) {
+			interruptErr = groupResult.Err
+		}
+		r.applyCandidateGroupResult(result, groupResult)
+	}
+	if interruptErr != nil {
+		result.Status = "interrupted"
+		result.Reason = interruptErr.Error()
+		return interruptErr
+	}
+	return nil
+}
+
+func (r MaintenanceRunner) applyCandidateGroupResult(result *MaintenanceResult, groupResult candidateGroupResult) {
+	if groupResult.Err != nil {
+		if errors.Is(groupResult.Err, errLifecycleRuntimeBudgetExhausted) {
+			result.Status = "partial"
+			if result.Reason == "" {
+				result.Reason = errLifecycleRuntimeBudgetExhausted.Error()
+			}
+			return
+		}
+		result.Status = "partial"
+		if result.Reason == "" {
+			result.Reason = groupResult.Err.Error()
+		}
+		return
+	}
+	for _, segment := range groupResult.Segments {
+		result.ProcessedSegments++
+		result.RowsArchived += segment.Export.RowCount
+		if segment.Pruned {
+			result.PrunedSegments++
+			result.BytesReleased += segment.BytesReleased
+		} else if r.AllowPrune {
+			result.Status = "partial"
+			result.Reason = "candidate exported and restore-tested but not pruned"
+		} else {
+			result.Status = "partial"
+			result.Reason = "hot pruning disabled"
+		}
+	}
 }
 
 func (r MaintenanceRunner) processCandidate(ctx context.Context, candidate LifecycleCandidate, cutoff string) (processedSegment, error) {
@@ -348,14 +430,14 @@ func (r MaintenanceRunner) pruneCandidate(segmentID, batchID string, candidate L
 	if rebuild.PrunedRows <= 0 {
 		return 0, fmt.Errorf("replacement would prune no rows for %s %s", candidate.DBPath, candidate.TableName)
 	}
-	if err := VerifyHotRetainedRows(candidate.DBPath, replacement, candidate.TableName, cutoff); err != nil {
+	if err := verifyHotRetainedRowsForTables(candidate.DBPath, replacement, map[string]string{candidate.TableName: cutoff}, false); err != nil {
 		return 0, err
 	}
-	replace, err := AtomicReplaceHotDB(candidate.DBPath, replacement, batchID)
+	replace, err := AtomicReplaceVerifiedHotDB(candidate.DBPath, replacement, batchID)
 	if err != nil {
 		return 0, err
 	}
-	if err := VerifyHotRetainedRows(replace.BackupPath, candidate.DBPath, candidate.TableName, cutoff); err != nil {
+	if err := verifyHotRetainedRowsForTables(replace.BackupPath, candidate.DBPath, map[string]string{candidate.TableName: cutoff}, false); err != nil {
 		_ = RollbackHotDBReplacement(candidate.DBPath, replace.BackupPath)
 		return 0, err
 	}
@@ -412,14 +494,14 @@ func (r MaintenanceRunner) pruneCandidateGroup(batchID string, segments []archiv
 	if rebuild.PrunedRows <= 0 {
 		return 0, fmt.Errorf("replacement would prune no rows for %s tables=%s", dbPath, strings.Join(sortedTableNames(tableCutoffs), ","))
 	}
-	if err := VerifyHotRetainedRowsForTables(dbPath, replacement, tableCutoffs); err != nil {
+	if err := verifyHotRetainedRowsForTables(dbPath, replacement, tableCutoffs, false); err != nil {
 		return 0, err
 	}
-	replace, err := AtomicReplaceHotDB(dbPath, replacement, batchID)
+	replace, err := AtomicReplaceVerifiedHotDB(dbPath, replacement, batchID)
 	if err != nil {
 		return 0, err
 	}
-	if err := VerifyHotRetainedRowsForTables(replace.BackupPath, dbPath, tableCutoffs); err != nil {
+	if err := verifyHotRetainedRowsForTables(replace.BackupPath, dbPath, tableCutoffs, false); err != nil {
 		_ = RollbackHotDBReplacement(dbPath, replace.BackupPath)
 		return 0, err
 	}
@@ -542,6 +624,13 @@ func (r MaintenanceRunner) minVerifiedSegments() int {
 		return r.MinVerifiedSegments
 	}
 	return 100
+}
+
+func (r MaintenanceRunner) processWorkers() int {
+	if r.ProcessWorkers > 0 {
+		return r.ProcessWorkers
+	}
+	return 1
 }
 
 func (r MaintenanceRunner) restorePath(segmentID, table string) string {

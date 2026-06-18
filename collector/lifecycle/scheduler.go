@@ -100,6 +100,7 @@ type MaintenanceRuntime struct {
 	WriteWatermarkBytes  int64
 	SafetyMarginBytes    int64
 	RuntimeBudget        time.Duration
+	ProcessWorkers       int
 	StartedAt            time.Time
 }
 

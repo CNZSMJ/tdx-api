@@ -47,6 +47,7 @@ type cliConfig struct {
 	MinFreeBytes        int64
 	SafetyMarginBytes   int64
 	RuntimeBudget       time.Duration
+	ProcessWorkers      int
 	MaxRuns             int
 	UntilClean          bool
 	DryRun              bool
@@ -116,6 +117,7 @@ func parseConfig(args []string, stderr io.Writer) (cliConfig, error) {
 		MinFreeBytes:        envInt64("TDX_LIFECYCLE_MIN_FREE_BYTES", defaultMinFreeBytes),
 		SafetyMarginBytes:   envInt64("TDX_LIFECYCLE_SAFETY_MARGIN_BYTES", defaultSafetyBytes),
 		RuntimeBudget:       envDuration("TDX_LIFECYCLE_RUNTIME_BUDGET", 30*time.Minute),
+		ProcessWorkers:      envInt("TDX_LIFECYCLE_PROCESS_WORKERS", 1),
 		MaxRuns:             1,
 		GovernanceRecord:    envBool("TDX_LIFECYCLE_GOVERNANCE_RECORD", true),
 		BatchPrefix:         "manual-lifecycle",
@@ -142,6 +144,7 @@ func parseConfig(args []string, stderr io.Writer) (cliConfig, error) {
 	fs.Int64Var(&cfg.MinFreeBytes, "min-free-bytes", cfg.MinFreeBytes, "free-space watermark required before starting a run")
 	fs.Int64Var(&cfg.SafetyMarginBytes, "safety-margin-bytes", cfg.SafetyMarginBytes, "extra free-space safety margin for candidate planning")
 	fs.DurationVar(&cfg.RuntimeBudget, "runtime-budget", cfg.RuntimeBudget, "per-run runtime budget")
+	fs.IntVar(&cfg.ProcessWorkers, "process-workers", cfg.ProcessWorkers, "maximum source DB groups to archive/prune concurrently")
 	fs.IntVar(&cfg.MaxRuns, "max-runs", cfg.MaxRuns, "maximum loop iterations")
 	fs.BoolVar(&cfg.UntilClean, "until-clean", false, "continue until no candidates or max-runs is reached")
 	fs.BoolVar(&cfg.DryRun, "dry-run", false, "plan only; does not write manifest, cold storage, or hot DBs")
@@ -183,7 +186,7 @@ func parseConfig(args []string, stderr io.Writer) (cliConfig, error) {
 	if cfg.RuntimeBudget <= 0 {
 		return cliConfig{}, fmt.Errorf("runtime-budget must be positive")
 	}
-	if cfg.MinVerifiedSegments < 0 || cfg.MaxCandidates < 0 || cfg.MaxArchiveDays < 0 || cfg.MaxInventoryFiles < 0 || cfg.MinFreeBytes < 0 || cfg.SafetyMarginBytes < 0 {
+	if cfg.MinVerifiedSegments < 0 || cfg.MaxCandidates < 0 || cfg.MaxArchiveDays < 0 || cfg.MaxInventoryFiles < 0 || cfg.MinFreeBytes < 0 || cfg.SafetyMarginBytes < 0 || cfg.ProcessWorkers < 0 {
 		return cliConfig{}, fmt.Errorf("lifecycle numeric limits must be non-negative")
 	}
 	if cfg.CandidateSort != "size_asc" && cfg.CandidateSort != "size_desc" {
@@ -337,6 +340,7 @@ func executeMaintenance(ctx context.Context, cfg cliConfig, batchID string, star
 			WriteWatermarkBytes: cfg.MinFreeBytes,
 			SafetyMarginBytes:   cfg.SafetyMarginBytes,
 			RuntimeBudget:       cfg.RuntimeBudget,
+			ProcessWorkers:      cfg.ProcessWorkers,
 			StartedAt:           startedAt,
 		},
 		MaintenanceLimits: lifecycle.MaintenanceLimits{

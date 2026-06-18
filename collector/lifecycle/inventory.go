@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -341,10 +342,10 @@ func inventorySQLiteFile(path, domain, instrument string) ([]TableInventory, err
 				return nil, fmt.Errorf("date range %s: %w", table, err)
 			}
 			if minDate.Valid {
-				row.MinDate = minDate.String
+				row.MinDate = normalizeInventoryDateValue(dateColumn, minDate.String)
 			}
 			if maxDate.Valid {
-				row.MaxDate = maxDate.String
+				row.MaxDate = normalizeInventoryDateValue(dateColumn, maxDate.String)
 			}
 		}
 		rows = append(rows, row)
@@ -393,15 +394,48 @@ func sqliteColumns(db *sql.DB, table string) (map[string]string, error) {
 func inventoryDateExpression(columns map[string]string) (string, string) {
 	for _, name := range []string{"TradeDate", "trade_date", "report_date", "Date", "date"} {
 		if _, ok := columns[name]; ok {
-			return name, normalizedSQLiteDateExpr(name)
+			return name, quoteIdent(name)
 		}
 	}
 	for _, name := range []string{"CaptureTime", "capture_time"} {
 		if _, ok := columns[name]; ok {
-			return name, "strftime('%Y%m%d', " + quoteIdent(name) + ", 'unixepoch', '+8 hours')"
+			return name, quoteIdent(name)
 		}
 	}
 	return "", ""
+}
+
+func normalizeInventoryDateValue(column, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	switch column {
+	case "CaptureTime", "capture_time":
+		seconds, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			return ""
+		}
+		return time.Unix(int64(seconds), 0).UTC().Add(8 * time.Hour).Format("20060102")
+	default:
+		normalized := strings.ReplaceAll(value, "-", "")
+		digits := strings.Builder{}
+		for _, ch := range normalized {
+			if ch >= '0' && ch <= '9' {
+				digits.WriteRune(ch)
+			}
+			if digits.Len() >= 8 {
+				break
+			}
+		}
+		if digits.Len() >= 8 {
+			return digits.String()
+		}
+		if len(normalized) > 8 {
+			return normalized[:8]
+		}
+		return normalized
+	}
 }
 
 func normalizedSQLiteDateExpr(name string) string {

@@ -164,6 +164,10 @@ func VerifyHotRetainedRows(sourceDB, replacementDB, table, cutoff string) error 
 }
 
 func VerifyHotRetainedRowsForTables(sourceDB, replacementDB string, tableCutoffs map[string]string) error {
+	return verifyHotRetainedRowsForTables(sourceDB, replacementDB, tableCutoffs, true)
+}
+
+func verifyHotRetainedRowsForTables(sourceDB, replacementDB string, tableCutoffs map[string]string, checkIntegrity bool) error {
 	source, err := openLifecycleSQLiteReadOnly(sourceDB)
 	if err != nil {
 		return err
@@ -198,7 +202,14 @@ func VerifyHotRetainedRowsForTables(sourceDB, replacementDB string, tableCutoffs
 	if err := compareIndexNames(source, replacement); err != nil {
 		return err
 	}
+	if !checkIntegrity {
+		return nil
+	}
 	return integrityCheck(replacement)
+}
+
+func AtomicReplaceVerifiedHotDB(sourcePath, replacementPath, batchID string) (AtomicReplaceResult, error) {
+	return atomicReplaceHotDB(sourcePath, replacementPath, batchID, false)
 }
 
 func (req RebuildRequest) effectiveTableCutoffs() map[string]string {
@@ -230,16 +241,21 @@ func sortedTableNames(tableCutoffs map[string]string) []string {
 }
 
 func AtomicReplaceHotDB(sourcePath, replacementPath, batchID string) (AtomicReplaceResult, error) {
-	replacement, err := openLifecycleSQLiteReadOnly(replacementPath)
-	if err != nil {
-		return AtomicReplaceResult{}, err
-	}
-	if err := integrityCheck(replacement); err != nil {
-		_ = replacement.Close()
-		return AtomicReplaceResult{}, err
-	}
-	_ = replacement.Close()
+	return atomicReplaceHotDB(sourcePath, replacementPath, batchID, true)
+}
 
+func atomicReplaceHotDB(sourcePath, replacementPath, batchID string, verifyIntegrity bool) (AtomicReplaceResult, error) {
+	if verifyIntegrity {
+		replacement, err := openLifecycleSQLiteReadOnly(replacementPath)
+		if err != nil {
+			return AtomicReplaceResult{}, err
+		}
+		if err := integrityCheck(replacement); err != nil {
+			_ = replacement.Close()
+			return AtomicReplaceResult{}, err
+		}
+		_ = replacement.Close()
+	}
 	backupPath := sourcePath + ".pre_lifecycle." + batchID + ".bak"
 	if err := os.Rename(sourcePath, backupPath); err != nil {
 		return AtomicReplaceResult{}, err
