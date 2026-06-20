@@ -44,6 +44,8 @@ type cliConfig struct {
 	MaxArchiveDays      int
 	MaxInventoryFiles   int
 	CandidateSort       string
+	CandidateDomainsRaw string
+	CandidateDomains    []string
 	MinFreeBytes        int64
 	SafetyMarginBytes   int64
 	RuntimeBudget       time.Duration
@@ -141,6 +143,7 @@ func parseConfig(args []string, stderr io.Writer) (cliConfig, error) {
 	fs.IntVar(&cfg.MaxArchiveDays, "max-archive-days", cfg.MaxArchiveDays, "maximum calendar-day span archived per segment")
 	fs.IntVar(&cfg.MaxInventoryFiles, "max-inventory-files", cfg.MaxInventoryFiles, "maximum SQLite files to deep-inventory after size sorting; 0 means no cap")
 	fs.StringVar(&cfg.CandidateSort, "candidate-sort", cfg.CandidateSort, "candidate discovery sort: size_asc or size_desc")
+	fs.StringVar(&cfg.CandidateDomainsRaw, "domains", "", "comma-separated lifecycle domains to inventory, for example: trade")
 	fs.Int64Var(&cfg.MinFreeBytes, "min-free-bytes", cfg.MinFreeBytes, "free-space watermark required before starting a run")
 	fs.Int64Var(&cfg.SafetyMarginBytes, "safety-margin-bytes", cfg.SafetyMarginBytes, "extra free-space safety margin for candidate planning")
 	fs.DurationVar(&cfg.RuntimeBudget, "runtime-budget", cfg.RuntimeBudget, "per-run runtime budget")
@@ -192,6 +195,7 @@ func parseConfig(args []string, stderr io.Writer) (cliConfig, error) {
 	if cfg.CandidateSort != "size_asc" && cfg.CandidateSort != "size_desc" {
 		return cliConfig{}, fmt.Errorf("candidate-sort must be size_asc or size_desc")
 	}
+	cfg.CandidateDomains = parseCSV(cfg.CandidateDomainsRaw)
 	return cfg, nil
 }
 
@@ -349,6 +353,7 @@ func executeMaintenance(ctx context.Context, cfg cliConfig, batchID string, star
 			MaxInventoryFiles: cfg.MaxInventoryFiles,
 			CandidateSort:     cfg.CandidateSort,
 			HotCutoffDate:     cfg.HotCutoffDate,
+			CandidateDomains:  cfg.CandidateDomains,
 		},
 	}.RunWithContext(ctx)
 	return result, err
@@ -357,19 +362,17 @@ func executeMaintenance(ctx context.Context, cfg cliConfig, batchID string, star
 func runDryRun(ctx context.Context, cfg cliConfig, stdout io.Writer) error {
 	startedAt := time.Now()
 	freeBefore, _ := freeBytes(cfg.DataDir)
-	cutoff := cfg.HotCutoffDate
-	if cutoff == "" {
-		resolved, err := lifecycle.ComputeHotCutoffFromWorkdayDB(cfg.WorkdayDBPath, startedAt, lifecycle.DefaultHotRetentionTradingDays)
-		if err != nil {
-			return err
-		}
-		cutoff = resolved.HotCutoffTradeDate
-	}
-	report, err := lifecycle.InventoryStorage(cfg.DataDir)
+	cutoffs, err := lifecycle.ResolveHotCutoffDates(cfg.WorkdayDBPath, startedAt, cfg.HotCutoffDate)
 	if err != nil {
 		return err
 	}
-	candidates := lifecycle.PlanSteadyStateRetention(report, cutoff).Candidates
+	report, err := lifecycle.InventoryStorageForDomains(cfg.DataDir, cfg.CandidateDomains)
+	if err != nil {
+		return err
+	}
+	candidates := lifecycle.PlanSteadyStateRetentionWithCutoffs(report, func(row lifecycle.TableInventory) string {
+		return cutoffs.ForTable(row.Domain, row.Table)
+	}).Candidates
 	result, err := lifecycle.MaintenanceRunner{
 		MaintenanceResources: lifecycle.MaintenanceResources{Candidates: candidates},
 		MaintenanceRuntime: lifecycle.MaintenanceRuntime{
@@ -379,8 +382,9 @@ func runDryRun(ctx context.Context, cfg cliConfig, stdout io.Writer) error {
 			WriteWatermarkBytes: cfg.MinFreeBytes,
 		},
 		MaintenanceLimits: lifecycle.MaintenanceLimits{
-			MaxCandidates: cfg.MaxCandidates,
-			HotCutoffDate: cutoff,
+			MaxCandidates:    cfg.MaxCandidates,
+			HotCutoffDate:    cutoffs.Default,
+			CandidateDomains: cfg.CandidateDomains,
 		},
 	}.RunWithContext(ctx)
 	record := commandRunRecord{
@@ -433,6 +437,19 @@ func envString(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func parseCSV(raw string) []string {
+	items := strings.Split(raw, ",")
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 func envInt(name string, fallback int) int {

@@ -110,6 +110,67 @@ func TestMaintenanceRunnerArchivesRestoreTestsAndPrunesCandidate(t *testing.T) {
 	}
 }
 
+func TestMaintenanceRunnerUsesCandidateHotCutoff(t *testing.T) {
+	root := t.TempDir()
+	sourceDB := filepath.Join(root, "data", "trade", "sh600000.db")
+	mustCreateSQLite(t, sourceDB, []string{
+		`CREATE TABLE TradeHistory(Code TEXT, TradeDate TEXT, TradeTime INTEGER, Seq INTEGER, Price INTEGER, VolumeHand INTEGER, Number INTEGER, StatusCode INTEGER, Side TEXT)`,
+		`INSERT INTO TradeHistory VALUES('sh600000','20260301',1772335800,1,11000,10,1,0,'B')`,
+		`INSERT INTO TradeHistory VALUES('sh600000','20260501',1777599000,1,12000,20,2,0,'S')`,
+	})
+	sourceStat, err := os.Stat(sourceDB)
+	if err != nil {
+		t.Fatalf("source stat: %v", err)
+	}
+	manifest, err := OpenManifestStore(filepath.Join(root, "cold_manifest.db"))
+	if err != nil {
+		t.Fatalf("open manifest: %v", err)
+	}
+	defer manifest.Close()
+
+	runner := testMaintenanceRunner(root, manifest, []LifecycleCandidate{{
+		DBPath:                    sourceDB,
+		Domain:                    "trade",
+		TableName:                 "TradeHistory",
+		Instrument:                "sh600000",
+		MinDate:                   "20260301",
+		MaxDate:                   "20260501",
+		HotCutoffDate:             "20260401",
+		SourceDBBytes:             sourceStat.Size(),
+		ColdRowShare:              0.5,
+		EstimatedParquetRatio:     0.4,
+		EstimatedReplacementRatio: 0.5,
+	}})
+	runner.HotCutoffDate = "20250101"
+
+	result, err := runner.RunWithContext(context.Background())
+	if err != nil {
+		t.Fatalf("maintenance run: %v", err)
+	}
+	if result.Status != "passed" || result.RowsArchived != 1 || result.PrunedSegments != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	db, err := openLifecycleSQLiteReadOnly(sourceDB)
+	if err != nil {
+		t.Fatalf("open pruned db: %v", err)
+	}
+	defer db.Close()
+	var tradeDate string
+	if err := db.QueryRow(`SELECT TradeDate FROM TradeHistory`).Scan(&tradeDate); err != nil {
+		t.Fatalf("query remaining row: %v", err)
+	}
+	if tradeDate != "20260501" {
+		t.Fatalf("remaining trade date = %s, want 20260501", tradeDate)
+	}
+	segments, err := manifest.ListSegments()
+	if err != nil {
+		t.Fatalf("list segments: %v", err)
+	}
+	if len(segments) != 1 || segments[0].EndDate != "20260301" {
+		t.Fatalf("unexpected segment: %+v", segments)
+	}
+}
+
 func TestMaintenanceRunnerArchivesAuctionSnapshotAndPrunesCandidate(t *testing.T) {
 	root := t.TempDir()
 	sourceDB := filepath.Join(root, "data", "auction", "auction.db")
@@ -464,6 +525,30 @@ func TestDiscoverLifecycleCandidatesCanSortLargestFirst(t *testing.T) {
 		t.Fatalf("discover candidates: %v", err)
 	}
 	if len(candidates) != 1 || candidates[0].Instrument != "sh600002" {
+		t.Fatalf("unexpected candidates: %+v", candidates)
+	}
+}
+
+func TestDiscoverLifecycleCandidatesCanFilterDomains(t *testing.T) {
+	root := t.TempDir()
+	tradeDB := filepath.Join(root, "data", "trade", "sh600001.db")
+	liveDB := filepath.Join(root, "data", "live", "sh600001.db")
+	mustCreateSQLite(t, tradeDB, []string{
+		`CREATE TABLE TradeHistory(Code TEXT, TradeDate TEXT, TradeTime INTEGER, Seq INTEGER, Price INTEGER, VolumeHand INTEGER, Number INTEGER, StatusCode INTEGER, Side TEXT)`,
+		`INSERT INTO TradeHistory VALUES('sh600001','20230102',1672623000,1,11000,10,1,0,'B')`,
+	})
+	mustCreateSQLite(t, liveDB, []string{
+		`CREATE TABLE TradeLive(Code TEXT, TradeDate TEXT, TradeTime INTEGER, Seq INTEGER, Price INTEGER, VolumeHand INTEGER, Number INTEGER, StatusCode INTEGER, Side TEXT)`,
+		`INSERT INTO TradeLive VALUES('sh600001','20230102',1672623000,1,11000,10,1,0,'B')`,
+	})
+
+	candidates, err := DiscoverLifecycleCandidates(context.Background(), filepath.Join(root, "data"), "20260401", CandidateDiscoveryOptions{
+		Domains: []string{"trade"},
+	})
+	if err != nil {
+		t.Fatalf("discover candidates: %v", err)
+	}
+	if len(candidates) != 1 || candidates[0].Domain != "trade" {
 		t.Fatalf("unexpected candidates: %+v", candidates)
 	}
 }

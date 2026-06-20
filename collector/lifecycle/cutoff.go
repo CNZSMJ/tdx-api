@@ -5,13 +5,20 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	_ "github.com/glebarez/go-sqlite"
 )
 
 const DefaultHotRetentionTradingDays = 132
+const TradeHotRetentionTradingDays = 60
 const DefaultWorkdayMaxStaleCalendarDays = 7
+
+type HotCutoffDates struct {
+	Default        string
+	ByRetentionDay map[int]string
+}
 
 type CutoffResult struct {
 	EvaluatedAt           time.Time
@@ -84,6 +91,56 @@ func ComputeHotCutoffFromWorkdayDB(path string, now time.Time, retentionTradingD
 	}
 	result.WorkdaySource = path
 	return result, nil
+}
+
+func ResolveHotCutoffDates(path string, now time.Time, explicitHotCutoffDate string) (HotCutoffDates, error) {
+	explicit := strings.TrimSpace(explicitHotCutoffDate)
+	if explicit != "" {
+		return HotCutoffDates{
+			Default: explicit,
+			ByRetentionDay: map[int]string{
+				DefaultHotRetentionTradingDays: explicit,
+				TradeHotRetentionTradingDays:   explicit,
+			},
+		}, nil
+	}
+	if strings.TrimSpace(path) == "" {
+		return HotCutoffDates{}, errors.New("hot cutoff date or workday db path is required")
+	}
+	days, err := LoadTradingDaysFromWorkdayDB(path)
+	if err != nil {
+		return HotCutoffDates{}, err
+	}
+	byRetentionDay := make(map[int]string, 2)
+	for _, retentionDays := range []int{DefaultHotRetentionTradingDays, TradeHotRetentionTradingDays} {
+		result, err := ComputeHotCutoff(days, now, retentionDays)
+		if err != nil {
+			return HotCutoffDates{}, err
+		}
+		byRetentionDay[retentionDays] = result.HotCutoffTradeDate
+	}
+	return HotCutoffDates{
+		Default:        byRetentionDay[DefaultHotRetentionTradingDays],
+		ByRetentionDay: byRetentionDay,
+	}, nil
+}
+
+func (c HotCutoffDates) ForTable(domain, table string) string {
+	retentionDays := HotRetentionTradingDaysFor(domain, table)
+	if c.ByRetentionDay != nil {
+		if cutoff := strings.TrimSpace(c.ByRetentionDay[retentionDays]); cutoff != "" {
+			return cutoff
+		}
+	}
+	return strings.TrimSpace(c.Default)
+}
+
+func HotRetentionTradingDaysFor(domain, table string) int {
+	_ = table
+	if strings.TrimSpace(domain) == "trade" {
+		return TradeHotRetentionTradingDays
+	}
+	return DefaultHotRetentionTradingDays
 }
 
 func LoadTradingDaysFromWorkdayDB(path string) ([]time.Time, error) {

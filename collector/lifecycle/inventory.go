@@ -28,6 +28,7 @@ type CandidateDiscoveryOptions struct {
 	MaxInventoryFiles int
 	MaxCandidates     int
 	Sort              string
+	Domains           []string
 }
 
 type lifecycleDBFile struct {
@@ -55,6 +56,10 @@ type TableInventory struct {
 }
 
 func InventoryStorage(root string) (StorageInventoryReport, error) {
+	return InventoryStorageForDomains(root, nil)
+}
+
+func InventoryStorageForDomains(root string, domains []string) (StorageInventoryReport, error) {
 	if strings.TrimSpace(root) == "" {
 		return StorageInventoryReport{}, errors.New("inventory root is required")
 	}
@@ -62,7 +67,7 @@ func InventoryStorage(root string) (StorageInventoryReport, error) {
 		GeneratedAt: time.Now(),
 		Root:        root,
 	}
-	for _, domain := range []string{"trade", "live", "order_history", "auction"} {
+	for _, domain := range lifecycleInventoryDomains(domains) {
 		domainDir := filepath.Join(root, domain)
 		if _, err := os.Stat(domainDir); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
@@ -97,7 +102,11 @@ func InventoryStorage(root string) (StorageInventoryReport, error) {
 }
 
 func DiscoverLifecycleCandidates(ctx context.Context, root, hotCutoffDate string, opts CandidateDiscoveryOptions) ([]LifecycleCandidate, error) {
-	files, err := discoverLifecycleDBFiles(root)
+	return DiscoverLifecycleCandidatesWithCutoffs(ctx, root, opts, func(TableInventory) string { return hotCutoffDate })
+}
+
+func DiscoverLifecycleCandidatesWithCutoffs(ctx context.Context, root string, opts CandidateDiscoveryOptions, cutoffForTable func(TableInventory) string) ([]LifecycleCandidate, error) {
+	files, err := discoverLifecycleDBFiles(root, opts.Domains)
 	if err != nil {
 		return nil, err
 	}
@@ -118,7 +127,7 @@ func DiscoverLifecycleCandidates(ctx context.Context, root, hotCutoffDate string
 		if end > maxFiles {
 			end = maxFiles
 		}
-		results, err := discoverLifecycleCandidatesWindow(ctx, root, hotCutoffDate, files[start:end])
+		results, err := discoverLifecycleCandidatesWindow(ctx, root, files[start:end], cutoffForTable)
 		if err != nil {
 			return out, err
 		}
@@ -137,7 +146,7 @@ func DiscoverLifecycleCandidates(ctx context.Context, root, hotCutoffDate string
 	return out, nil
 }
 
-func discoverLifecycleCandidatesWindow(ctx context.Context, root, hotCutoffDate string, files []lifecycleDBFile) ([][]LifecycleCandidate, error) {
+func discoverLifecycleCandidatesWindow(ctx context.Context, root string, files []lifecycleDBFile, cutoffForTable func(TableInventory) string) ([][]LifecycleCandidate, error) {
 	results := make([][]LifecycleCandidate, len(files))
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -174,7 +183,7 @@ func discoverLifecycleCandidatesWindow(ctx context.Context, root, hotCutoffDate 
 				Root:        root,
 				Tables:      rows,
 			}
-			results[i] = PlanSteadyStateRetention(report, hotCutoffDate).Candidates
+			results[i] = PlanSteadyStateRetentionWithCutoffs(report, cutoffForTable).Candidates
 		}(i, file)
 	}
 	wg.Wait()
@@ -212,12 +221,12 @@ func sortLifecycleDBFiles(files []lifecycleDBFile, sortMode string) {
 	})
 }
 
-func discoverLifecycleDBFiles(root string) ([]lifecycleDBFile, error) {
+func discoverLifecycleDBFiles(root string, domains []string) ([]lifecycleDBFile, error) {
 	if strings.TrimSpace(root) == "" {
 		return nil, errors.New("inventory root is required")
 	}
 	files := make([]lifecycleDBFile, 0)
-	for _, domain := range []string{"trade", "live", "order_history", "auction"} {
+	for _, domain := range lifecycleInventoryDomains(domains) {
 		domainDir := filepath.Join(root, domain)
 		if _, err := os.Stat(domainDir); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
@@ -253,6 +262,26 @@ func discoverLifecycleDBFiles(root string) ([]lifecycleDBFile, error) {
 		}
 	}
 	return files, nil
+}
+
+func lifecycleInventoryDomains(domains []string) []string {
+	if len(domains) == 0 {
+		return []string{"trade", "live", "order_history", "auction"}
+	}
+	out := make([]string, 0, len(domains))
+	seen := make(map[string]bool, len(domains))
+	for _, domain := range domains {
+		domain = strings.TrimSpace(domain)
+		if domain == "" || seen[domain] {
+			continue
+		}
+		seen[domain] = true
+		out = append(out, domain)
+	}
+	if len(out) == 0 {
+		return []string{"trade", "live", "order_history", "auction"}
+	}
+	return out
 }
 
 func InventoryProfessionalFinance(dbPath string) (StorageInventoryReport, error) {

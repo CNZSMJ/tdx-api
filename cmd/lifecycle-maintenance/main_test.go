@@ -19,7 +19,7 @@ func TestParseConfigUsesTDXDataDirAndLifecycleDefaults(t *testing.T) {
 	t.Setenv("TDX_LIFECYCLE_ALLOW_PRUNE", "")
 	t.Setenv("TDX_LIFECYCLE_MAX_CANDIDATES", "")
 
-	cfg, err := parseConfig([]string{"--min-verified-segments", "1"}, &bytes.Buffer{})
+	cfg, err := parseConfig([]string{"--min-verified-segments", "1", "--domains", "trade"}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("parse config: %v", err)
 	}
@@ -34,6 +34,9 @@ func TestParseConfigUsesTDXDataDirAndLifecycleDefaults(t *testing.T) {
 	}
 	if cfg.MinVerifiedSegments != 1 || cfg.MaxCandidates != 400 || cfg.MaxArchiveDays != 366 || cfg.CandidateSort != "size_desc" {
 		t.Fatalf("unexpected lifecycle defaults: %+v", cfg)
+	}
+	if len(cfg.CandidateDomains) != 1 || cfg.CandidateDomains[0] != "trade" {
+		t.Fatalf("candidate domains = %+v, want trade", cfg.CandidateDomains)
 	}
 }
 

@@ -45,7 +45,7 @@ func TestManifestStoreCreatesSchemaIndexesAndDefaultRetention(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get retention policy: %v", err)
 	}
-	if policy == nil || policy.ColdRetentionYears != 7 || policy.HotRetentionTradingDays != DefaultHotRetentionTradingDays {
+	if policy == nil || policy.ColdRetentionYears != 7 || policy.HotRetentionTradingDays != TradeHotRetentionTradingDays {
 		t.Fatalf("unexpected default policy: %+v", policy)
 	}
 	auctionPolicy, err := store.GetRetentionPolicy("auction", "AuctionSnapshot")
@@ -80,7 +80,7 @@ func TestManifestStoreUpdatesDefaultRetentionPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get retention policy: %v", err)
 	}
-	if policy == nil || policy.HotRetentionTradingDays != DefaultHotRetentionTradingDays {
+	if policy == nil || policy.HotRetentionTradingDays != TradeHotRetentionTradingDays {
 		t.Fatalf("retention policy was not updated: %+v", policy)
 	}
 }

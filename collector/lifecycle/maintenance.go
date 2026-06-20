@@ -37,10 +37,11 @@ func (r MaintenanceRunner) RunWithContext(ctx context.Context) (MaintenanceResul
 		r.StartedAt = time.Now()
 	}
 
-	cutoff, err := r.resolveHotCutoff()
+	cutoffs, err := r.resolveHotCutoffs()
 	if err != nil {
 		return MaintenanceResult{}, err
 	}
+	defaultCutoff := cutoffs.Default
 	freeBytes := r.FreeBytes
 	if freeBytes <= 0 {
 		freeBytes, err = diskFreeBytes(r.DataDir)
@@ -54,10 +55,10 @@ func (r MaintenanceRunner) RunWithContext(ctx context.Context) (MaintenanceResul
 		HigherPriorityGovernanceActive: r.HigherPriorityActive,
 	}.Decide()
 	if !gate.Allowed {
-		return MaintenanceResult{Status: "skipped", Reason: gate.Reason, HotCutoffDate: cutoff}, nil
+		return MaintenanceResult{Status: "skipped", Reason: gate.Reason, HotCutoffDate: defaultCutoff}, nil
 	}
 
-	candidates, err := r.resolveCandidates(ctx, cutoff)
+	candidates, err := r.resolveCandidates(ctx, cutoffs)
 	if err != nil {
 		return MaintenanceResult{}, err
 	}
@@ -73,14 +74,14 @@ func (r MaintenanceRunner) RunWithContext(ctx context.Context) (MaintenanceResul
 		Status:             "passed",
 		SelectedCandidates: len(plan.Selected),
 		SkippedCandidates:  len(plan.Skipped),
-		HotCutoffDate:      cutoff,
+		HotCutoffDate:      defaultCutoff,
 		LifecycleDebt:      LifecycleDebt{Skipped: len(plan.Skipped)},
 	}
 	if status, err := LifecycleStatusFromManifest(r.Manifest); err == nil {
 		result.LifecycleDebt.FailedSegments = status.SegmentCounts[string(SegmentFailed)]
 	}
 
-	if err := r.processCandidateGroups(ctx, groupCandidatesByDB(plan.Selected), cutoff, &result); err != nil {
+	if err := r.processCandidateGroups(ctx, groupCandidatesByDB(plan.Selected), defaultCutoff, &result); err != nil {
 		return result, err
 	}
 	if result.ProcessedSegments == 0 && len(plan.Selected) == 0 {
@@ -254,7 +255,8 @@ func (r MaintenanceRunner) processCandidateGroup(ctx context.Context, candidates
 	archived := make([]archivedSegment, 0, len(candidates))
 	processed := make([]processedSegment, 0, len(candidates))
 	for _, candidate := range candidates {
-		segment, err := r.archiveCandidateLocked(ctx, candidate, cutoff, batchID)
+		candidateCutoff := candidateHotCutoff(candidate, cutoff)
+		segment, err := r.archiveCandidateLocked(ctx, candidate, candidateCutoff, batchID)
 		if err != nil {
 			return processed, err
 		}
@@ -550,22 +552,27 @@ func groupCandidatesByDB(candidates []LifecycleCandidate) [][]LifecycleCandidate
 	return groups
 }
 
-func (r MaintenanceRunner) resolveCandidates(ctx context.Context, cutoff string) ([]LifecycleCandidate, error) {
+func (r MaintenanceRunner) resolveCandidates(ctx context.Context, cutoffs HotCutoffDates) ([]LifecycleCandidate, error) {
 	if len(r.Candidates) > 0 {
-		return filterSupportedCandidates(r.Candidates), nil
+		return assignCandidateHotCutoffs(filterSupportedCandidates(r.Candidates), cutoffs), nil
 	}
 	if r.MaxCandidates > 0 || r.MaxInventoryFiles > 0 {
-		return DiscoverLifecycleCandidates(ctx, r.DataDir, cutoff, CandidateDiscoveryOptions{
+		return DiscoverLifecycleCandidatesWithCutoffs(ctx, r.DataDir, CandidateDiscoveryOptions{
 			MaxInventoryFiles: r.MaxInventoryFiles,
 			MaxCandidates:     effectiveMaxCandidates(r.MaxCandidates, r.MaxCandidates),
 			Sort:              r.CandidateSort,
+			Domains:           r.CandidateDomains,
+		}, func(row TableInventory) string {
+			return cutoffs.ForTable(row.Domain, row.Table)
 		})
 	}
-	report, err := InventoryStorage(r.DataDir)
+	report, err := InventoryStorageForDomains(r.DataDir, r.CandidateDomains)
 	if err != nil {
 		return nil, err
 	}
-	return filterSupportedCandidates(PlanSteadyStateRetention(report, cutoff).Candidates), nil
+	return filterSupportedCandidates(PlanSteadyStateRetentionWithCutoffs(report, func(row TableInventory) string {
+		return cutoffs.ForTable(row.Domain, row.Table)
+	}).Candidates), nil
 }
 
 func filterSupportedCandidates(candidates []LifecycleCandidate) []LifecycleCandidate {
@@ -598,18 +605,26 @@ func stageOneTableSupported(table string) bool {
 	}
 }
 
-func (r MaintenanceRunner) resolveHotCutoff() (string, error) {
-	if strings.TrimSpace(r.HotCutoffDate) != "" {
-		return strings.TrimSpace(r.HotCutoffDate), nil
+func (r MaintenanceRunner) resolveHotCutoffs() (HotCutoffDates, error) {
+	return ResolveHotCutoffDates(r.WorkdayDBPath, r.StartedAt, r.HotCutoffDate)
+}
+
+func assignCandidateHotCutoffs(candidates []LifecycleCandidate, cutoffs HotCutoffDates) []LifecycleCandidate {
+	out := make([]LifecycleCandidate, len(candidates))
+	for i, candidate := range candidates {
+		out[i] = candidate
+		if strings.TrimSpace(out[i].HotCutoffDate) == "" {
+			out[i].HotCutoffDate = cutoffs.ForTable(out[i].Domain, out[i].TableName)
+		}
 	}
-	if strings.TrimSpace(r.WorkdayDBPath) == "" {
-		return "", errors.New("hot cutoff date or workday db path is required")
+	return out
+}
+
+func candidateHotCutoff(candidate LifecycleCandidate, fallback string) string {
+	if cutoff := strings.TrimSpace(candidate.HotCutoffDate); cutoff != "" {
+		return cutoff
 	}
-	cutoff, err := ComputeHotCutoffFromWorkdayDB(r.WorkdayDBPath, r.StartedAt, DefaultHotRetentionTradingDays)
-	if err != nil {
-		return "", err
-	}
-	return cutoff.HotCutoffTradeDate, nil
+	return strings.TrimSpace(fallback)
 }
 
 func (r MaintenanceRunner) dataset() string {

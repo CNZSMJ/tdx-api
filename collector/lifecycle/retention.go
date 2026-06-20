@@ -5,8 +5,13 @@ type SteadyStatePlan struct {
 }
 
 func PlanSteadyStateRetention(report StorageInventoryReport, hotCutoffDate string) SteadyStatePlan {
+	return PlanSteadyStateRetentionWithCutoffs(report, func(TableInventory) string { return hotCutoffDate })
+}
+
+func PlanSteadyStateRetentionWithCutoffs(report StorageInventoryReport, cutoffForTable func(TableInventory) string) SteadyStatePlan {
 	plan := SteadyStatePlan{}
 	for _, row := range report.Tables {
+		hotCutoffDate := cutoffForTable(row)
 		if row.RowCount == 0 || row.MinDate == "" || row.MinDate >= hotCutoffDate {
 			continue
 		}
@@ -17,6 +22,7 @@ func PlanSteadyStateRetention(report StorageInventoryReport, hotCutoffDate strin
 			Instrument:                row.Instrument,
 			MinDate:                   row.MinDate,
 			MaxDate:                   row.MaxDate,
+			HotCutoffDate:             hotCutoffDate,
 			SourceDBBytes:             row.FileBytes,
 			ColdRowShare:              estimateColdShare(row.MinDate, row.MaxDate, hotCutoffDate),
 			EstimatedParquetRatio:     0.4,

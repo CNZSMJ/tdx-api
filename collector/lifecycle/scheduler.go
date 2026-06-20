@@ -13,6 +13,7 @@ type LifecycleCandidate struct {
 	Instrument                string
 	MinDate                   string
 	MaxDate                   string
+	HotCutoffDate             string
 	SourceDBBytes             int64
 	ColdRowShare              float64
 	EstimatedParquetRatio     float64
@@ -110,6 +111,7 @@ type MaintenanceLimits struct {
 	MaxInventoryFiles int
 	CandidateSort     string
 	HotCutoffDate     string
+	CandidateDomains  []string
 }
 
 type MaintenanceRunner struct {
@@ -165,6 +167,7 @@ func (r MaintenanceRunner) planningOnlyRun() (MaintenanceResult, error) {
 		SelectedCandidates: len(plan.Selected),
 		SkippedCandidates:  len(plan.Skipped),
 		LifecycleDebt:      debt,
+		HotCutoffDate:      r.HotCutoffDate,
 	}, nil
 }
 

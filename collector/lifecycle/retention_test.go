@@ -13,6 +13,24 @@ func TestPlanSteadyStateRetentionOnlySelectsRowsCrossingCutoff(t *testing.T) {
 	}
 }
 
+func TestPlanSteadyStateRetentionUsesTableSpecificCutoffs(t *testing.T) {
+	report := StorageInventoryReport{Tables: []TableInventory{
+		{Domain: "trade", Instrument: "sh600000", Table: "TradeHistory", FileBytes: 1000, RowCount: 10, MinDate: "20260115", MaxDate: "20260617"},
+		{Domain: "live", Instrument: "sh600000", Table: "TradeLive", FileBytes: 1000, RowCount: 10, MinDate: "20260115", MaxDate: "20260617"},
+	}}
+
+	plan := PlanSteadyStateRetentionWithCutoffs(report, func(row TableInventory) string {
+		if row.Domain == "trade" {
+			return "20260320"
+		}
+		return "20251128"
+	})
+
+	if len(plan.Candidates) != 1 || plan.Candidates[0].Domain != "trade" || plan.Candidates[0].HotCutoffDate != "20260320" {
+		t.Fatalf("plan = %+v, want only trade candidate with trade cutoff", plan)
+	}
+}
+
 func TestLifecycleDebtTrackerSurfacesConsecutiveDebt(t *testing.T) {
 	tracker := LifecycleDebtTracker{}
 	tracker.RecordDay("20260420", 10)
